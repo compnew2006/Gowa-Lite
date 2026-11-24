@@ -68,7 +68,7 @@ export function EditAliasDialog({
           />
         </div>
         <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             {t.cancel}
           </Button>
           <Button type="submit" disabled={mutation.isPending}>

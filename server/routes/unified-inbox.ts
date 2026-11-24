@@ -1,13 +1,15 @@
-import type {Router} from 'express';
+import express, {type Router} from 'express';
 import {
   clearChatCatchup,
   createConversationNote,
   deleteConversationNote,
   getAccountAliases,
   getCachedAvatar,
+  getCachedMessage,
   getConversationNoteById,
   getUnreadCountsForUser,
   listConversationNotes,
+  markCachedMessageRevoked,
   markChatReadForUser,
   parseTimestampMs,
   syncAndMergeChatMessages,
@@ -33,11 +35,17 @@ import {
 import {createApiRouter, handleRouteError, requireAuth} from '../middleware/auth.ts';
 import {decodeRouteParam} from '../security.ts';
 import {
+  inferForwardMimeType,
+  isNewsletterJid,
+  isStatusBroadcastJid,
+  MAX_MEDIA_UPLOAD_BYTES,
   matchesUnifiedChatSearch,
   normalizePhoneQueryForGowa,
   normalizeSearchQuery,
+  normalizeWhatsAppJid,
   recipientMatchesChatJid,
   resolveAccountDisplayName,
+  resolveGowaMediaTarget,
 } from '../services/chat-sync.ts';
 import {
   createScheduleViaGowa,
@@ -63,6 +71,8 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     const rawSearch = typeof req.query.search === 'string' ? req.query.search : '';
     const search = normalizePhoneQueryForGowa(rawSearch);
     const hasMedia = req.query.has_media === 'true';
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 100);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
 
     const selectedDeviceSet = new Set<string>();
     if (filterDeviceIdsRaw) {
@@ -99,6 +109,8 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
           device_state: GowaDevice['state'];
         }
       > = [];
+      let totalRemoteChats = 0;
+      let anyDeviceHasMore = false;
 
       await Promise.all(
         targetDevices.map(async (dev) => {
@@ -113,20 +125,38 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
                 {
                   deviceId: dev.id,
                   query: {
-                    limit: 100,
-                    offset: 0,
+                    limit,
+                    offset,
                     has_media: hasMedia ? true : undefined,
                   },
                 },
               );
               const items = response?.data ?? [];
+              let excludedSkipped = 0;
+              let addedCount = 0;
               for (const chat of items) {
+                if (isNewsletterJid(chat.jid) || isStatusBroadcastJid(chat.jid)) {
+                  excludedSkipped += 1;
+                  continue;
+                }
+                addedCount += 1;
                 allChats.push({
                   ...chat,
                   device_id: dev.id,
                   device_display_name: displayName,
                   device_state: dev.state,
                 });
+              }
+              const devTotal =
+                typeof response?.pagination?.total === 'number' && response.pagination.total > 0
+                  ? Math.max(addedCount, response.pagination.total - excludedSkipped)
+                  : addedCount;
+              totalRemoteChats += devTotal;
+              const rawTotal = response?.pagination?.total ?? 0;
+              const deviceHasMore =
+                rawTotal > 0 ? offset + items.length < rawTotal : items.length >= limit;
+              if (deviceHasMore) {
+                anyDeviceHasMore = true;
               }
               return;
             }
@@ -166,14 +196,14 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
               }
             }
 
-            for (let offset = 0; offset < MAX_SCAN_CHATS; offset += PAGE_LIMIT) {
+            for (let scanOffset = 0; scanOffset < MAX_SCAN_CHATS; scanOffset += PAGE_LIMIT) {
               const page = await gowaFetch<{data: GowaChatInfo[]; pagination: GowaPagination}>(
                 '/chats',
                 {
                   deviceId: dev.id,
                   query: {
                     limit: PAGE_LIMIT,
-                    offset,
+                    offset: scanOffset,
                     has_media: hasMedia ? true : undefined,
                   },
                 },
@@ -185,12 +215,13 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
                 }
               }
               const total = page?.pagination?.total ?? 0;
-              if (items.length < PAGE_LIMIT || (total > 0 && offset + items.length >= total)) {
+              if (items.length < PAGE_LIMIT || (total > 0 && scanOffset + items.length >= total)) {
                 break;
               }
             }
 
             for (const chat of byJid.values()) {
+              if (isNewsletterJid(chat.jid) || isStatusBroadcastJid(chat.jid)) continue;
               const contactName = contactNameByJid.get(chat.jid);
               if (
                 directHitJids.has(chat.jid) ||
@@ -224,55 +255,66 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
         return validB - validA;
       });
 
-      const pendingCatchups = syncChatWatermarks(
-        allChats.map((c) => ({
-          device_id: c.device_id,
-          chat_jid: c.jid,
-          last_message_time: c.last_message_time,
-        })),
-      );
-      if (pendingCatchups.length > 0) {
-        const onlineDeviceSet = new Set(
-          devices
-            .filter((d) => d.state === 'logged_in' || d.state === 'connected')
-            .map((d) => d.id),
-        );
-        const targetCatchups = pendingCatchups
-          .filter((item) => onlineDeviceSet.has(item.device_id))
-          .slice(0, 10);
+      const isSearchMode = Boolean(rawSearch.trim());
+      const pagedChats = isSearchMode ? allChats.slice(offset, offset + limit) : allChats;
+      const totalAvailable = isSearchMode
+        ? allChats.length
+        : Math.max(totalRemoteChats, offset + pagedChats.length);
+      const hasMore = isSearchMode
+        ? offset + pagedChats.length < allChats.length
+        : anyDeviceHasMore;
 
-        await Promise.all(
-          targetCatchups.map(async (changed) => {
-            try {
-              const latest = await gowaFetch<{data: GowaMessageInfo[]}>(
-                `/chat/${encodeURIComponent(changed.chat_jid)}/messages`,
-                {
-                  deviceId: changed.device_id,
-                  query: {limit: 15, offset: 0},
-                  timeoutMs: 3_500,
-                },
-              );
-              if (latest?.data?.length) {
-                upsertCachedMessages(changed.device_id, changed.chat_jid, latest.data, {
-                  markUnreadCandidate: true,
-                  minUnreadTimestampMs: changed.prev_last_message_ms,
-                });
-              }
-              clearChatCatchup(changed.device_id, changed.chat_jid);
-            } catch {
-              // Keep needs_catchup = 1 so the next poll automatically retries
-            }
-          }),
+      if (offset === 0 && pagedChats.length > 0) {
+        const pendingCatchups = syncChatWatermarks(
+          pagedChats.map((c) => ({
+            device_id: c.device_id,
+            chat_jid: c.jid,
+            last_message_time: c.last_message_time,
+          })),
         );
+        if (pendingCatchups.length > 0) {
+          const onlineDeviceSet = new Set(
+            devices
+              .filter((d) => d.state === 'logged_in' || d.state === 'connected')
+              .map((d) => d.id),
+          );
+          const targetCatchups = pendingCatchups
+            .filter((item) => onlineDeviceSet.has(item.device_id))
+            .slice(0, 10);
+
+          await Promise.all(
+            targetCatchups.map(async (changed) => {
+              try {
+                const latest = await gowaFetch<{data: GowaMessageInfo[]}>(
+                  `/chat/${encodeURIComponent(changed.chat_jid)}/messages`,
+                  {
+                    deviceId: changed.device_id,
+                    query: {limit: 15, offset: 0},
+                    timeoutMs: 3_500,
+                  },
+                );
+                if (latest?.data?.length) {
+                  upsertCachedMessages(changed.device_id, changed.chat_jid, latest.data, {
+                    markUnreadCandidate: true,
+                    minUnreadTimestampMs: changed.prev_last_message_ms,
+                  });
+                }
+                clearChatCatchup(changed.device_id, changed.chat_jid);
+              } catch {
+                // Keep needs_catchup = 1 so the next poll automatically retries
+              }
+            }),
+          );
+        }
       }
 
       const unreadByChat = getUnreadCountsForUser(
         req.user!,
-        allChats.map((c) => ({device_id: c.device_id, chat_jid: c.jid})),
+        pagedChats.map((c) => ({device_id: c.device_id, chat_jid: c.jid})),
       );
 
       let totalUnread = 0;
-      const enrichedChats = allChats.map((chat) => {
+      const enrichedChats = pagedChats.map((chat) => {
         const unreadCount = unreadByChat.get(`${chat.device_id}::${chat.jid}`) ?? 0;
         totalUnread += unreadCount;
         return {
@@ -287,6 +329,13 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
         results: {
           data: enrichedChats,
           total: enrichedChats.length,
+          pagination: {
+            limit,
+            offset,
+            total: totalAvailable,
+            has_more: hasMore,
+            next_offset: offset + limit,
+          },
           total_unread: totalUnread,
           accounts: devices.map((d) => ({
             id: d.id,
@@ -463,6 +512,107 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
   );
 
   router.post(
+    '/api/unified/chats/:deviceId/:jid/send-media',
+    requireAuth,
+    express.raw({type: 'application/octet-stream', limit: MAX_MEDIA_UPLOAD_BYTES}),
+    async (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      const chatJid = decodeRouteParam(req.params.jid);
+      const rawFilename = typeof req.query.filename === 'string' ? req.query.filename : '';
+      const rawMimeType = typeof req.query.mimeType === 'string' ? req.query.mimeType : '';
+      const caption = typeof req.query.caption === 'string' ? req.query.caption.trim() : '';
+
+      if (!deviceId || !chatJid || isNewsletterJid(chatJid)) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الحساب أو المحادثة غير صالح'});
+        return;
+      }
+
+      if (!Buffer.isBuffer(req.body) || req.body.byteLength === 0) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'محتوى الملف مطلوب'});
+        return;
+      }
+
+      if (req.body.byteLength > MAX_MEDIA_UPLOAD_BYTES) {
+        res.status(413).json({
+          code: 'PAYLOAD_TOO_LARGE',
+          message: 'حجم الملف يتجاوز الحد الأقصى المسموح به (20 ميجابايت)',
+        });
+        return;
+      }
+
+      if (caption.length > 4096) {
+        res.status(400).json({
+          code: 'VALIDATION_ERROR',
+          message: 'التعليق المرفق طويل جدًا (الحد الأقصى 4096 حرفًا)',
+        });
+        return;
+      }
+
+      try {
+        const target = resolveGowaMediaTarget(rawMimeType, rawFilename);
+
+        const status = await gowaFetch<GowaDeviceStatus>(
+          `/devices/${encodeURIComponent(deviceId)}/status`,
+        );
+        if (!status?.is_logged_in) {
+          res.status(409).json({
+            code: 'DEVICE_NOT_CONNECTED',
+            message: 'هذا الحساب غير متصل حاليًا بواتساب. يرجى إعادة ربط الحساب قبل الإرسال.',
+          });
+          return;
+        }
+
+        const formData = new FormData();
+        formData.set('phone', chatJid);
+        if (target.supportsCaption && caption) {
+          formData.set('caption', caption);
+        }
+        const fileBytes = new Uint8Array(req.body);
+        formData.set(
+          target.fieldName,
+          new Blob([fileBytes], {type: target.mimeType}),
+          target.filename,
+        );
+
+        const sent = await gowaFetch<{message_id: string; status: string}>(target.endpoint, {
+          method: 'POST',
+          deviceId,
+          formData,
+          timeoutMs: 45_000,
+        });
+
+        if (sent?.message_id) {
+          upsertCachedMessages(deviceId, chatJid, [
+            {
+              id: sent.message_id,
+              chat_jid: chatJid,
+              sender_jid: 'me',
+              content: target.supportsCaption ? caption : '',
+              timestamp: new Date().toISOString(),
+              is_from_me: true,
+              media_type: target.mediaType,
+              filename: target.filename,
+              url: '',
+              file_length: req.body.byteLength,
+            },
+          ]);
+        }
+        if (req.user) {
+          markChatReadForUser(req.user.id, deviceId, chatJid);
+        }
+
+        res.json({
+          code: 'SUCCESS',
+          message: 'تم إرسال المرفق',
+          results: sent,
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
     '/api/unified/chats/:deviceId/:jid/messages/:messageId/reaction',
     requireAuth,
     async (req, res) => {
@@ -502,6 +652,248 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
           code: 'SUCCESS',
           message: emoji ? 'تم إرسال التفاعل' : 'تمت إزالة التفاعل',
           results: result,
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/unified/chats/:deviceId/:jid/messages/:messageId/revoke',
+    requireAuth,
+    async (req, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      const chatJid = decodeRouteParam(req.params.jid);
+      const messageId = decodeRouteParam(req.params.messageId);
+
+      if (!deviceId || !chatJid || !messageId || isNewsletterJid(chatJid)) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معلمات الرسالة غير صالحة'});
+        return;
+      }
+
+      try {
+        const status = await gowaFetch<GowaDeviceStatus>(
+          `/devices/${encodeURIComponent(deviceId)}/status`,
+        );
+        if (!status?.is_logged_in) {
+          res.status(409).json({
+            code: 'DEVICE_NOT_CONNECTED',
+            message: 'هذا الحساب غير متصل حاليًا بواتساب. يرجى إعادة ربط الحساب قبل حذف الرسالة.',
+          });
+          return;
+        }
+
+        const result = await gowaFetch(`/message/${encodeURIComponent(messageId)}/revoke`, {
+          method: 'POST',
+          deviceId,
+          body: {phone: chatJid},
+        });
+
+        markCachedMessageRevoked(deviceId, messageId, {chatJid, revokedBy: 'me'});
+        wsBridge.broadcast({
+          code: 'MESSAGE_REVOKED',
+          message: 'revoked',
+          device_id: deviceId,
+          result: {chat_jid: chatJid, revoked_message_id: messageId},
+        });
+
+        res.json({
+          code: 'SUCCESS',
+          message: 'تم حذف الرسالة لدى الجميع',
+          results: result,
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/unified/chats/:deviceId/:jid/messages/:messageId/forward',
+    requireAuth,
+    async (req: AuthedRequest, res) => {
+      const sourceDeviceId = decodeRouteParam(req.params.deviceId);
+      const sourceChatJid = decodeRouteParam(req.params.jid);
+      const messageId = decodeRouteParam(req.params.messageId);
+      const body = req.body as {
+        target_device_id?: unknown;
+        target_jid?: unknown;
+        content?: unknown;
+        media_type?: unknown;
+        filename?: unknown;
+        url?: unknown;
+      };
+
+      const targetDeviceId =
+        typeof body.target_device_id === 'string' && body.target_device_id.trim()
+          ? body.target_device_id.trim()
+          : sourceDeviceId;
+      const rawTargetJid = typeof body.target_jid === 'string' ? body.target_jid.trim() : '';
+      const targetJid = normalizeWhatsAppJid(rawTargetJid);
+
+      if (!sourceDeviceId || !sourceChatJid || !messageId || isNewsletterJid(sourceChatJid)) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'بيانات الرسالة المصدر غير صالحة'});
+        return;
+      }
+      if (!targetDeviceId || !targetJid || isNewsletterJid(targetJid)) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'الحساب أو المستلم الهدف غير صالح'});
+        return;
+      }
+
+      try {
+        const cached = getCachedMessage(sourceDeviceId, sourceChatJid, messageId);
+        if (cached?.is_revoked) {
+          res.status(400).json({code: 'MESSAGE_REVOKED', message: 'لا يمكن إعادة توجيه رسالة محذوفة'});
+          return;
+        }
+
+        const content = (
+          cached?.content || (typeof body.content === 'string' ? body.content : '')
+        ).trim();
+        const mediaType = (
+          cached?.media_type || (typeof body.media_type === 'string' ? body.media_type : '')
+        ).trim();
+        const filename = (
+          cached?.filename || (typeof body.filename === 'string' ? body.filename : '')
+        ).trim();
+        const fallbackUrl = (
+          cached?.url || (typeof body.url === 'string' ? body.url : '')
+        ).trim();
+
+        if (!content && !mediaType) {
+          res.status(400).json({code: 'VALIDATION_ERROR', message: 'محتوى الرسالة غير متوفر لإعادة التوجيه'});
+          return;
+        }
+
+        const status = await gowaFetch<GowaDeviceStatus>(
+          `/devices/${encodeURIComponent(targetDeviceId)}/status`,
+        );
+        if (!status?.is_logged_in) {
+          res.status(409).json({
+            code: 'DEVICE_NOT_CONNECTED',
+            message: 'الحساب الهدف غير متصل حاليًا بواتساب. يرجى اختيار حساب متصل.',
+          });
+          return;
+        }
+
+        let sent: {message_id: string; status: string} | undefined;
+        let resolvedFilename = filename;
+        let resolvedMediaType = mediaType;
+        let resolvedLength = cached?.file_length ?? 0;
+
+        if (mediaType) {
+          let downloaded: GowaDownloadedMedia | null = null;
+          try {
+            const dl = await gowaFetch<GowaDownloadedMedia | null>(
+              `/message/${encodeURIComponent(messageId)}/download`,
+              {
+                deviceId: sourceDeviceId,
+                query: {phone: sourceChatJid},
+                timeoutMs: 25_000,
+              },
+            );
+            if (dl && (dl.file_path || dl.file_url)) {
+              downloaded = dl;
+            }
+          } catch (err) {
+            if (!fallbackUrl || fallbackUrl.includes('mmg.whatsapp.net')) {
+              throw err;
+            }
+          }
+
+          if (!downloaded && fallbackUrl && !fallbackUrl.includes('mmg.whatsapp.net')) {
+            downloaded = {
+              message_id: messageId,
+              media_type: mediaType,
+              filename,
+              file_path: fallbackUrl,
+              file_size: 0,
+            };
+          }
+
+          const assetPath = downloaded?.file_path || downloaded?.file_url || '';
+          if (!assetPath) {
+            res.status(404).json({
+              code: 'MEDIA_NOT_AVAILABLE',
+              message: 'ملف الوسائط غير متوفر على الخادم لإعادة توجيهه',
+            });
+            return;
+          }
+
+          const asset = await gowaFetchBinary(assetPath);
+          const candidateName =
+            filename || downloaded?.filename || asset.filename || 'forwarded-file';
+          const mimeType = inferForwardMimeType(mediaType, candidateName, asset.contentType);
+          const target = resolveGowaMediaTarget(mimeType, candidateName);
+
+          const formData = new FormData();
+          formData.set('phone', targetJid);
+          formData.set('is_forwarded', 'true');
+          if (target.supportsCaption && content) {
+            formData.set('caption', content);
+          }
+          formData.set(
+            target.fieldName,
+            new Blob([new Uint8Array(asset.buffer)], {type: target.mimeType}),
+            target.filename,
+          );
+
+          sent = await gowaFetch<{message_id: string; status: string}>(target.endpoint, {
+            method: 'POST',
+            deviceId: targetDeviceId,
+            formData,
+            timeoutMs: 45_000,
+          });
+          resolvedFilename = target.filename;
+          resolvedMediaType = target.mediaType;
+          resolvedLength = asset.buffer.byteLength;
+        } else {
+          sent = await gowaFetch<{message_id: string; status: string}>('/send/message', {
+            method: 'POST',
+            deviceId: targetDeviceId,
+            body: {
+              phone: targetJid,
+              message: content,
+              is_forwarded: true,
+            },
+          });
+        }
+
+        if (sent?.message_id) {
+          upsertCachedMessages(targetDeviceId, targetJid, [
+            {
+              id: sent.message_id,
+              chat_jid: targetJid,
+              sender_jid: 'me',
+              content: mediaType && resolvedMediaType === 'audio' ? '' : content,
+              timestamp: new Date().toISOString(),
+              is_from_me: true,
+              media_type: resolvedMediaType,
+              filename: resolvedFilename,
+              url: '',
+              file_length: resolvedLength,
+            },
+          ]);
+        }
+        if (req.user) {
+          markChatReadForUser(req.user.id, targetDeviceId, targetJid);
+        }
+        wsBridge.broadcast({
+          code: 'CHAT_UPDATED',
+          message: 'forwarded',
+          device_id: targetDeviceId,
+          result: {chat_jid: targetJid, message_id: sent?.message_id},
+        });
+
+        res.json({
+          code: 'SUCCESS',
+          message: 'تمت إعادة توجيه الرسالة',
+          results: {
+            ...(sent ?? {}),
+            target_device_id: targetDeviceId,
+            target_jid: targetJid,
+          },
         });
       } catch (err) {
         handleRouteError(res, err);

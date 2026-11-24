@@ -9,8 +9,8 @@ import {Skeleton} from '@/components/ui/skeleton';
 import {useI18n} from '@/lib/i18n';
 import {toApiError} from '@/lib/http';
 
-export function useActiveDevice() {
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+export function useActiveDevice(preferredDeviceId?: string) {
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>(preferredDeviceId ?? '');
   const {
     data: devices = [],
     isLoading,
@@ -28,12 +28,19 @@ export function useActiveDevice() {
       if (selectedDeviceId) setSelectedDeviceId('');
       return;
     }
+    if (preferredDeviceId && devices.some((d) => d.id === preferredDeviceId) && !selectedDeviceId) {
+      setSelectedDeviceId(preferredDeviceId);
+      return;
+    }
     const stillExists = devices.some((d) => d.id === selectedDeviceId);
     if (!stillExists) {
-      const preferred = devices.find((d) => d.state === 'logged_in') ?? devices[0];
+      const preferred =
+        (preferredDeviceId ? devices.find((d) => d.id === preferredDeviceId) : undefined) ??
+        devices.find((d) => d.state === 'logged_in') ??
+        devices[0];
       setSelectedDeviceId(preferred.id);
     }
-  }, [devices, selectedDeviceId]);
+  }, [devices, preferredDeviceId, selectedDeviceId]);
 
   const selectedDevice: RegistryDevice | null =
     devices.find((d) => d.id === selectedDeviceId) ?? null;
@@ -48,6 +55,55 @@ export function useActiveDevice() {
     error,
     refetch,
   };
+}
+
+export function SidebarAccountSelect({
+  devices,
+  selectedDevice,
+  selectedDeviceId,
+  onSelectDevice,
+}: {
+  devices: RegistryDevice[];
+  selectedDevice: RegistryDevice | null;
+  selectedDeviceId: string;
+  onSelectDevice: (id: string) => void;
+}) {
+  const {t} = useI18n();
+  if (devices.length === 0) return null;
+  const isOffline = selectedDevice && selectedDevice.state !== 'logged_in';
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <Smartphone className="size-3.5 shrink-0 text-muted-foreground" />
+        <select
+          aria-label={t.deviceSelector.label}
+          value={selectedDeviceId}
+          onChange={(e) => onSelectDevice(e.target.value)}
+          className="h-8 min-w-0 flex-1 rounded-lg border border-input bg-secondary/70 px-2.5 text-xs font-medium text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+        >
+          {devices.map((dev) => {
+            const title = dev.resolved_name || dev.alias || dev.display_name || dev.id;
+            const statusText =
+              dev.state === 'logged_in'
+                ? t.deviceSelector.stateLoggedIn
+                : t.deviceSelector.stateOffline;
+            return (
+              <option key={dev.id} value={dev.id}>
+                {title} ({dev.phone_number || dev.id}) · {statusText}
+              </option>
+            );
+          })}
+        </select>
+      </div>
+      {isOffline && (
+        <p className="flex items-center gap-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+          <AlertCircle className="size-3 shrink-0" />
+          <span className="truncate">{t.deviceSelector.offlineNotice}</span>
+        </p>
+      )}
+    </div>
+  );
 }
 
 export function DeviceSelectorBar({

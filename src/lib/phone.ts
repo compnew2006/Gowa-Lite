@@ -25,6 +25,24 @@ export function normalizePhoneQueryForGowa(raw: string): string {
   return normalized;
 }
 
+export function toWhatsAppJid(raw: string): string {
+  const ascii = normalizeArabicDigits(raw).trim();
+  if (!ascii) return '';
+
+  if (ascii.includes('@')) {
+    const compact = ascii.replace(/\s+/g, '');
+    const match = /^([^@\s]+)@([a-z0-9.-]+)$/i.exec(compact);
+    if (!match) return '';
+    return `${match[1]}@${match[2].toLowerCase()}`;
+  }
+
+  const digits = ascii.replace(/[\s+().-]/g, '');
+  if (/^\d{5,}$/.test(digits)) {
+    return `${digits}@s.whatsapp.net`;
+  }
+  return '';
+}
+
 export function matchesNormalizedQuery(haystackParts: Array<string | undefined | null>, rawQuery: string): boolean {
   const normalized = normalizeSearchInput(rawQuery).toLowerCase();
   if (!normalized) return true;

@@ -8,6 +8,7 @@ import {Dialog} from '@/components/ui/dialog';
 import {formatBytes} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {resolveMediaFilename} from '@/lib/media-download';
 
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|webp|gif|bmp|avif)$/i;
 const AUTO_MEDIA_MAX_BYTES = 20 * 1024 * 1024;
@@ -226,7 +227,7 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     );
   }
 
-  const filename = query.data.filename || message.filename || 'attachment';
+  const filename = resolveMediaFilename(message, undefined, query.data.filename);
 
   if (isImage) {
     return (

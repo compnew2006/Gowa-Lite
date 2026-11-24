@@ -107,9 +107,18 @@ export interface UnifiedChat extends ChatInfo {
   unread_count?: number;
 }
 
+export interface UnifiedChatsPagination {
+  limit: number;
+  offset: number;
+  total: number;
+  has_more: boolean;
+  next_offset?: number;
+}
+
 export interface UnifiedChatsResponse {
   data: UnifiedChat[];
   total: number;
+  pagination?: UnifiedChatsPagination;
   total_unread?: number;
   accounts: AccountSummary[];
   device_errors: Array<{
@@ -299,6 +308,43 @@ export interface GroupInviteLink {
   group_id: string;
 }
 
+export interface UnifiedGroupItem {
+  kind: 'group';
+  device_id: string;
+  device_display_name: string;
+  device_state: DeviceState;
+  jid: string;
+  name: string;
+  participant_count: number;
+  group: MyGroup;
+}
+
+export interface UnifiedNewsletterItem {
+  kind: 'newsletter';
+  device_id: string;
+  device_display_name: string;
+  device_state: DeviceState;
+  jid: string;
+  name: string;
+  subscribers_count: number;
+  live_active: boolean;
+  newsletter: NewsletterMetadata;
+}
+
+export type UnifiedDirectoryItem = UnifiedGroupItem | UnifiedNewsletterItem;
+
+export interface UnifiedGroupsResponse {
+  items: UnifiedDirectoryItem[];
+  groups_count: number;
+  newsletters_count: number;
+  accounts: AccountSummary[];
+  device_errors: Array<{
+    device_id: string;
+    display_name: string;
+    message: string;
+  }>;
+}
+
 // Account Profile & Lookups
 export type PrivacyResponse = Record<string, string | undefined>;
 
@@ -395,5 +441,36 @@ export interface NewsletterMedia {
   filename?: string;
   mime_type?: string;
   file_size?: number;
+}
+
+export interface UnifiedStatusAccountSummary {
+  id: string;
+  display_name: string;
+  phone_number?: string;
+  state: DeviceState;
+  status_count: number;
+}
+
+export interface UnifiedStatusItem {
+  id: string;
+  chat_jid: string;
+  sender_jid: string;
+  sender_display_name: string;
+  content: string;
+  timestamp: string;
+  is_from_me: boolean;
+  media_type: string;
+  filename: string;
+  url: string;
+  file_length: number;
+  device_id: string;
+  device_display_name: string;
+  device_state: DeviceState;
+}
+
+export interface UnifiedStatusesResponse {
+  data: UnifiedStatusItem[];
+  accounts: UnifiedStatusAccountSummary[];
+  device_errors: Array<{device_id: string; display_name: string; message: string}>;
 }
 

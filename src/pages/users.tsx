@@ -259,7 +259,7 @@ export default function UsersPage() {
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>
+            <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
               {t.cancel}
             </Button>
             <Button type="submit" disabled={createMutation.isPending}>
@@ -326,7 +326,7 @@ export default function UsersPage() {
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" onClick={() => setEditingUser(null)}>
+            <Button type="button" variant="outline" onClick={() => setEditingUser(null)}>
               {t.cancel}
             </Button>
             <Button type="submit" disabled={updateMutation.isPending}>
@@ -346,7 +346,7 @@ export default function UsersPage() {
         className="sm:max-w-sm"
       >
         <div className="flex justify-end gap-2 pt-2">
-          <Button variant="outline" onClick={() => setDeletingUser(null)}>
+          <Button type="button" variant="outline" onClick={() => setDeletingUser(null)}>
             {t.cancel}
           </Button>
           <Button

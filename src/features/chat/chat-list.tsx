@@ -1,8 +1,21 @@
 import {useEffect, useMemo, useRef, useState, type ReactNode} from 'react';
-import {Check, ChevronDown, Loader2, RefreshCw, Search} from 'lucide-react';
+import {
+  ArrowLeftRight,
+  Check,
+  ChevronDown,
+  Loader2,
+  MessageSquarePlus,
+  RefreshCw,
+  Search,
+} from 'lucide-react';
 import type {AccountSummary, UnifiedChat} from '@/api/types';
 import {ContactAvatar, avatarToneClass} from '@/components/contact-avatar';
 import {chatDisplayName, formatJidPhone} from '@/features/chat/display-name';
+import {
+  buildJidAccountsMap,
+  getOtherAccountsForChat,
+  type OtherAccountRef,
+} from '@/features/chat/other-accounts';
 import {formatShortTime, isZeroTime} from '@/lib/format';
 import {useI18n} from '@/lib/i18n';
 import {matchesNormalizedQuery} from '@/lib/phone';
@@ -23,7 +36,7 @@ const ACCOUNT_DOT_TONES = [
   'bg-teal-400',
 ];
 
-function accountDotTone(deviceId: string): string {
+export function accountDotTone(deviceId: string): string {
   let hash = 0;
   for (let i = 0; i < deviceId.length; i += 1) {
     hash = (hash * 31 + deviceId.charCodeAt(i)) | 0;
@@ -31,7 +44,7 @@ function accountDotTone(deviceId: string): string {
   return ACCOUNT_DOT_TONES[Math.abs(hash) % ACCOUNT_DOT_TONES.length];
 }
 
-function shortAccountWidgetLabel(displayName: string): string {
+export function shortAccountWidgetLabel(displayName: string): string {
   const cleaned = displayName.replace(/@(s\.whatsapp\.net|c\.us|lid)$/i, '').trim();
   return cleaned || displayName;
 }
@@ -185,11 +198,15 @@ export function ChatList({
   headerActions,
   chats,
   accounts,
+  jidAccountsMap,
   selectedKey,
   selectedDeviceIds,
   search,
   hasMedia,
   totalUnread,
+  totalChatsCount,
+  hasMore = false,
+  isLoadingMore = false,
   isLoading,
   isFetching,
   errorMessage,
@@ -197,18 +214,24 @@ export function ChatList({
   onSearchChange,
   onHasMediaChange,
   onRefresh,
+  onLoadMore,
+  onOpenNewChat,
   onSelect,
 }: {
   headerTitle?: string;
   headerActions?: ReactNode;
   chats: UnifiedChat[];
   accounts: AccountSummary[];
+  jidAccountsMap?: Map<string, OtherAccountRef[]>;
   deviceErrors?: Array<{device_id: string; display_name: string; message: string}>;
   selectedKey: string | null;
   selectedDeviceIds: string[];
   search: string;
   hasMedia: boolean;
   totalUnread?: number;
+  totalChatsCount?: number;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
   isLoading: boolean;
   isFetching: boolean;
   errorMessage: string | null;
@@ -216,6 +239,8 @@ export function ChatList({
   onSearchChange: (value: string) => void;
   onHasMediaChange: (value: boolean) => void;
   onRefresh: () => void;
+  onLoadMore?: () => void;
+  onOpenNewChat?: () => void;
   onSelect: (chat: UnifiedChat) => void;
 }) {
   const {lang, t} = useI18n();
@@ -229,6 +254,11 @@ export function ChatList({
   const totalUnreadCount = typeof totalUnread === 'number' ? totalUnread : computedUnreadCount;
 
   const isAllActive = !hasMedia && !unreadOnly && selectedDeviceIds.length === 0;
+  const resolvedJidAccountsMap = useMemo(
+    () => jidAccountsMap ?? buildJidAccountsMap(chats),
+    [chats, jidAccountsMap],
+  );
+
   const visibleChats = useMemo(() => {
     let filtered = chats;
     if (unreadOnly) {
@@ -262,6 +292,17 @@ export function ChatList({
             )}
           </div>
           <div className="flex items-center gap-1">
+            {onOpenNewChat && (
+              <button
+                type="button"
+                onClick={onOpenNewChat}
+                title={t.chats.newChatBtn}
+                aria-label={t.chats.newChatBtn}
+                className="flex size-9 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              >
+                <MessageSquarePlus className="size-4" />
+              </button>
+            )}
             {headerActions}
             <button
               type="button"
@@ -387,16 +428,29 @@ export function ChatList({
           />
 
           {!headerTitle && (
-            <button
-              type="button"
-              onClick={onRefresh}
-              disabled={isFetching}
-              title={t.chats.refreshChatsTitle}
-              aria-label={t.chats.refreshChatsTitle}
-              className="ms-auto flex size-7 cursor-pointer items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-            >
-              <RefreshCw className={cn('size-3.5', isFetching && 'animate-spin')} />
-            </button>
+            <div className="ms-auto flex items-center gap-1">
+              {onOpenNewChat && (
+                <button
+                  type="button"
+                  onClick={onOpenNewChat}
+                  title={t.chats.newChatBtn}
+                  aria-label={t.chats.newChatBtn}
+                  className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  <MessageSquarePlus className="size-3.5" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onRefresh}
+                disabled={isFetching}
+                title={t.chats.refreshChatsTitle}
+                aria-label={t.chats.refreshChatsTitle}
+                className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+              >
+                <RefreshCw className={cn('size-3.5', isFetching && 'animate-spin')} />
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -423,6 +477,11 @@ export function ChatList({
               const phone = formatJidPhone(chat.jid);
               const unreadCount = Math.max(0, chat.unread_count ?? 0);
               const hasUnread = unreadCount > 0;
+              const otherAccounts = getOtherAccountsForChat(
+                resolvedJidAccountsMap,
+                chat.device_id,
+                chat.jid,
+              );
               const timeLabel = isZeroTime(chat.last_message_time)
                 ? ''
                 : formatShortTime(chat.last_message_time, lang);
@@ -492,12 +551,53 @@ export function ChatList({
                           </span>
                         )}
                       </div>
+
+                      {otherAccounts.length > 0 && (
+                        <p
+                          title={t.chats.alsoOnOtherAccount(
+                            otherAccounts
+                              .map((a) => shortAccountWidgetLabel(a.device_display_name))
+                              .join('، '),
+                          )}
+                          className="mt-1 flex items-center gap-1.5 truncate text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                        >
+                          <ArrowLeftRight className="size-3 shrink-0" />
+                          <span className="truncate">
+                            {t.chats.alsoOnOtherAccount(
+                              otherAccounts
+                                .map((a) => shortAccountWidgetLabel(a.device_display_name))
+                                .join('، '),
+                            )}
+                          </span>
+                        </p>
+                      )}
                     </div>
                   </button>
                 </li>
               );
             })}
           </ul>
+        )}
+
+        {!isLoading && !errorMessage && hasMore && onLoadMore && (
+          <div className="flex flex-col items-center gap-1.5 px-2 py-3">
+            {typeof totalChatsCount === 'number' && totalChatsCount > chats.length && (
+              <p className="text-[11px] text-muted-foreground tabular-nums">
+                {t.chats.showingChatsProgress(chats.length, totalChatsCount)}
+              </p>
+            )}
+            <button
+              type="button"
+              disabled={isLoadingMore}
+              onClick={onLoadMore}
+              className="inline-flex h-9 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-border bg-secondary/70 px-4 text-xs font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
+            >
+              {isLoadingMore && <Loader2 className="size-3.5 animate-spin" />}
+              <span>
+                {isLoadingMore ? t.chats.loadingMoreChats : t.chats.loadMoreChats}
+              </span>
+            </button>
+          </div>
         )}
       </div>
     </div>

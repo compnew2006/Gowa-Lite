@@ -1,28 +1,59 @@
-import {useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import {useQuery, useQueryClient} from '@tanstack/react-query';
 import {
   Columns2,
   MessagesSquare,
   PanelLeft,
   Plus,
-  RefreshCw,
-  Settings,
-  Smartphone,
   X,
 } from 'lucide-react';
-import {Link} from 'react-router-dom';
+import {useSearchParams} from 'react-router-dom';
 import {listUnifiedChats} from '@/api/client';
 import type {AccountSummary, UnifiedChat} from '@/api/types';
+import {
+  GowaSetupNotice,
+  isGowaConnectionError,
+  SplitWorkspace,
+  WorkspaceEmptyState,
+} from '@/components/layout/split-workspace';
 import {Button} from '@/components/ui/button';
 import {ChatList, chatUniqueKey} from '@/features/chat/chat-list';
-import {chatDisplayName} from '@/features/chat/display-name';
+import {chatDisplayName, formatJidPhone} from '@/features/chat/display-name';
 import {MessageView} from '@/features/chat/message-view';
-import {onWsEvent} from '@/lib/events';
+import {NewChatDialog} from '@/features/chat/new-chat-dialog';
+import {
+  buildJidAccountsMap,
+  getOtherAccountsForChat,
+  type OtherAccountRef,
+} from '@/features/chat/other-accounts';
+import {usePaginatedChats} from '@/features/chat/use-paginated-chats';
+import {extractWsEventTarget, onWsEvent} from '@/lib/events';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
-import {normalizeSearchInput} from '@/lib/phone';
+import {toWhatsAppJid} from '@/lib/phone';
 import {cn} from '@/lib/utils';
 import {useAuthStore} from '@/stores/auth';
+
+function buildFallbackUnifiedChat(
+  deviceId: string,
+  jid: string,
+  accounts: AccountSummary[],
+): UnifiedChat {
+  const account = accounts.find((a) => a.id === deviceId);
+  return {
+    jid,
+    name: formatJidPhone(jid) || jid,
+    last_message_time: '',
+    ephemeral_expiration: 0,
+    created_at: '',
+    updated_at: '',
+    archived: false,
+    device_id: deviceId,
+    device_display_name: account?.display_name || deviceId,
+    device_state: account?.state || 'disconnected',
+    unread_count: 0,
+  };
+}
 
 type WorkspaceMode = 'unified' | 'split';
 
@@ -32,26 +63,12 @@ interface SplitPaneConfig {
 }
 
 const SIDEBAR_STORAGE_KEY = 'gowa-lite:chat-sidebar-width';
-const DEFAULT_SIDEBAR_WIDTH = 390;
-const MIN_SIDEBAR_WIDTH = 280;
-const MAX_SIDEBAR_WIDTH = 640;
-const MIN_CONVERSATION_WIDTH = 320;
-
-function clampSidebarWidth(width: number, containerWidth?: number): number {
-  const dynamicMax =
-    containerWidth && containerWidth > 0
-      ? Math.max(
-          MIN_SIDEBAR_WIDTH,
-          Math.min(MAX_SIDEBAR_WIDTH, containerWidth - MIN_CONVERSATION_WIDTH),
-        )
-      : MAX_SIDEBAR_WIDTH;
-  return Math.round(Math.min(dynamicMax, Math.max(MIN_SIDEBAR_WIDTH, width)));
-}
 
 function SplitWorkspacePane({
   index,
   pane,
   accounts,
+  globalJidAccountsMap,
   canRemove,
   onDeviceIdsChange,
   onRemove,
@@ -59,6 +76,7 @@ function SplitWorkspacePane({
   index: number;
   pane: SplitPaneConfig;
   accounts: AccountSummary[];
+  globalJidAccountsMap: Map<string, OtherAccountRef[]>;
   canRemove: boolean;
   onDeviceIdsChange: (deviceIds: string[]) => void;
   onRemove: () => void;
@@ -67,28 +85,26 @@ function SplitWorkspacePane({
   const [search, setSearch] = useState('');
   const [hasMedia, setHasMedia] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const normalizedSearch = normalizeSearchInput(search);
+  const [adHocChat, setAdHocChat] = useState<{deviceId: string; jid: string} | null>(null);
+  const [newChatOpen, setNewChatOpen] = useState(false);
 
-  const query = useQuery({
-    queryKey: ['unified-chats', pane.deviceIds, normalizedSearch, hasMedia],
-    queryFn: () =>
-      listUnifiedChats({
-        deviceIds: pane.deviceIds.length > 0 ? pane.deviceIds : undefined,
-        search: normalizedSearch || undefined,
-        has_media: hasMedia || undefined,
-      }),
-    refetchInterval: 30_000,
+  const paginated = usePaginatedChats({
+    deviceIds: pane.deviceIds,
+    search,
+    hasMedia,
   });
-
-  const chats = query.data?.data ?? [];
-  const resolvedAccounts = query.data?.accounts ?? accounts;
-  const deviceErrors = query.data?.device_errors ?? [];
+  const {query, chats, accounts: resolvedAccounts, deviceErrors} = paginated;
   const apiErr = query.isError ? toApiError(query.error) : null;
 
   const selectedChat = useMemo<UnifiedChat | null>(() => {
     if (!selectedKey) return null;
-    return chats.find((c) => chatUniqueKey(c) === selectedKey) ?? null;
-  }, [chats, selectedKey]);
+    const match = chats.find((c) => chatUniqueKey(c) === selectedKey);
+    if (match) return match;
+    if (adHocChat && `${adHocChat.deviceId}::${adHocChat.jid}` === selectedKey) {
+      return buildFallbackUnifiedChat(adHocChat.deviceId, adHocChat.jid, resolvedAccounts);
+    }
+    return null;
+  }, [adHocChat, chats, resolvedAccounts, selectedKey]);
 
   const paneLabel = useMemo(() => {
     if (pane.deviceIds.length === 0) return t.chats.columnTitle(index + 1);
@@ -132,18 +148,31 @@ function SplitWorkspacePane({
             key={chatUniqueKey(selectedChat)}
             chat={selectedChat}
             alwaysShowBack
+            otherAccounts={getOtherAccountsForChat(
+              globalJidAccountsMap,
+              selectedChat.device_id,
+              selectedChat.jid,
+            )}
+            onSwitchAccount={(targetDeviceId, jid) => {
+              setAdHocChat({deviceId: targetDeviceId, jid});
+              setSelectedKey(`${targetDeviceId}::${jid}`);
+            }}
             onBack={() => setSelectedKey(null)}
           />
         ) : (
           <ChatList
             chats={chats}
             accounts={resolvedAccounts}
+            jidAccountsMap={globalJidAccountsMap}
             deviceErrors={deviceErrors}
             selectedKey={selectedKey}
             selectedDeviceIds={pane.deviceIds}
             search={search}
             hasMedia={hasMedia}
-            totalUnread={query.data?.total_unread}
+            totalUnread={paginated.totalUnread}
+            totalChatsCount={paginated.totalCount}
+            hasMore={paginated.hasMore}
+            isLoadingMore={paginated.isLoadingMore}
             isLoading={query.isLoading}
             isFetching={query.isFetching}
             errorMessage={apiErr ? apiErr.message : null}
@@ -153,168 +182,170 @@ function SplitWorkspacePane({
             }}
             onSearchChange={setSearch}
             onHasMediaChange={setHasMedia}
-            onRefresh={() => void query.refetch()}
-            onSelect={(chat) => setSelectedKey(chatUniqueKey(chat))}
+            onRefresh={() => void paginated.refresh()}
+            onLoadMore={() => void paginated.loadMore()}
+            onOpenNewChat={() => setNewChatOpen(true)}
+            onSelect={(chat) => {
+              paginated.markExtraChatRead(chat.device_id, chat.jid);
+              setSelectedKey(chatUniqueKey(chat));
+            }}
           />
         )}
       </div>
+
+      <NewChatDialog
+        open={newChatOpen}
+        onOpenChange={setNewChatOpen}
+        accounts={resolvedAccounts}
+        defaultDeviceId={pane.deviceIds[0]}
+        onStartChat={(deviceId, jid) => {
+          setAdHocChat({deviceId, jid});
+          setSelectedKey(`${deviceId}::${jid}`);
+        }}
+      />
     </section>
   );
 }
 
 export default function ChatsPage() {
   const queryClient = useQueryClient();
-  const {lang, t} = useI18n();
+  const {t} = useI18n();
   const user = useAuthStore((s) => s.user);
-  const isRtl = lang === 'ar';
+  const [searchParams] = useSearchParams();
+  const searchParamsKey = searchParams.toString();
+  const lastAppliedParamsRef = useRef<string | null>(null);
 
   const [mode, setMode] = useState<WorkspaceMode>('unified');
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
   const [search, setSearch] = useState('');
   const [hasMedia, setHasMedia] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [adHocChat, setAdHocChat] = useState<{deviceId: string; jid: string} | null>(null);
+  const [newChatOpen, setNewChatOpen] = useState(false);
   const [mobileShowMessages, setMobileShowMessages] = useState(false);
   const [splitPanes, setSplitPanes] = useState<SplitPaneConfig[]>([]);
-  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
-    try {
-      const saved = window.localStorage.getItem(SIDEBAR_STORAGE_KEY);
-      if (saved) {
-        const parsed = Number(saved);
-        if (Number.isFinite(parsed)) {
-          return clampSidebarWidth(parsed);
-        }
-      }
-    } catch {
-      // ignore storage access errors
-    }
-    return DEFAULT_SIDEBAR_WIDTH;
-  });
-  const [maxSidebarWidth, setMaxSidebarWidth] = useState(MAX_SIDEBAR_WIDTH);
-  const [isResizing, setIsResizing] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const sidebarWidthRef = useRef(sidebarWidth);
-  sidebarWidthRef.current = sidebarWidth;
-  const cleanupDragRef = useRef<(() => void) | null>(null);
-  const normalizedSearch = normalizeSearchInput(search);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(sidebarWidth));
-    } catch {
-      // ignore storage access errors
+    if (lastAppliedParamsRef.current === searchParamsKey) return;
+    lastAppliedParamsRef.current = searchParamsKey;
+
+    const paramDevice = searchParams.get('device')?.trim() || '';
+    const rawTarget = searchParams.get('jid')?.trim() || searchParams.get('phone')?.trim() || '';
+    const resolvedJid = rawTarget ? toWhatsAppJid(rawTarget) : '';
+
+    if (paramDevice && resolvedJid) {
+      setMode('unified');
+      setAdHocChat({deviceId: paramDevice, jid: resolvedJid});
+      setSelectedKey(`${paramDevice}::${resolvedJid}`);
+      setMobileShowMessages(true);
+    } else if (paramDevice) {
+      setMode('unified');
+      setSelectedDeviceIds([paramDevice]);
+      setSelectedKey(null);
+      setAdHocChat(null);
+      setMobileShowMessages(false);
     }
-  }, [sidebarWidth]);
+  }, [searchParams, searchParamsKey]);
 
-  useEffect(() => {
-    return () => {
-      cleanupDragRef.current?.();
-    };
-  }, []);
-
-  const handleResizePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
-    event.preventDefault();
-    cleanupDragRef.current?.();
-
-    const startX = event.clientX;
-    const startWidth = sidebarWidthRef.current;
-    const containerWidth = containerRef.current?.clientWidth;
-
-    setIsResizing(true);
-    document.body.classList.add('select-none');
-    document.body.style.cursor = 'col-resize';
-
-    const onPointerMove = (moveEvent: PointerEvent) => {
-      const deltaX = moveEvent.clientX - startX;
-      const rawWidth = isRtl ? startWidth - deltaX : startWidth + deltaX;
-      setSidebarWidth(clampSidebarWidth(rawWidth, containerWidth));
-    };
-
-    const cleanup = () => {
-      cleanupDragRef.current = null;
-      setIsResizing(false);
-      document.body.classList.remove('select-none');
-      document.body.style.cursor = '';
-      window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerup', cleanup);
-      window.removeEventListener('pointercancel', cleanup);
-    };
-
-    cleanupDragRef.current = cleanup;
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', cleanup);
-    window.addEventListener('pointercancel', cleanup);
-  };
-
-  const handleResetSidebarWidth = () => {
-    const containerWidth = containerRef.current?.clientWidth;
-    setSidebarWidth(clampSidebarWidth(DEFAULT_SIDEBAR_WIDTH, containerWidth));
-  };
-
-  const handleResizeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const step = event.shiftKey ? 32 : 16;
-    const containerWidth = containerRef.current?.clientWidth;
-    if (event.key === 'ArrowLeft') {
-      event.preventDefault();
-      const delta = isRtl ? step : -step;
-      setSidebarWidth((prev) => clampSidebarWidth(prev + delta, containerWidth));
-    } else if (event.key === 'ArrowRight') {
-      event.preventDefault();
-      const delta = isRtl ? -step : step;
-      setSidebarWidth((prev) => clampSidebarWidth(prev + delta, containerWidth));
-    } else if (event.key === 'Home') {
-      event.preventDefault();
-      setSidebarWidth(MIN_SIDEBAR_WIDTH);
-    } else if (event.key === 'End') {
-      event.preventDefault();
-      setSidebarWidth(clampSidebarWidth(MAX_SIDEBAR_WIDTH, containerWidth));
-    }
-  };
-
-  const query = useQuery({
-    queryKey: ['unified-chats', selectedDeviceIds, normalizedSearch, hasMedia],
-    queryFn: () =>
-      listUnifiedChats({
-        deviceIds: selectedDeviceIds.length > 0 ? selectedDeviceIds : undefined,
-        search: normalizedSearch || undefined,
-        has_media: hasMedia || undefined,
-      }),
-    refetchInterval: 30_000,
+  const paginated = usePaginatedChats({
+    deviceIds: selectedDeviceIds,
+    search,
+    hasMedia,
   });
+  const {query, chats, accounts, deviceErrors} = paginated;
+
+  const globalChatsQuery = useQuery({
+    queryKey: ['unified-chats', [], '', false],
+    queryFn: () => listUnifiedChats({}),
+    staleTime: 20_000,
+  });
+
+  const jidAccountsMap = useMemo(
+    () => buildJidAccountsMap([...(globalChatsQuery.data?.data ?? []), ...chats]),
+    [chats, globalChatsQuery.data?.data],
+  );
 
   useEffect(() => {
     return onWsEvent((event) => {
+      const code = (event.code || '').toUpperCase();
+      const target = extractWsEventTarget(event);
+
+      const invalidateChats = () => {
+        if (!target.deviceId) {
+          void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+          return;
+        }
+        const targetDeviceId = target.deviceId;
+        void queryClient.invalidateQueries({
+          predicate: (q) => {
+            if (q.queryKey[0] !== 'unified-chats') return false;
+            const filterIds = q.queryKey[1];
+            return (
+              !Array.isArray(filterIds) ||
+              filterIds.length === 0 ||
+              filterIds.includes(targetDeviceId)
+            );
+          },
+        });
+      };
+
+      const invalidateScoped = (rootKey: string) => {
+        if (target.deviceId && target.chatJid) {
+          void queryClient.invalidateQueries({
+            queryKey: [rootKey, target.deviceId, target.chatJid],
+          });
+        } else if (target.deviceId) {
+          void queryClient.invalidateQueries({queryKey: [rootKey, target.deviceId]});
+        } else {
+          void queryClient.invalidateQueries({queryKey: [rootKey]});
+        }
+      };
+
       if (
-        event.code === 'MESSAGE_RECEIVED' ||
-        event.code === 'MESSAGE_REACTION' ||
-        event.code === 'MESSAGE_UPDATED' ||
-        event.code === 'MESSAGE_REVOKED' ||
-        event.code === 'MESSAGE_DELETED' ||
-        event.code === 'CHAT_UPDATED' ||
-        event.code === 'LOGIN_SUCCESS' ||
-        event.code === 'DEVICE_LOGGED_OUT' ||
-        event.code === 'DEVICE_REMOVED' ||
-        event.code === 'LIST_DEVICES'
+        code === 'MESSAGE_RECEIVED' ||
+        code === 'MESSAGE' ||
+        code === 'MESSAGE_REACTION' ||
+        code === 'MESSAGE_UPDATED' ||
+        code === 'MESSAGE_EDITED' ||
+        code === 'MESSAGE.EDITED' ||
+        code === 'MESSAGE_REVOKED' ||
+        code === 'MESSAGE.REVOKED' ||
+        code === 'MESSAGE_DELETED' ||
+        code === 'MESSAGE.DELETED' ||
+        code === 'CHAT_UPDATED'
       ) {
-        void queryClient.invalidateQueries({queryKey: ['unified-chats']});
-        void queryClient.invalidateQueries({queryKey: ['unified-messages']});
-      } else if (event.code === 'CONVERSATION_NOTE_UPDATED') {
-        void queryClient.invalidateQueries({queryKey: ['unified-chat-notes']});
-      } else if (event.code === 'SCHEDULE_UPDATED') {
-        void queryClient.invalidateQueries({queryKey: ['unified-chat-schedules']});
+        invalidateChats();
+        invalidateScoped('unified-messages');
+      } else if (
+        code === 'LOGIN_SUCCESS' ||
+        code === 'DEVICE_LOGGED_OUT' ||
+        code === 'DEVICE_REMOVED' ||
+        code === 'LIST_DEVICES'
+      ) {
+        invalidateChats();
+        if (target.deviceId) {
+          void queryClient.invalidateQueries({queryKey: ['unified-messages', target.deviceId]});
+        } else {
+          void queryClient.invalidateQueries({queryKey: ['unified-messages']});
+        }
+      } else if (code === 'CONVERSATION_NOTE_UPDATED') {
+        invalidateScoped('unified-chat-notes');
+      } else if (code === 'SCHEDULE_UPDATED') {
+        invalidateScoped('unified-chat-schedules');
         void queryClient.invalidateQueries({queryKey: ['schedules']});
       }
     });
   }, [queryClient]);
 
-  const chats = query.data?.data ?? [];
-  const accounts = query.data?.accounts ?? [];
-  const deviceErrors = query.data?.device_errors ?? [];
-
   const selectedChat = useMemo<UnifiedChat | null>(() => {
     if (!selectedKey) return null;
-    return chats.find((c) => chatUniqueKey(c) === selectedKey) ?? null;
-  }, [chats, selectedKey]);
+    const match = chats.find((c) => chatUniqueKey(c) === selectedKey);
+    if (match) return match;
+    if (adHocChat && `${adHocChat.deviceId}::${adHocChat.jid}` === selectedKey) {
+      return buildFallbackUnifiedChat(adHocChat.deviceId, adHocChat.jid, accounts);
+    }
+    return null;
+  }, [accounts, adHocChat, chats, selectedKey]);
 
   const handleSwitchMode = (nextMode: WorkspaceMode) => {
     setMode(nextMode);
@@ -340,63 +371,14 @@ export default function ChatsPage() {
   };
 
   const apiErr = query.isError ? toApiError(query.error) : null;
-  const isGowaSetupError = Boolean(
-    apiErr && (apiErr.code === 'GOWA_NOT_CONFIGURED' || apiErr.code === 'GOWA_UNREACHABLE'),
-  );
-  const hasUnifiedWorkspace = mode === 'unified' && !isGowaSetupError;
 
-  useEffect(() => {
-    if (!hasUnifiedWorkspace) return;
-    const el = containerRef.current;
-    if (!el) return;
-    const updateBounds = () => {
-      const width = el.clientWidth;
-      if (width <= 0) return;
-      const nextMax = Math.max(
-        MIN_SIDEBAR_WIDTH,
-        Math.min(MAX_SIDEBAR_WIDTH, width - MIN_CONVERSATION_WIDTH),
-      );
-      setMaxSidebarWidth(nextMax);
-      setSidebarWidth((prev) => Math.min(nextMax, Math.max(MIN_SIDEBAR_WIDTH, prev)));
-    };
-    updateBounds();
-    const observer = new ResizeObserver(updateBounds);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [hasUnifiedWorkspace]);
-
-  if (apiErr && isGowaSetupError) {
+  if (apiErr && isGowaConnectionError(apiErr)) {
     return (
-      <div className="flex h-full items-center justify-center p-6">
-        <div className="max-w-md rounded-xl border border-border bg-card p-6 text-center">
-          <div className="mx-auto mb-3 flex size-11 items-center justify-center rounded-full bg-secondary text-muted-foreground">
-            <Smartphone className="size-5" />
-          </div>
-          <h1 className="text-base font-semibold text-foreground">
-            {apiErr.code === 'GOWA_NOT_CONFIGURED'
-              ? t.chats.gowaNotConfiguredTitle
-              : t.chats.gowaUnreachableTitle}
-          </h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            {apiErr.code === 'GOWA_NOT_CONFIGURED' ? t.chats.gowaNotConfiguredDesc : apiErr.message}
-          </p>
-          <div className="mt-5 flex flex-wrap justify-center gap-2">
-            {user?.role === 'admin' && (
-              <Link
-                to="/settings"
-                className="inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-4 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-              >
-                <Settings className="size-3.5" />
-                <span>{t.chats.goToSettings}</span>
-              </Link>
-            )}
-            <Button variant="outline" size="sm" onClick={() => void query.refetch()}>
-              <RefreshCw className="size-3.5" />
-              <span>{t.retry}</span>
-            </Button>
-          </div>
-        </div>
-      </div>
+      <GowaSetupNotice
+        apiErr={apiErr}
+        isAdmin={user?.role === 'admin'}
+        onRetry={() => void query.refetch()}
+      />
     );
   }
 
@@ -457,6 +439,7 @@ export default function ChatsPage() {
               index={idx}
               pane={pane}
               accounts={accounts}
+              globalJidAccountsMap={jidAccountsMap}
               canRemove={splitPanes.length > 2}
               onDeviceIdsChange={(deviceIds) => {
                 setSplitPanes((prev) =>
@@ -474,92 +457,80 @@ export default function ChatsPage() {
   }
 
   return (
-    <div
-      ref={containerRef}
-      style={{'--chat-sidebar-width': `${sidebarWidth}px`} as CSSProperties}
-      className="flex h-full min-h-0 flex-col lg:flex-row"
-    >
-      {/* WhatsApp Chat List Sidebar */}
-      <section
-        className={cn(
-          'relative h-full min-h-0 w-full border-e border-border bg-card lg:w-[var(--chat-sidebar-width)] lg:shrink-0',
-          mobileShowMessages ? 'hidden lg:block lg:flex-none' : 'block flex-1 lg:flex-none',
-        )}
-      >
+    <>
+      <SplitWorkspace
+        storageKey={SIDEBAR_STORAGE_KEY}
+        showDetailOnMobile={mobileShowMessages}
+      sidebar={
         <ChatList
           headerTitle={t.chats.pageTitle}
           headerActions={modeSwitcher}
           chats={chats}
           accounts={accounts}
+          jidAccountsMap={jidAccountsMap}
           deviceErrors={deviceErrors}
           selectedKey={selectedKey}
           selectedDeviceIds={selectedDeviceIds}
           search={search}
           hasMedia={hasMedia}
-          totalUnread={query.data?.total_unread}
+          totalUnread={paginated.totalUnread}
+          totalChatsCount={paginated.totalCount}
+          hasMore={paginated.hasMore}
+          isLoadingMore={paginated.isLoadingMore}
           isLoading={query.isLoading}
           isFetching={query.isFetching}
           errorMessage={apiErr ? apiErr.message : null}
           onSelectedDeviceIdsChange={setSelectedDeviceIds}
           onSearchChange={setSearch}
           onHasMediaChange={setHasMedia}
-          onRefresh={() => void query.refetch()}
+          onRefresh={() => void paginated.refresh()}
+          onLoadMore={() => void paginated.loadMore()}
+          onOpenNewChat={() => setNewChatOpen(true)}
           onSelect={(chat) => {
+            paginated.markExtraChatRead(chat.device_id, chat.jid);
             setSelectedKey(chatUniqueKey(chat));
             setMobileShowMessages(true);
           }}
         />
-
-        {/* Desktop Resizable Divider Handle */}
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label={t.chats.resizeSidebarAria}
-          aria-valuemin={MIN_SIDEBAR_WIDTH}
-          aria-valuemax={maxSidebarWidth}
-          aria-valuenow={sidebarWidth}
-          title={t.chats.resizeSidebarTitle}
-          tabIndex={0}
-          onPointerDown={handleResizePointerDown}
-          onDoubleClick={handleResetSidebarWidth}
-          onKeyDown={handleResizeKeyDown}
-          className="group absolute inset-y-0 -end-[4px] z-20 hidden w-[8px] cursor-col-resize touch-none items-center justify-center focus-visible:outline-none lg:flex"
-        >
-          <span
-            aria-hidden="true"
-            className={cn(
-              'h-full w-[3px] rounded-full transition-colors',
-              isResizing
-                ? 'bg-primary'
-                : 'bg-transparent group-hover:bg-primary/60 group-focus-visible:bg-primary',
-            )}
-          />
-        </div>
-      </section>
-
-      {/* WhatsApp Conversation Pane */}
-      <section
-        className={cn(
-          'h-full min-h-0 min-w-0 flex-1 bg-chat-canvas',
-          mobileShowMessages ? 'block' : 'hidden lg:block',
-        )}
-      >
-        {selectedChat ? (
+      }
+      detail={
+        selectedChat ? (
           <MessageView
             key={chatUniqueKey(selectedChat)}
             chat={selectedChat}
+            otherAccounts={getOtherAccountsForChat(
+              jidAccountsMap,
+              selectedChat.device_id,
+              selectedChat.jid,
+            )}
+            onSwitchAccount={(targetDeviceId, jid) => {
+              setAdHocChat({deviceId: targetDeviceId, jid});
+              setSelectedKey(`${targetDeviceId}::${jid}`);
+              setMobileShowMessages(true);
+            }}
             onBack={() => setMobileShowMessages(false)}
           />
-        ) : (
-          <div className="wa-wallpaper flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
-            <div className="flex size-16 items-center justify-center rounded-full bg-card/90 text-primary shadow-sm">
-              <MessagesSquare className="size-7" />
-            </div>
-            <p className="text-base font-medium text-foreground">{t.chats.selectChatPrompt}</p>
-            <p className="max-w-md text-xs text-muted-foreground">{t.chats.selectChatHint}</p>
-          </div>
-        )}
-      </section>
-    </div>
+        ) : null
+      }
+        emptyState={
+          <WorkspaceEmptyState
+            icon={MessagesSquare}
+            title={t.chats.selectChatPrompt}
+            hint={t.chats.selectChatHint}
+          />
+        }
+      />
+      <NewChatDialog
+        open={newChatOpen}
+        onOpenChange={setNewChatOpen}
+        accounts={accounts}
+        defaultDeviceId={selectedDeviceIds[0]}
+        onStartChat={(deviceId, jid) => {
+          setAdHocChat({deviceId, jid});
+          setSelectedKey(`${deviceId}::${jid}`);
+          setMobileShowMessages(true);
+        }}
+      />
+    </>
   );
 }

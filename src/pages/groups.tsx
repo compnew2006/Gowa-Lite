@@ -1,51 +1,55 @@
-import {useMemo, useState} from 'react';
+import {useEffect, useMemo, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
-import {
-  AlertCircle,
-  Eye,
-  Link2,
-  Lock,
-  Megaphone,
-  Plus,
-  Search,
-  UsersRound,
-} from 'lucide-react';
+import {UsersRound} from 'lucide-react';
 import {toast} from 'sonner';
 import {
   createGroup,
   getGroupInfoFromLink,
   joinGroupWithLink,
-  listGroups,
+  listUnifiedGroups,
 } from '@/api/client';
-import type {GroupInfoFromLink, MyGroup} from '@/api/types';
-import {ContactAvatar} from '@/components/contact-avatar';
-import {DeviceSelectorBar, useActiveDevice} from '@/components/device-selector-bar';
+import type {AccountSummary, GroupInfoFromLink, UnifiedDirectoryItem} from '@/api/types';
+import {
+  GowaSetupNotice,
+  isGowaConnectionError,
+  SplitWorkspace,
+  WorkspaceEmptyState,
+} from '@/components/layout/split-workspace';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
-import {Skeleton} from '@/components/ui/skeleton';
-import {GroupDetailDialog} from '@/features/groups/group-detail-dialog';
-import {useI18n} from '@/lib/i18n';
+import {GroupWorkspacePanel} from '@/features/groups/group-workspace-panel';
+import {
+  directoryItemKey,
+  GroupsSidebar,
+  type DirectoryKindFilter,
+} from '@/features/groups/groups-sidebar';
+import {NewsletterWorkspacePanel} from '@/features/groups/newsletter-workspace-panel';
+import {onWsEvent} from '@/lib/events';
 import {toApiError} from '@/lib/http';
-import {matchesNormalizedQuery} from '@/lib/phone';
+import {useI18n} from '@/lib/i18n';
+import {parseParticipantsList} from '@/lib/participants';
+import {useAuthStore} from '@/stores/auth';
 
-function parseParticipants(raw: string): string[] {
-  return raw
-    .split(/[\n,;]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+const SIDEBAR_STORAGE_KEY = 'gowa-lite:groups-sidebar-width';
+
+function isOnlineAccount(account: AccountSummary): boolean {
+  return account.state === 'logged_in' || account.state === 'connected';
 }
 
 export default function GroupsPage() {
-  const {t} = useI18n();
   const queryClient = useQueryClient();
-  const deviceState = useActiveDevice();
-  const deviceId = deviceState.selectedDeviceId;
+  const {t} = useI18n();
+  const user = useAuthStore((s) => s.user);
 
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
+  const [kindFilter, setKindFilter] = useState<DirectoryKindFilter>('all');
   const [search, setSearch] = useState('');
-  const [selectedGroup, setSelectedGroup] = useState<MyGroup | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [mobileShowDetail, setMobileShowDetail] = useState(false);
 
+  const [targetDeviceId, setTargetDeviceId] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newParticipants, setNewParticipants] = useState('');
@@ -57,218 +61,201 @@ export default function GroupsPage() {
   const [previewLink, setPreviewLink] = useState('');
   const [previewInfo, setPreviewInfo] = useState<GroupInfoFromLink | null>(null);
 
-  const groupsQuery = useQuery({
-    queryKey: ['groups', deviceId],
-    queryFn: () => listGroups(deviceId),
-    enabled: Boolean(deviceId),
-    retry: 1,
+  const query = useQuery({
+    queryKey: ['unified-groups', selectedDeviceIds],
+    queryFn: () =>
+      listUnifiedGroups({
+        deviceIds: selectedDeviceIds.length > 0 ? selectedDeviceIds : undefined,
+      }),
+    refetchInterval: 30_000,
   });
+
+  useEffect(() => {
+    return onWsEvent((event) => {
+      if (
+        event.code === 'LOGIN_SUCCESS' ||
+        event.code === 'DEVICE_LOGGED_OUT' ||
+        event.code === 'DEVICE_REMOVED' ||
+        event.code === 'LIST_DEVICES'
+      ) {
+        void queryClient.invalidateQueries({queryKey: ['unified-groups']});
+      }
+    });
+  }, [queryClient]);
+
+  const items = query.data?.items ?? [];
+  const groupsCount = query.data?.groups_count ?? 0;
+  const newslettersCount = query.data?.newsletters_count ?? 0;
+  const accounts = query.data?.accounts ?? [];
+
+  const actionableAccounts = useMemo(() => accounts.filter(isOnlineAccount), [accounts]);
+
+  const defaultTargetDeviceId = useMemo(() => {
+    if (selectedDeviceIds.length > 0) {
+      const match = actionableAccounts.find((a) => selectedDeviceIds.includes(a.id));
+      if (match) return match.id;
+    }
+    return actionableAccounts[0]?.id ?? '';
+  }, [actionableAccounts, selectedDeviceIds]);
+
+  const resolvedTargetDeviceId = useMemo(() => {
+    if (targetDeviceId && actionableAccounts.some((a) => a.id === targetDeviceId)) {
+      return targetDeviceId;
+    }
+    return defaultTargetDeviceId;
+  }, [actionableAccounts, defaultTargetDeviceId, targetDeviceId]);
+
+  const selectedItem = useMemo<UnifiedDirectoryItem | null>(() => {
+    if (!selectedKey) return null;
+    return items.find((entry) => directoryItemKey(entry) === selectedKey) ?? null;
+  }, [items, selectedKey]);
 
   const createMutation = useMutation({
     mutationFn: () =>
-      createGroup(deviceId, {
+      createGroup(resolvedTargetDeviceId, {
         title: newTitle.trim(),
-        participants: parseParticipants(newParticipants),
+        participants: parseParticipantsList(newParticipants),
       }),
-    onSuccess: () => {
+    onSuccess: (res) => {
       toast.success(t.groups.createdToast);
       setCreateOpen(false);
       setNewTitle('');
       setNewParticipants('');
-      void queryClient.invalidateQueries({queryKey: ['groups', deviceId]});
+      if (res?.group_id && resolvedTargetDeviceId) {
+        setSelectedKey(`group::${resolvedTargetDeviceId}::${res.group_id}`);
+        setMobileShowDetail(true);
+      }
+      void queryClient.invalidateQueries({queryKey: ['unified-groups']});
     },
     onError: (err) => toast.error(toApiError(err).message),
   });
 
   const joinMutation = useMutation({
-    mutationFn: () => joinGroupWithLink(deviceId, joinLink.trim()),
-    onSuccess: () => {
+    mutationFn: () => joinGroupWithLink(resolvedTargetDeviceId, joinLink.trim()),
+    onSuccess: (res) => {
       toast.success(t.groups.joinedToast);
       setJoinOpen(false);
       setJoinLink('');
-      void queryClient.invalidateQueries({queryKey: ['groups', deviceId]});
+      if (res?.group_id && resolvedTargetDeviceId) {
+        setSelectedKey(`group::${resolvedTargetDeviceId}::${res.group_id}`);
+        setMobileShowDetail(true);
+      }
+      void queryClient.invalidateQueries({queryKey: ['unified-groups']});
     },
     onError: (err) => toast.error(toApiError(err).message),
   });
 
   const previewMutation = useMutation({
-    mutationFn: () => getGroupInfoFromLink(deviceId, previewLink.trim()),
+    mutationFn: () => getGroupInfoFromLink(resolvedTargetDeviceId, previewLink.trim()),
     onSuccess: (res) => {
       setPreviewInfo(res);
     },
     onError: (err) => toast.error(toApiError(err).message),
   });
 
-  const allGroups = groupsQuery.data ?? [];
-  const filteredGroups = useMemo(() => {
-    if (!search.trim()) return allGroups;
-    return allGroups.filter((g) => matchesNormalizedQuery([g.Name, g.JID, g.Topic], search));
-  }, [allGroups, search]);
+  const apiErr = query.isError ? toApiError(query.error) : null;
+
+  if (apiErr && isGowaConnectionError(apiErr)) {
+    return (
+      <GowaSetupNotice
+        apiErr={apiErr}
+        isAdmin={user?.role === 'admin'}
+        onRetry={() => void query.refetch()}
+      />
+    );
+  }
+
+  const renderTargetAccountSelect = (selectId: string) => {
+    if (actionableAccounts.length <= 1) return null;
+    return (
+      <div>
+        <Label htmlFor={selectId}>{t.groups.targetAccountLabel}</Label>
+        <select
+          id={selectId}
+          value={resolvedTargetDeviceId}
+          onChange={(e) => setTargetDeviceId(e.target.value)}
+          className="mt-1.5 h-9 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+        >
+          {actionableAccounts.map((acc) => (
+            <option key={acc.id} value={acc.id}>
+              {acc.display_name}
+            </option>
+          ))}
+        </select>
+      </div>
+    );
+  };
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-foreground">{t.groups.pageTitle}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{t.groups.pageSubtitle}</p>
-        </div>
-
-        {deviceId && (
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setPreviewInfo(null);
-                setPreviewLink('');
-                setPreviewOpen(true);
-              }}
-            >
-              <Eye className="size-3.5" />
-              <span>{t.groups.previewLink}</span>
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setJoinLink('');
-                setJoinOpen(true);
-              }}
-            >
-              <Link2 className="size-3.5" />
-              <span>{t.groups.joinWithLink}</span>
-            </Button>
-            <Button size="sm" onClick={() => setCreateOpen(true)}>
-              <Plus className="size-3.5" />
-              <span>{t.groups.createGroup}</span>
-            </Button>
-          </div>
-        )}
-      </div>
-
-      <DeviceSelectorBar
-        devices={deviceState.devices}
-        selectedDevice={deviceState.selectedDevice}
-        selectedDeviceId={deviceId}
-        onSelectDevice={(id) => {
-          setSelectedGroup(null);
-          deviceState.setSelectedDeviceId(id);
-        }}
-        isLoading={deviceState.isLoading}
-        isFetching={groupsQuery.isFetching}
-        error={deviceState.error}
-        onRefresh={() => {
-          void deviceState.refetch();
-          if (deviceId) void groupsQuery.refetch();
-        }}
-      />
-
-      {deviceId && (
-        <>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="relative w-full max-w-sm">
-              <Search className="pointer-events-none absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={t.groups.searchPlaceholder}
-                className="ps-8 text-sm"
+    <>
+      <SplitWorkspace
+        storageKey={SIDEBAR_STORAGE_KEY}
+        showDetailOnMobile={Boolean(mobileShowDetail && selectedItem)}
+        sidebar={
+          <GroupsSidebar
+            items={items}
+            groupsCount={groupsCount}
+            newslettersCount={newslettersCount}
+            accounts={accounts}
+            selectedKey={selectedKey}
+            selectedDeviceIds={selectedDeviceIds}
+            kindFilter={kindFilter}
+            search={search}
+            isLoading={query.isLoading}
+            isFetching={query.isFetching}
+            errorMessage={apiErr ? apiErr.message : null}
+            canAct={actionableAccounts.length > 0}
+            onSelectedDeviceIdsChange={setSelectedDeviceIds}
+            onKindFilterChange={setKindFilter}
+            onSearchChange={setSearch}
+            onRefresh={() => void query.refetch()}
+            onSelect={(item) => {
+              setSelectedKey(directoryItemKey(item));
+              setMobileShowDetail(true);
+            }}
+            onOpenCreate={() => {
+              setTargetDeviceId(defaultTargetDeviceId);
+              setCreateOpen(true);
+            }}
+            onOpenJoin={() => {
+              setTargetDeviceId(defaultTargetDeviceId);
+              setJoinLink('');
+              setJoinOpen(true);
+            }}
+            onOpenPreview={() => {
+              setTargetDeviceId(defaultTargetDeviceId);
+              setPreviewInfo(null);
+              setPreviewLink('');
+              setPreviewOpen(true);
+            }}
+          />
+        }
+        detail={
+          selectedItem ? (
+            selectedItem.kind === 'group' ? (
+              <GroupWorkspacePanel
+                key={directoryItemKey(selectedItem)}
+                item={selectedItem}
+                onBack={() => setMobileShowDetail(false)}
+                onChanged={() => void queryClient.invalidateQueries({queryKey: ['unified-groups']})}
               />
-            </div>
-            <span className="text-xs tabular-nums text-muted-foreground">
-              {filteredGroups.length} / {allGroups.length}
-            </span>
-          </div>
-
-          {groupsQuery.isLoading ? (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {[0, 1, 2].map((i) => (
-                <Skeleton key={i} className="h-36 rounded-xl" />
-              ))}
-            </div>
-          ) : groupsQuery.error ? (
-            <div className="flex items-center justify-between gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-              <div className="flex items-center gap-2">
-                <AlertCircle className="size-4 shrink-0" />
-                <span>{toApiError(groupsQuery.error).message}</span>
-              </div>
-              <Button variant="outline" size="sm" onClick={() => void groupsQuery.refetch()}>
-                {t.retry}
-              </Button>
-            </div>
-          ) : allGroups.length === 0 ? (
-            <div className="rounded-xl border border-border bg-card p-10 text-center">
-              <UsersRound className="mx-auto size-8 text-muted-foreground" />
-              <p className="mt-2 text-sm text-muted-foreground">{t.groups.empty}</p>
-            </div>
-          ) : filteredGroups.length === 0 ? (
-            <div className="rounded-xl border border-border bg-card p-10 text-center">
-              <p className="text-sm text-muted-foreground">{t.groups.noSearchMatches}</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {filteredGroups.map((group) => {
-                const count = group.ParticipantCount ?? group.Participants?.length ?? 0;
-                return (
-                  <button
-                    key={group.JID}
-                    type="button"
-                    onClick={() => setSelectedGroup(group)}
-                    className="flex flex-col justify-between rounded-xl border border-border bg-card p-4 text-start transition-colors hover:border-primary/40 hover:bg-muted/20 cursor-pointer"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-3">
-                        <ContactAvatar
-                          deviceId={deviceId}
-                          jid={group.JID}
-                          name={group.Name || group.JID}
-                          sizeClass="size-10"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <h3 className="truncate text-sm font-semibold text-foreground">
-                            {group.Name || group.JID}
-                          </h3>
-                          <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" dir="ltr">
-                            {group.JID}
-                          </p>
-                        </div>
-                      </div>
-                      {group.Topic && (
-                        <p className="mt-2.5 line-clamp-2 text-xs text-muted-foreground">
-                          {group.Topic}
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3 text-xs text-muted-foreground">
-                      <span className="tabular-nums font-medium text-foreground">
-                        {t.groups.membersCount(count)}
-                      </span>
-                      {group.IsLocked && (
-                        <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
-                          · <Lock className="size-3" /> {t.groups.lockedLabel}
-                        </span>
-                      )}
-                      {group.IsAnnounce && (
-                        <span className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400">
-                          · <Megaphone className="size-3" /> {t.groups.announceLabel}
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </>
-      )}
-
-      {/* Group Detail Modal */}
-      <GroupDetailDialog
-        deviceId={deviceId}
-        group={selectedGroup}
-        onClose={() => setSelectedGroup(null)}
-        onChanged={() => void queryClient.invalidateQueries({queryKey: ['groups', deviceId]})}
+            ) : (
+              <NewsletterWorkspacePanel
+                key={directoryItemKey(selectedItem)}
+                item={selectedItem}
+                onBack={() => setMobileShowDetail(false)}
+                onChanged={() => void queryClient.invalidateQueries({queryKey: ['unified-groups']})}
+              />
+            )
+          ) : null
+        }
+        emptyState={
+          <WorkspaceEmptyState
+            icon={UsersRound}
+            title={t.groups.selectItemPrompt}
+            hint={t.groups.selectItemHint}
+          />
+        }
       />
 
       {/* Create Group Dialog */}
@@ -281,10 +268,12 @@ export default function GroupsPage() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            if (!resolvedTargetDeviceId) return;
             createMutation.mutate();
           }}
           className="space-y-4"
         >
+          {renderTargetAccountSelect('create-group-account')}
           <div>
             <Label htmlFor="create-group-title">{t.groups.titleLabel}</Label>
             <Input
@@ -312,7 +301,10 @@ export default function GroupsPage() {
             <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
               {t.cancel}
             </Button>
-            <Button type="submit" disabled={createMutation.isPending || !newTitle.trim()}>
+            <Button
+              type="submit"
+              disabled={createMutation.isPending || !newTitle.trim() || !resolvedTargetDeviceId}
+            >
               {t.groups.createGroup}
             </Button>
           </div>
@@ -324,10 +316,12 @@ export default function GroupsPage() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            if (!resolvedTargetDeviceId) return;
             joinMutation.mutate();
           }}
           className="space-y-4"
         >
+          {renderTargetAccountSelect('join-group-account')}
           <div>
             <Label htmlFor="join-link-input">{t.groups.inviteLinkLabel}</Label>
             <Input
@@ -344,7 +338,10 @@ export default function GroupsPage() {
             <Button type="button" variant="outline" onClick={() => setJoinOpen(false)}>
               {t.cancel}
             </Button>
-            <Button type="submit" disabled={joinMutation.isPending || !joinLink.trim()}>
+            <Button
+              type="submit"
+              disabled={joinMutation.isPending || !joinLink.trim() || !resolvedTargetDeviceId}
+            >
               {t.groups.joinWithLink}
             </Button>
           </div>
@@ -356,10 +353,12 @@ export default function GroupsPage() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            if (!resolvedTargetDeviceId) return;
             previewMutation.mutate();
           }}
           className="space-y-4"
         >
+          {renderTargetAccountSelect('preview-group-account')}
           <div className="flex items-end gap-2">
             <div className="min-w-0 flex-1">
               <Label htmlFor="preview-link-input">{t.groups.inviteLinkLabel}</Label>
@@ -373,7 +372,10 @@ export default function GroupsPage() {
                 required
               />
             </div>
-            <Button type="submit" disabled={previewMutation.isPending || !previewLink.trim()}>
+            <Button
+              type="submit"
+              disabled={previewMutation.isPending || !previewLink.trim() || !resolvedTargetDeviceId}
+            >
               {t.groups.previewSubmit}
             </Button>
           </div>
@@ -392,7 +394,9 @@ export default function GroupsPage() {
               </dd>
             </div>
             <div className="flex items-center justify-between gap-4 px-3.5 py-2.5">
-              <dt className="text-muted-foreground">{t.groups.membersCount(previewInfo.participant_count)}</dt>
+              <dt className="text-muted-foreground">
+                {t.groups.membersCount(previewInfo.participant_count)}
+              </dt>
               <dd className="tabular-nums text-foreground">{previewInfo.participant_count}</dd>
             </div>
             {(previewInfo.topic || previewInfo.description) && (
@@ -406,6 +410,6 @@ export default function GroupsPage() {
           </dl>
         )}
       </Dialog>
-    </div>
+    </>
   );
 }

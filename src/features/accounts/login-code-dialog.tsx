@@ -8,6 +8,7 @@ import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
+import {copyTextWithFallback} from '@/lib/clipboard';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 
@@ -71,9 +72,13 @@ export function LoginCodeDialog({
 
   const handleCopy = async () => {
     if (!pairCode) return;
-    await navigator.clipboard.writeText(pairCode);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 2_000);
+    const ok = await copyTextWithFallback(pairCode);
+    if (ok) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2_000);
+    } else {
+      toast.error(t.chats.copyFailedToast);
+    }
   };
 
   return (

@@ -10,7 +10,7 @@ import {Label} from '@/components/ui/label';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 
-export function CreateDeviceDialog() {
+export function CreateDeviceDialog({compact = false}: {compact?: boolean}) {
   const queryClient = useQueryClient();
   const {t} = useI18n();
   const [open, setOpen] = useState(false);
@@ -43,10 +43,22 @@ export function CreateDeviceDialog() {
 
   return (
     <>
-      <Button onClick={() => setOpen(true)}>
-        <Plus className="size-4" />
-        <span>{t.accounts.addAccount}</span>
-      </Button>
+      {compact ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          title={t.accounts.addAccount}
+          aria-label={t.accounts.addAccount}
+          className="flex size-9 cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90"
+        >
+          <Plus className="size-4" />
+        </button>
+      ) : (
+        <Button onClick={() => setOpen(true)}>
+          <Plus className="size-4" />
+          <span>{t.accounts.addAccount}</span>
+        </Button>
+      )}
 
       <Dialog
         open={open}
@@ -77,7 +89,7 @@ export function CreateDeviceDialog() {
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" onClick={() => setOpen(false)}>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               {t.cancel}
             </Button>
             <Button type="submit" disabled={mutation.isPending}>

@@ -1,5 +1,5 @@
-import {useState} from 'react';
-import {useQuery} from '@tanstack/react-query';
+import {useEffect, useRef, useState} from 'react';
+import {useQuery, useQueryClient} from '@tanstack/react-query';
 import {
   CalendarClock,
   LogOut,
@@ -20,7 +20,16 @@ import {toast} from 'sonner';
 import {listUnifiedChats, logoutUser, updateMyTheme} from '@/api/client';
 import {LanguageToggle} from '@/components/language-toggle';
 import {Button} from '@/components/ui/button';
+import {NotificationControls} from '@/features/notifications/notification-controls';
+import {onWsEvent} from '@/lib/events';
 import {useI18n} from '@/lib/i18n';
+import {
+  extractIncomingAlertData,
+  formatUnreadTabTitle,
+  getBrowserNotificationPermission,
+  playIncomingMessageChime,
+  useNotificationPrefsStore,
+} from '@/lib/notifications';
 import {cn} from '@/lib/utils';
 import {wsClient, useWsStore} from '@/lib/ws';
 import {useAuthStore} from '@/stores/auth';
@@ -28,13 +37,17 @@ import {useAuthStore} from '@/stores/auth';
 export function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
+  const queryClient = useQueryClient();
   const {t} = useI18n();
   const user = useAuthStore((s) => s.user);
   const theme = useAuthStore((s) => s.theme);
   const setThemeLocal = useAuthStore((s) => s.setThemeLocal);
   const clearSession = useAuthStore((s) => s.clearSession);
   const wsStatus = useWsStore((s) => s.status);
+  const soundEnabled = useNotificationPrefsStore((s) => s.soundEnabled);
+  const browserEnabled = useNotificationPrefsStore((s) => s.browserEnabled);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const notifiedIdsRef = useRef<Set<string>>(new Set());
 
   const unreadQuery = useQuery({
     queryKey: ['unified-chats', [], '', false],
@@ -44,6 +57,91 @@ export function AppShell() {
     staleTime: 20_000,
   });
   const totalUnread = unreadQuery.data?.total_unread ?? 0;
+  const accounts = unreadQuery.data?.accounts ?? [];
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const baseTitle = `${t.appName} — ${t.appSubtitle}`;
+    document.title = formatUnreadTabTitle(totalUnread, baseTitle);
+    return () => {
+      document.title = baseTitle;
+    };
+  }, [t.appName, t.appSubtitle, totalUnread]);
+
+  useEffect(() => {
+    if (!user) return;
+    return onWsEvent((event) => {
+      const code = (event.code || '').toUpperCase();
+      if (
+        !location.pathname.startsWith('/chats') &&
+        (code === 'MESSAGE_RECEIVED' ||
+          code === 'MESSAGE' ||
+          code === 'CHAT_UPDATED' ||
+          code === 'MESSAGE_REVOKED' ||
+          code === 'MESSAGE.REVOKED' ||
+          code === 'MESSAGE_DELETED' ||
+          code === 'MESSAGE.DELETED')
+      ) {
+        void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+      }
+
+      const alert = extractIncomingAlertData(event);
+      if (!alert) return;
+
+      const dedupeKey = `${alert.deviceId}::${alert.messageId}`;
+      if (notifiedIdsRef.current.has(dedupeKey)) return;
+      if (notifiedIdsRef.current.size >= 200) {
+        notifiedIdsRef.current.clear();
+      }
+      notifiedIdsRef.current.add(dedupeKey);
+
+      if (soundEnabled) {
+        playIncomingMessageChime();
+      }
+
+      const isTabInactive =
+        typeof document !== 'undefined' &&
+        (document.visibilityState !== 'visible' || !document.hasFocus());
+      if (
+        browserEnabled &&
+        isTabInactive &&
+        getBrowserNotificationPermission() === 'granted'
+      ) {
+        const accountName =
+          accounts.find((a) => a.id === alert.deviceId)?.display_name ?? alert.deviceId;
+        const bodyText =
+          alert.body ||
+          (alert.mediaType ? t.chats.mediaLabels[alert.mediaType] || t.messageFallback : t.messageFallback);
+        try {
+          const notif = new Notification(
+            t.nav.newMessageFromAccount(alert.senderName, accountName),
+            {
+              body: bodyText,
+              tag: `${alert.deviceId}::${alert.chatJid}`,
+            },
+          );
+          notif.onclick = () => {
+            window.focus();
+            navigate(
+              `/chats?device=${encodeURIComponent(alert.deviceId)}&jid=${encodeURIComponent(alert.chatJid)}`,
+            );
+            notif.close();
+          };
+        } catch {
+          // Ignore browser Notification construction errors
+        }
+      }
+    });
+  }, [
+    accounts,
+    browserEnabled,
+    location.pathname,
+    navigate,
+    queryClient,
+    soundEnabled,
+    t,
+    user,
+  ]);
 
   const primaryNav = [
     {to: '/chats', label: t.nav.chats, icon: MessagesSquare, adminOnly: false},
@@ -67,7 +165,12 @@ export function AppShell() {
     typeof document !== 'undefined'
       ? document.documentElement.classList.contains('dark')
       : theme !== 'light';
-  const isChatsRoute = location.pathname.startsWith('/chats');
+  const isWorkspaceRoute =
+    location.pathname.startsWith('/chats') ||
+    location.pathname.startsWith('/groups') ||
+    location.pathname.startsWith('/accounts') ||
+    location.pathname.startsWith('/account') ||
+    location.pathname.startsWith('/misc');
 
   const wsTitle =
     wsStatus === 'connected'
@@ -158,6 +261,8 @@ export function AppShell() {
 
         {/* Bottom Utility & Profile Rail Group */}
         <div className="flex flex-col items-center gap-1.5">
+          <NotificationControls />
+
           <LanguageToggle compact />
 
           <button
@@ -284,6 +389,7 @@ export function AppShell() {
           </div>
 
           <div className="flex items-center gap-1.5">
+            <NotificationControls compactMobile />
             <LanguageToggle compact />
             <Button
               variant="ghost"
@@ -309,10 +415,10 @@ export function AppShell() {
         <main
           className={cn(
             'min-h-0 flex-1',
-            isChatsRoute ? 'overflow-hidden p-0' : 'overflow-y-auto p-4 md:p-6',
+            isWorkspaceRoute ? 'overflow-hidden p-0' : 'overflow-y-auto p-4 md:p-6',
           )}
         >
-          <div className={cn(isChatsRoute ? 'h-full w-full' : 'mx-auto max-w-6xl')}>
+          <div className={cn(isWorkspaceRoute ? 'h-full w-full' : 'mx-auto max-w-6xl')}>
             <Outlet />
           </div>
         </main>

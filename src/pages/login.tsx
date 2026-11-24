@@ -26,11 +26,15 @@ export default function LoginPage() {
     setError(null);
     setSubmitting(true);
     try {
-      const {token, user} = await loginUser({
+      const session = await loginUser({
         username: username.trim(),
         password,
       });
-      setSession(token, user);
+      if (!session?.token || !session?.user) {
+        setError(t.login.incompleteSession);
+        return;
+      }
+      setSession(session.token, session.user);
       try {
         const status = await getAuthStatus();
         useAuthStore.getState().setGowaConfigured(status.gowaConfigured);

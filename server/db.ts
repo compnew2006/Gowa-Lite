@@ -40,12 +40,12 @@ const dbPath =
 
 export const db = new DatabaseSync(dbPath);
 
-function queryAll<T>(sql: string, ...params: SQLInputValue[]): T[] {
-  return db.prepare(sql).all(...params) as unknown as T[];
+function queryAll<T extends object>(sql: string, ...params: SQLInputValue[]): T[] {
+  return db.prepare(sql).all(...params) as T[];
 }
 
-function queryOne<T>(sql: string, ...params: SQLInputValue[]): T | undefined {
-  return db.prepare(sql).get(...params) as unknown as T | undefined;
+function queryOne<T extends object>(sql: string, ...params: SQLInputValue[]): T | undefined {
+  return db.prepare(sql).get(...params) as T | undefined;
 }
 
 db.exec(`
@@ -693,6 +693,21 @@ function rowToMessagePayload(row: CachedMessageRow): CachedMessagePayload {
     revoked_at: row.revoked_at || undefined,
     revoked_by: row.revoked_by || undefined,
   };
+}
+
+export function getCachedMessage(
+  deviceId: string,
+  chatJid: string,
+  messageId: string,
+): CachedMessagePayload | null {
+  if (!deviceId || !chatJid || !messageId) return null;
+  const row = queryOne<CachedMessageRow>(
+    'SELECT * FROM cached_messages WHERE device_id = ? AND chat_jid = ? AND id = ?',
+    deviceId,
+    chatJid,
+    messageId,
+  );
+  return row ? rowToMessagePayload(row) : null;
 }
 
 export function upsertCachedMessages(
@@ -1379,6 +1394,39 @@ export function deleteConversationNote(
     .prepare('DELETE FROM conversation_notes WHERE id = ? AND device_id = ? AND chat_jid = ?')
     .run(noteId, deviceId, chatJid);
   return info.changes > 0;
+}
+
+const DEFAULT_AVATAR_RETENTION_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+
+export function cleanupExpiredRecords(options?: {
+  nowMs?: number;
+  avatarMaxAgeMs?: number;
+}): {deletedSessions: number; deletedAvatars: number} {
+  const nowMs = options?.nowMs ?? Date.now();
+  const avatarMaxAgeMs = options?.avatarMaxAgeMs ?? DEFAULT_AVATAR_RETENTION_MS;
+  const expiredSessions = db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(nowMs);
+  const staleAvatars = db
+    .prepare('DELETE FROM contact_avatars WHERE updated_at < ?')
+    .run(nowMs - avatarMaxAgeMs);
+
+  return {
+    deletedSessions: Number(expiredSessions.changes),
+    deletedAvatars: Number(staleAvatars.changes),
+  };
+}
+
+export function closeDatabaseSafely(): void {
+  try {
+    if (!db.isOpen) return;
+    try {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+    } catch {
+      // Ignore checkpoint failure if already closing
+    }
+    db.close();
+  } catch {
+    // Already closed
+  }
 }
 
 

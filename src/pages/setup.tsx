@@ -42,7 +42,7 @@ export default function SetupPage() {
 
     setSubmitting(true);
     try {
-      const {token, user} = await submitInitialSetup({
+      const session = await submitInitialSetup({
         display_name: displayName.trim(),
         username: username.trim(),
         password,
@@ -50,7 +50,11 @@ export default function SetupPage() {
         gowa_username: gowaUsername.trim() || undefined,
         gowa_password: gowaPassword || undefined,
       });
-      setSession(token, user, Boolean(gowaUrl.trim()));
+      if (!session?.token || !session?.user) {
+        setError(t.login.incompleteSession);
+        return;
+      }
+      setSession(session.token, session.user, Boolean(gowaUrl.trim()));
       wsClient.sync();
       toast.success(t.setup.successToast);
       navigate('/chats', {replace: true});

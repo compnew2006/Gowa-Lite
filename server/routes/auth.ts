@@ -381,10 +381,14 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
       return;
     }
 
-    const displayName =
-      typeof body.display_name === 'string' && body.display_name.trim().length >= 2
-        ? body.display_name.trim()
-        : undefined;
+    let displayName: string | undefined;
+    if (body.display_name !== undefined) {
+      if (typeof body.display_name !== 'string' || body.display_name.trim().length < 2) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'الاسم الكامل مطلوب'});
+        return;
+      }
+      displayName = body.display_name.trim();
+    }
 
     const updated = await updateUserAsync(targetId, {
       display_name: displayName,

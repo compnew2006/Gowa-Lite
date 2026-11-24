@@ -1,10 +1,148 @@
 import type {Router} from 'express';
-import {gowaFetch} from '../gowa-client.ts';
+import {getAccountAliases, parseTimestampMs} from '../db.ts';
+import {
+  GowaError,
+  gowaFetch,
+  type GowaDevice,
+  type GowaMessageInfo,
+  type GowaPagination,
+} from '../gowa-client.ts';
 import {createApiRouter, handleRouteError, requireAdmin, requireAuth} from '../middleware/auth.ts';
 import {decodeRouteParam} from '../security.ts';
+import {normalizeWhatsAppJid, resolveAccountDisplayName} from '../services/chat-sync.ts';
 
 export function registerMiscRoutes(): Router {
   const router = createApiRouter();
+
+  router.get('/api/misc/statuses', requireAuth, requireAdmin, async (req, res) => {
+    const rawDeviceIds =
+      typeof req.query.deviceIds === 'string' ? req.query.deviceIds : '';
+    const selectedDeviceSet = new Set(
+      rawDeviceIds
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean),
+    );
+
+    try {
+      const aliases = getAccountAliases();
+      const devices = (await gowaFetch<GowaDevice[]>('/devices')) ?? [];
+      const targetDevices =
+        selectedDeviceSet.size > 0
+          ? devices.filter((d) => selectedDeviceSet.has(d.id))
+          : devices;
+
+      const statusCounts = new Map<string, number>();
+      const deviceErrors: Array<{device_id: string; display_name: string; message: string}> = [];
+      const items: Array<
+        GowaMessageInfo & {
+          device_id: string;
+          device_display_name: string;
+          device_state: GowaDevice['state'];
+          sender_display_name: string;
+        }
+      > = [];
+
+      await Promise.all(
+        targetDevices.map(async (dev) => {
+          const displayName = resolveAccountDisplayName(dev, aliases);
+          statusCounts.set(dev.id, 0);
+          if (dev.state !== 'logged_in' && dev.state !== 'connected') {
+            return;
+          }
+          try {
+            const [msgRes, contactsRes] = await Promise.all([
+              gowaFetch<{data?: GowaMessageInfo[]; pagination?: GowaPagination} | null>(
+                '/chat/status@broadcast/messages',
+                {
+                  deviceId: dev.id,
+                  query: {limit: 50, offset: 0},
+                  timeoutMs: 12_000,
+                },
+              ).catch((err) => {
+                if (err instanceof GowaError && err.status === 404) {
+                  return null;
+                }
+                throw err;
+              }),
+              gowaFetch<{data?: Array<{jid?: string; name?: string}>} | null>(
+                '/user/my/contacts',
+                {
+                  deviceId: dev.id,
+                  timeoutMs: 3_500,
+                },
+              ).catch(() => null),
+            ]);
+
+            const contactNames = new Map<string, string>();
+            for (const c of contactsRes?.data ?? []) {
+              if (c.jid && c.name?.trim()) {
+                contactNames.set(c.jid.trim().toLowerCase(), c.name.trim());
+                const norm = normalizeWhatsAppJid(c.jid);
+                if (norm) contactNames.set(norm, c.name.trim());
+              }
+            }
+
+            const rawMessages = msgRes?.data ?? [];
+            let count = 0;
+            for (const msg of rawMessages) {
+              if (!msg || !msg.id) continue;
+              if (msg.is_revoked || msg.media_type === 'revoked') continue;
+              const senderJid = (msg.sender_jid || '').trim();
+              const normalizedSender = normalizeWhatsAppJid(senderJid) || senderJid.toLowerCase();
+              const resolvedSenderName =
+                msg.sender_display_name?.trim() ||
+                contactNames.get(senderJid.toLowerCase()) ||
+                contactNames.get(normalizedSender) ||
+                senderJid.split('@')[0].split(':')[0] ||
+                displayName;
+
+              count += 1;
+              items.push({
+                ...msg,
+                chat_jid: 'status@broadcast',
+                sender_jid: normalizedSender || senderJid,
+                sender_display_name: resolvedSenderName,
+                device_id: dev.id,
+                device_display_name: displayName,
+                device_state: dev.state,
+              });
+            }
+            statusCounts.set(dev.id, count);
+          } catch (err) {
+            const msg = err instanceof GowaError ? err.message : 'تعذر جلب الحالات';
+            deviceErrors.push({
+              device_id: dev.id,
+              display_name: displayName,
+              message: msg,
+            });
+          }
+        }),
+      );
+
+      items.sort((a, b) => parseTimestampMs(b.timestamp) - parseTimestampMs(a.timestamp));
+
+      const accounts = devices.map((dev) => ({
+        id: dev.id,
+        display_name: resolveAccountDisplayName(dev, aliases),
+        phone_number: dev.phone_number,
+        state: dev.state,
+        status_count: statusCounts.get(dev.id) ?? 0,
+      }));
+
+      res.json({
+        code: 'SUCCESS',
+        message: 'ok',
+        results: {
+          data: items,
+          accounts,
+          device_errors: deviceErrors,
+        },
+      });
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
 
   router.get('/api/devices/:deviceId/newsletters', requireAuth, requireAdmin, async (req, res) => {
     const deviceId = decodeRouteParam(req.params.deviceId);

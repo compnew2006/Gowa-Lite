@@ -35,6 +35,8 @@ import type {
   ScheduleList,
   ThemePreference,
   UnifiedChatsResponse,
+  UnifiedGroupsResponse,
+  UnifiedStatusesResponse,
   User,
   UserInfoResponse,
   UserRole,
@@ -218,6 +220,8 @@ export function listUnifiedChats(params: {
   deviceIds?: string[];
   search?: string;
   has_media?: boolean;
+  limit?: number;
+  offset?: number;
 }): Promise<UnifiedChatsResponse> {
   return results(
     http.get('/unified/chats', {
@@ -225,6 +229,8 @@ export function listUnifiedChats(params: {
         deviceIds: params.deviceIds && params.deviceIds.length > 0 ? params.deviceIds.join(',') : undefined,
         search: params.search || undefined,
         has_media: params.has_media ? 'true' : undefined,
+        limit: params.limit,
+        offset: params.offset,
       },
     }),
   );
@@ -269,6 +275,28 @@ export function sendUnifiedTextMessage(
   );
 }
 
+export async function sendUnifiedMediaMessage(
+  deviceId: string,
+  chatJid: string,
+  payload: {file: File; caption?: string},
+): Promise<{message_id: string; status: string}> {
+  const buffer = await payload.file.arrayBuffer();
+  const caption = payload.caption?.trim();
+  return results(
+    http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/send-media`, buffer, {
+      timeout: 60_000,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+      },
+      params: {
+        filename: payload.file.name || 'attachment',
+        mimeType: payload.file.type || 'application/octet-stream',
+        ...(caption ? {caption} : {}),
+      },
+    }),
+  );
+}
+
 export function sendUnifiedMessageReaction(
   deviceId: string,
   chatJid: string,
@@ -279,6 +307,39 @@ export function sendUnifiedMessageReaction(
     http.post(
       `/unified/chats/${enc(deviceId)}/${enc(chatJid)}/messages/${enc(messageId)}/reaction`,
       {emoji},
+    ),
+  );
+}
+
+export function revokeUnifiedMessage(
+  deviceId: string,
+  chatJid: string,
+  messageId: string,
+): Promise<unknown> {
+  return results(
+    http.post(
+      `/unified/chats/${enc(deviceId)}/${enc(chatJid)}/messages/${enc(messageId)}/revoke`,
+    ),
+  );
+}
+
+export function forwardUnifiedMessage(
+  deviceId: string,
+  chatJid: string,
+  messageId: string,
+  payload: {
+    target_device_id: string;
+    target_jid: string;
+    content?: string;
+    media_type?: string;
+    filename?: string;
+    url?: string;
+  },
+): Promise<{message_id?: string; target_device_id: string; target_jid: string}> {
+  return results(
+    http.post(
+      `/unified/chats/${enc(deviceId)}/${enc(chatJid)}/messages/${enc(messageId)}/forward`,
+      payload,
     ),
   );
 }
@@ -386,6 +447,7 @@ export function downloadUnifiedMedia(
   messageId: string,
   phone: string,
   fallbackUrl?: string,
+  signal?: AbortSignal,
 ): Promise<DownloadedMedia> {
   return results(
     http.get('/unified/media/download', {
@@ -395,8 +457,29 @@ export function downloadUnifiedMedia(
         phone,
         fallbackUrl: fallbackUrl || undefined,
       },
+      signal,
     }),
   );
+}
+
+export async function fetchAuthorizedMediaBytes(
+  urlPath: string,
+  signal?: AbortSignal,
+): Promise<{bytes: Uint8Array<ArrayBuffer>; contentType: string}> {
+  const response = await http.get<ArrayBuffer>(urlPath, {
+    baseURL: '',
+    responseType: 'arraybuffer',
+    signal,
+  });
+  const contentTypeHeader = response.headers['content-type'];
+  const contentType =
+    typeof contentTypeHeader === 'string'
+      ? contentTypeHeader.split(';')[0].trim().toLowerCase()
+      : 'application/octet-stream';
+  return {
+    bytes: new Uint8Array(response.data),
+    contentType,
+  };
 }
 
 // Scheduled Sends (Admin, per-device)
@@ -434,7 +517,18 @@ export async function actionSchedule(
   await http.post(`/devices/${enc(deviceId)}/schedules/${enc(scheduleId)}/${action}`);
 }
 
-// Groups (Admin, per-device)
+// Groups & Newsletters (Admin, unified + per-device)
+export function listUnifiedGroups(params?: {deviceIds?: string[]}): Promise<UnifiedGroupsResponse> {
+  return results(
+    http.get('/unified/groups', {
+      params: {
+        deviceIds:
+          params?.deviceIds && params.deviceIds.length > 0 ? params.deviceIds.join(',') : undefined,
+      },
+    }),
+  );
+}
+
 export async function listGroups(deviceId: string): Promise<MyGroup[]> {
   const res = await results<MyGroup[] | null>(http.get(`/devices/${enc(deviceId)}/groups`));
   return res ?? [];
@@ -751,4 +845,20 @@ export async function rejectCall(
   payload: {caller_jid: string; call_id: string},
 ): Promise<void> {
   await http.post(`/devices/${enc(deviceId)}/call/reject`, payload);
+}
+
+export async function listMiscStatuses(deviceIds?: string[]): Promise<UnifiedStatusesResponse> {
+  const res = await results<UnifiedStatusesResponse | null>(
+    http.get('/misc/statuses', {
+      params:
+        deviceIds && deviceIds.length > 0 ? {deviceIds: deviceIds.join(',')} : undefined,
+    }),
+  );
+  return (
+    res ?? {
+      data: [],
+      accounts: [],
+      device_errors: [],
+    }
+  );
 }
