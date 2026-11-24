@@ -10,6 +10,8 @@ import {
   deleteSession,
   deleteUser,
   getGowaConfig,
+  getRoleById,
+  getRoleBySlug,
   getSessionUser,
   getUserById,
   hasAnyUsers,
@@ -28,11 +30,18 @@ import {
   createApiRouter,
   extractAuthToken,
   handleRouteError,
-  requireAdmin,
   requireAuth,
+  requirePermission,
   safeComparePasscode,
   setSessionCookie,
 } from '../middleware/auth.ts';
+import {
+  hasDeviceAccess,
+  hasPermission,
+  hasPermissionKey,
+  isAdminSubject,
+  normalizeDeviceIdsInput,
+} from '../rbac.ts';
 import {AuthRateLimiter, canReuseSavedGowaCredentials, getClientIp} from '../security.ts';
 import type {AuthedRequest} from '../types.ts';
 import {issueWsTicket, type GowaWsBridge} from '../ws-bridge.ts';
@@ -286,146 +295,320 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
     res.json({code: 'SUCCESS', message: 'ok', results: {ticket}});
   });
 
-  router.get('/api/users', requireAuth, requireAdmin, (_req, res) => {
+  router.get('/api/users', requireAuth, requirePermission('users', 'read'), (_req, res) => {
     res.json({code: 'SUCCESS', message: 'ok', results: listUsers()});
   });
 
-  router.post('/api/users', requireAuth, requireAdmin, async (req, res) => {
-    const body = req.body as {
-      username?: unknown;
-      display_name?: unknown;
-      password?: unknown;
-      role?: unknown;
-    };
-    const username = typeof body.username === 'string' ? body.username.trim() : '';
-    const displayName = typeof body.display_name === 'string' ? body.display_name.trim() : '';
-    const password = typeof body.password === 'string' ? body.password : '';
-    const role: UserRole = body.role === 'admin' ? 'admin' : 'agent';
+  router.post(
+    '/api/users',
+    requireAuth,
+    requirePermission('users', 'write'),
+    async (req: AuthedRequest, res) => {
+      const body = req.body as {
+        username?: unknown;
+        display_name?: unknown;
+        password?: unknown;
+        role?: unknown;
+        role_id?: unknown;
+        allowed_device_ids?: unknown;
+      };
+      const username = typeof body.username === 'string' ? body.username.trim() : '';
+      const displayName = typeof body.display_name === 'string' ? body.display_name.trim() : '';
+      const password = typeof body.password === 'string' ? body.password : '';
 
-    if (displayName.length < 2) {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'الاسم الكامل مطلوب'});
-      return;
-    }
-    if (!/^[a-zA-Z0-9._-]{3,32}$/.test(username)) {
-      res.status(400).json({
-        code: 'VALIDATION_ERROR',
-        message: 'اسم الدخول يجب أن يكون بين 3 و 32 حرفًا إنجليزيًا أو رقمًا',
-      });
-      return;
-    }
-    if (password.length < 8) {
-      res.status(400).json({
-        code: 'VALIDATION_ERROR',
-        message: 'كلمة المرور يجب أن لا تقل عن 8 أحرف',
-      });
-      return;
-    }
-
-    try {
-      const created = await createUserAsync({username, display_name: displayName, role, password});
-      res.status(201).json({code: 'SUCCESS', message: 'تم إضافة المستخدم بنجاح', results: created});
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : '';
-      if (msg.includes('UNIQUE')) {
-        res.status(409).json({code: 'USERNAME_TAKEN', message: 'اسم الدخول مستخدم بالفعل'});
-        return;
-      }
-      handleRouteError(res, err);
-    }
-  });
-
-  router.patch('/api/users/:id', requireAuth, requireAdmin, async (req: AuthedRequest, res) => {
-    const targetId = Number(req.params.id);
-    if (!Number.isInteger(targetId) || targetId <= 0) {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المستخدم غير صالح'});
-      return;
-    }
-    const existing = getUserById(targetId);
-    if (!existing) {
-      res.status(404).json({code: 'NOT_FOUND', message: 'المستخدم غير موجود'});
-      return;
-    }
-
-    const body = req.body as {
-      display_name?: unknown;
-      role?: unknown;
-      is_active?: unknown;
-      password?: unknown;
-    };
-
-    const nextRole =
-      body.role === 'admin' || body.role === 'agent' ? (body.role as UserRole) : existing.role;
-    const nextActive =
-      typeof body.is_active === 'boolean' ? body.is_active : existing.is_active;
-
-    if (
-      existing.role === 'admin' &&
-      existing.is_active &&
-      (nextRole !== 'admin' || !nextActive) &&
-      countActiveAdmins() <= 1
-    ) {
-      res.status(400).json({
-        code: 'LAST_ADMIN_PROTECTED',
-        message: 'لا يمكن تعطيل أو تخفيض صلاحية آخر مسؤول نشط في النظام',
-      });
-      return;
-    }
-
-    const password =
-      typeof body.password === 'string' && body.password.length > 0 ? body.password : undefined;
-    if (password !== undefined && password.length < 8) {
-      res.status(400).json({
-        code: 'VALIDATION_ERROR',
-        message: 'كلمة المرور الجديدة يجب أن لا تقل عن 8 أحرف',
-      });
-      return;
-    }
-
-    let displayName: string | undefined;
-    if (body.display_name !== undefined) {
-      if (typeof body.display_name !== 'string' || body.display_name.trim().length < 2) {
+      if (displayName.length < 2) {
         res.status(400).json({code: 'VALIDATION_ERROR', message: 'الاسم الكامل مطلوب'});
         return;
       }
-      displayName = body.display_name.trim();
-    }
+      if (!/^[a-zA-Z0-9._-]{3,32}$/.test(username)) {
+        res.status(400).json({
+          code: 'VALIDATION_ERROR',
+          message: 'اسم الدخول يجب أن يكون بين 3 و 32 حرفًا إنجليزيًا أو رقمًا',
+        });
+        return;
+      }
+      if (password.length < 8) {
+        res.status(400).json({
+          code: 'VALIDATION_ERROR',
+          message: 'كلمة المرور يجب أن لا تقل عن 8 أحرف',
+        });
+        return;
+      }
 
-    const updated = await updateUserAsync(targetId, {
-      display_name: displayName,
-      role: nextRole,
-      is_active: nextActive,
-      password,
-    });
-    res.json({code: 'SUCCESS', message: 'تم تحديث بيانات المستخدم', results: updated});
-  });
+      let targetRoleId: number | undefined;
+      if (body.role_id !== undefined) {
+        const parsedId = Number(body.role_id);
+        if (!Number.isInteger(parsedId) || parsedId <= 0) {
+          res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الدور غير صالح'});
+          return;
+        }
+        targetRoleId = parsedId;
+      }
+      const legacyRole: UserRole = body.role === 'admin' ? 'admin' : 'agent';
+      const targetRole =
+        targetRoleId !== undefined
+          ? getRoleById(targetRoleId)
+          : getRoleBySlug(legacyRole);
+      if (!targetRole) {
+        res.status(400).json({code: 'INVALID_ROLE', message: 'الدور المحدد غير موجود'});
+        return;
+      }
 
-  router.delete('/api/users/:id', requireAuth, requireAdmin, (req: AuthedRequest, res) => {
-    const targetId = Number(req.params.id);
-    if (!Number.isInteger(targetId) || targetId <= 0) {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المستخدم غير صالح'});
-      return;
-    }
-    if (targetId === req.user!.id) {
-      res.status(400).json({code: 'CANNOT_DELETE_SELF', message: 'لا يمكنك حذف حسابك الحالي'});
-      return;
-    }
-    const existing = getUserById(targetId);
-    if (!existing) {
-      res.status(404).json({code: 'NOT_FOUND', message: 'المستخدم غير موجود'});
-      return;
-    }
-    if (existing.role === 'admin' && existing.is_active && countActiveAdmins() <= 1) {
-      res.status(400).json({
-        code: 'LAST_ADMIN_PROTECTED',
-        message: 'لا يمكن حذف آخر مسؤول نشط في النظام',
+      let allowedDeviceIds: string[] = [];
+      if (body.allowed_device_ids !== undefined) {
+        try {
+          allowedDeviceIds = normalizeDeviceIdsInput(body.allowed_device_ids);
+        } catch (err) {
+          handleRouteError(res, err);
+          return;
+        }
+      }
+
+      if (allowedDeviceIds.length > 0 && !hasPermission(req.user!, 'accounts', 'assign')) {
+        res.status(403).json({
+          code: 'FORBIDDEN',
+          message: 'ليس لديك صلاحية تخصيص حسابات واتساب للمستخدمين',
+        });
+        return;
+      }
+
+      if (!isAdminSubject(req.user!)) {
+        if (
+          targetRole.slug === 'admin' ||
+          targetRole.permissions.some((key) => !hasPermissionKey(req.user!, key))
+        ) {
+          res.status(403).json({
+            code: 'PRIVILEGE_ESCALATION_FORBIDDEN',
+            message: 'لا يمكنك تعيين دور يحتوي على صلاحيات لا تملكها',
+          });
+          return;
+        }
+        if (req.user!.allowed_device_ids.length > 0) {
+          if (
+            allowedDeviceIds.length === 0 ||
+            allowedDeviceIds.some((id) => !hasDeviceAccess(req.user!, id))
+          ) {
+            res.status(403).json({
+              code: 'DEVICE_FORBIDDEN',
+              message: 'لا يمكنك منح وصول لحسابات واتساب غير مصرح لك بها',
+            });
+            return;
+          }
+        }
+      }
+
+      try {
+        const created = await createUserAsync({
+          username,
+          display_name: displayName,
+          role_id: targetRole.id,
+          allowed_device_ids: allowedDeviceIds,
+          password,
+        });
+        res.status(201).json({code: 'SUCCESS', message: 'تم إضافة المستخدم بنجاح', results: created});
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '';
+        if (msg.includes('UNIQUE')) {
+          res.status(409).json({code: 'USERNAME_TAKEN', message: 'اسم الدخول مستخدم بالفعل'});
+          return;
+        }
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.patch(
+    '/api/users/:id',
+    requireAuth,
+    requirePermission('users', 'write'),
+    async (req: AuthedRequest, res) => {
+      const targetId = Number(req.params.id);
+      if (!Number.isInteger(targetId) || targetId <= 0) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المستخدم غير صالح'});
+        return;
+      }
+      const existing = getUserById(targetId);
+      if (!existing) {
+        res.status(404).json({code: 'NOT_FOUND', message: 'المستخدم غير موجود'});
+        return;
+      }
+
+      const body = req.body as {
+        display_name?: unknown;
+        role?: unknown;
+        role_id?: unknown;
+        allowed_device_ids?: unknown;
+        is_active?: unknown;
+        password?: unknown;
+      };
+
+      if (!isAdminSubject(req.user!) && existing.role_slug === 'admin') {
+        res.status(403).json({
+          code: 'PRIVILEGE_ESCALATION_FORBIDDEN',
+          message: 'لا يمكنك تعديل حساب مسؤول النظام',
+        });
+        return;
+      }
+
+      let nextRoleId: number | undefined;
+      let nextRoleSlug = existing.role_slug;
+      if (body.role_id !== undefined) {
+        const parsedId = Number(body.role_id);
+        if (!Number.isInteger(parsedId) || parsedId <= 0) {
+          res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الدور غير صالح'});
+          return;
+        }
+        const targetRole = getRoleById(parsedId);
+        if (!targetRole) {
+          res.status(400).json({code: 'INVALID_ROLE', message: 'الدور المحدد غير موجود'});
+          return;
+        }
+        if (
+          !isAdminSubject(req.user!) &&
+          (targetRole.slug === 'admin' ||
+            targetRole.permissions.some((key) => !hasPermissionKey(req.user!, key)))
+        ) {
+          res.status(403).json({
+            code: 'PRIVILEGE_ESCALATION_FORBIDDEN',
+            message: 'لا يمكنك تعيين دور يحتوي على صلاحيات لا تملكها',
+          });
+          return;
+        }
+        nextRoleId = targetRole.id;
+        nextRoleSlug = targetRole.slug;
+      } else if (body.role === 'admin' || body.role === 'agent') {
+        const targetRole = getRoleBySlug(body.role);
+        if (targetRole) {
+          if (
+            !isAdminSubject(req.user!) &&
+            (targetRole.slug === 'admin' ||
+              targetRole.permissions.some((key) => !hasPermissionKey(req.user!, key)))
+          ) {
+            res.status(403).json({
+              code: 'PRIVILEGE_ESCALATION_FORBIDDEN',
+              message: 'لا يمكنك تعيين دور يحتوي على صلاحيات لا تملكها',
+            });
+            return;
+          }
+          nextRoleId = targetRole.id;
+          nextRoleSlug = targetRole.slug;
+        }
+      }
+
+      let nextAllowedDeviceIds: string[] | undefined;
+      if (body.allowed_device_ids !== undefined) {
+        if (!hasPermission(req.user!, 'accounts', 'assign')) {
+          res.status(403).json({
+            code: 'FORBIDDEN',
+            message: 'ليس لديك صلاحية تعديل حسابات واتساب المسموحة للمستخدمين',
+          });
+          return;
+        }
+        try {
+          nextAllowedDeviceIds = normalizeDeviceIdsInput(body.allowed_device_ids);
+        } catch (err) {
+          handleRouteError(res, err);
+          return;
+        }
+        if (!isAdminSubject(req.user!) && req.user!.allowed_device_ids.length > 0) {
+          if (
+            nextAllowedDeviceIds.length === 0 ||
+            nextAllowedDeviceIds.some((id) => !hasDeviceAccess(req.user!, id))
+          ) {
+            res.status(403).json({
+              code: 'DEVICE_FORBIDDEN',
+              message: 'لا يمكنك منح وصول لحسابات واتساب غير مصرح لك بها',
+            });
+            return;
+          }
+        }
+      }
+
+      const nextActive =
+        typeof body.is_active === 'boolean' ? body.is_active : existing.is_active;
+
+      if (
+        existing.role_slug === 'admin' &&
+        existing.is_active &&
+        (nextRoleSlug !== 'admin' || !nextActive) &&
+        countActiveAdmins() <= 1
+      ) {
+        res.status(400).json({
+          code: 'LAST_ADMIN_PROTECTED',
+          message: 'لا يمكن تعطيل أو تخفيض صلاحية آخر مسؤول نشط في النظام',
+        });
+        return;
+      }
+
+      const password =
+        typeof body.password === 'string' && body.password.length > 0 ? body.password : undefined;
+      if (password !== undefined && password.length < 8) {
+        res.status(400).json({
+          code: 'VALIDATION_ERROR',
+          message: 'كلمة المرور الجديدة يجب أن لا تقل عن 8 أحرف',
+        });
+        return;
+      }
+
+      let displayName: string | undefined;
+      if (body.display_name !== undefined) {
+        if (typeof body.display_name !== 'string' || body.display_name.trim().length < 2) {
+          res.status(400).json({code: 'VALIDATION_ERROR', message: 'الاسم الكامل مطلوب'});
+          return;
+        }
+        displayName = body.display_name.trim();
+      }
+
+      const updated = await updateUserAsync(targetId, {
+        display_name: displayName,
+        role_id: nextRoleId,
+        allowed_device_ids: nextAllowedDeviceIds,
+        is_active: nextActive,
+        password,
       });
-      return;
-    }
-    deleteUser(targetId);
-    res.json({code: 'SUCCESS', message: 'تم حذف المستخدم'});
-  });
+      res.json({code: 'SUCCESS', message: 'تم تحديث بيانات المستخدم', results: updated});
+    },
+  );
 
-  router.get('/api/settings/gowa', requireAuth, requireAdmin, (_req, res) => {
+  router.delete(
+    '/api/users/:id',
+    requireAuth,
+    requirePermission('users', 'delete'),
+    (req: AuthedRequest, res) => {
+      const targetId = Number(req.params.id);
+      if (!Number.isInteger(targetId) || targetId <= 0) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المستخدم غير صالح'});
+        return;
+      }
+      if (targetId === req.user!.id) {
+        res.status(400).json({code: 'CANNOT_DELETE_SELF', message: 'لا يمكنك حذف حسابك الحالي'});
+        return;
+      }
+      const existing = getUserById(targetId);
+      if (!existing) {
+        res.status(404).json({code: 'NOT_FOUND', message: 'المستخدم غير موجود'});
+        return;
+      }
+      if (!isAdminSubject(req.user!) && existing.role_slug === 'admin') {
+        res.status(403).json({
+          code: 'PRIVILEGE_ESCALATION_FORBIDDEN',
+          message: 'لا يمكنك حذف حساب مسؤول النظام',
+        });
+        return;
+      }
+      if (existing.role_slug === 'admin' && existing.is_active && countActiveAdmins() <= 1) {
+        res.status(400).json({
+          code: 'LAST_ADMIN_PROTECTED',
+          message: 'لا يمكن حذف آخر مسؤول نشط في النظام',
+        });
+        return;
+      }
+      deleteUser(targetId);
+      res.json({code: 'SUCCESS', message: 'تم حذف المستخدم'});
+    },
+  );
+
+  router.get('/api/settings/gowa', requireAuth, requirePermission('settings', 'read'), (_req, res) => {
     const config = getGowaConfig();
     res.json({
       code: 'SUCCESS',
@@ -438,7 +621,7 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
     });
   });
 
-  router.put('/api/settings/gowa', requireAuth, requireAdmin, (req, res) => {
+  router.put('/api/settings/gowa', requireAuth, requirePermission('settings', 'write'), (req, res) => {
     const body = req.body as {
       gowa_url?: unknown;
       gowa_username?: unknown;
@@ -483,40 +666,45 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
     });
   });
 
-  router.post('/api/settings/gowa/test', requireAuth, requireAdmin, async (req, res) => {
-    const body = req.body as {
-      gowa_url?: unknown;
-      gowa_username?: unknown;
-      gowa_password?: unknown;
-    };
-    const saved = getGowaConfig();
-    const url =
-      typeof body.gowa_url === 'string' && body.gowa_url.trim()
-        ? body.gowa_url.trim()
-        : saved.url;
-    const canReuseCreds = canReuseSavedGowaCredentials(url, saved.url);
-    const username =
-      typeof body.gowa_username === 'string'
-        ? body.gowa_username.trim()
-        : canReuseCreds
-          ? saved.username
-          : '';
-    const password =
-      typeof body.gowa_password === 'string' && body.gowa_password.length > 0
-        ? body.gowa_password
-        : canReuseCreds
-          ? saved.password
-          : '';
+  router.post(
+    '/api/settings/gowa/test',
+    requireAuth,
+    requirePermission('settings', 'write'),
+    async (req, res) => {
+      const body = req.body as {
+        gowa_url?: unknown;
+        gowa_username?: unknown;
+        gowa_password?: unknown;
+      };
+      const saved = getGowaConfig();
+      const url =
+        typeof body.gowa_url === 'string' && body.gowa_url.trim()
+          ? body.gowa_url.trim()
+          : saved.url;
+      const canReuseCreds = canReuseSavedGowaCredentials(url, saved.url);
+      const username =
+        typeof body.gowa_username === 'string'
+          ? body.gowa_username.trim()
+          : canReuseCreds
+            ? saved.username
+            : '';
+      const password =
+        typeof body.gowa_password === 'string' && body.gowa_password.length > 0
+          ? body.gowa_password
+          : canReuseCreds
+            ? saved.password
+            : '';
 
-    const result = await probeGowa({url, username, password});
-    res.json({
-      code: result.ok ? 'SUCCESS' : result.code || 'FAILED',
-      message: result.ok
-        ? `تم الاتصال بنجاح (${result.devicesCount} حساب)`
-        : result.error || 'فشل الاتصال',
-      results: result,
-    });
-  });
+      const result = await probeGowa({url, username, password});
+      res.json({
+        code: result.ok ? 'SUCCESS' : result.code || 'FAILED',
+        message: result.ok
+          ? `تم الاتصال بنجاح (${result.devicesCount} حساب)`
+          : result.error || 'فشل الاتصال',
+        results: result,
+      });
+    },
+  );
 
   return router;
 }

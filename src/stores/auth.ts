@@ -38,6 +38,61 @@ export function applyLanguageToDom(language: LanguagePreference): void {
   root.dir = language === 'ar' ? 'rtl' : 'ltr';
 }
 
+export function isAdminUser(user: User | null | undefined): boolean {
+  if (!user) return false;
+  return user.role_slug === 'admin' || user.role === 'admin';
+}
+
+export function hasUserPermission(user: User | null | undefined, key: string): boolean {
+  if (!user) return false;
+  if (isAdminUser(user)) return true;
+  if (Array.isArray(user.permissions) && user.permissions.length > 0) {
+    return user.permissions.includes(key);
+  }
+  return false;
+}
+
+export function hasUserAnyPermission(user: User | null | undefined, keys: string[]): boolean {
+  if (!user) return false;
+  if (isAdminUser(user)) return true;
+  return keys.some((key) => hasUserPermission(user, key));
+}
+
+export function hasUserDeviceAccess(
+  user: User | null | undefined,
+  deviceId: string | null | undefined,
+): boolean {
+  if (!user || !deviceId) return false;
+  if (!Array.isArray(user.allowed_device_ids) || user.allowed_device_ids.length === 0) {
+    return true;
+  }
+  return user.allowed_device_ids.includes(deviceId);
+}
+
+export function firstAllowedRoute(user: User | null | undefined): string {
+  if (!user) return '/login';
+  if (hasUserPermission(user, 'chats:read')) return '/chats';
+  if (hasUserAnyPermission(user, ['schedules:read', 'schedules:write', 'schedules:manage'])) {
+    return '/scheduled';
+  }
+  if (hasUserAnyPermission(user, ['groups:read', 'groups:write', 'groups:manage'])) {
+    return '/groups';
+  }
+  if (hasUserAnyPermission(user, ['accounts:read', 'accounts:write'])) return '/account';
+  if (hasUserAnyPermission(user, ['misc:status.read', 'misc:channels.manage', 'misc:calls.reject'])) {
+    return '/misc';
+  }
+  if (hasUserAnyPermission(user, ['accounts:read', 'accounts:write'])) return '/accounts';
+  if (hasUserAnyPermission(user, ['settings:read', 'settings:write'])) return '/settings';
+  if (hasUserAnyPermission(user, ['users:read', 'users:write', 'users:delete'])) {
+    return '/settings/users';
+  }
+  if (hasUserAnyPermission(user, ['roles:read', 'roles:write', 'roles:delete'])) {
+    return '/settings/roles';
+  }
+  return '/chats';
+}
+
 export const useAuthStore = create<AuthState>()((set) => ({
   status: 'booting',
   token: null,

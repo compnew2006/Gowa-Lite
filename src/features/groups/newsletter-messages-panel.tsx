@@ -20,6 +20,7 @@ import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {resolveMediaFilename} from '@/lib/media-download';
 import {cn} from '@/lib/utils';
+import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
 export function extractNewsletterBody(msg: NewsletterMessage): string {
   const payload = msg.message;
@@ -57,6 +58,8 @@ export function NewsletterMessagesPanel({
   switchId?: string;
 }) {
   const {lang, t} = useI18n();
+  const user = useAuthStore((s) => s.user);
+  const canManageChannels = hasUserPermission(user, 'misc:channels.manage');
   const newsletterId = newsletter.id;
 
   const [messages, setMessages] = useState<NewsletterMessage[]>([]);
@@ -66,7 +69,7 @@ export function NewsletterMessagesPanel({
   const [downloadingServerId, setDownloadingServerId] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!deviceId || !newsletterId) return;
+    if (!canManageChannels || !deviceId || !newsletterId) return;
     let active = true;
     setLoading(true);
     setErrorMsg(null);
@@ -86,7 +89,7 @@ export function NewsletterMessagesPanel({
     return () => {
       active = false;
     };
-  }, [deviceId, newsletterId]);
+  }, [canManageChannels, deviceId, newsletterId]);
 
   const loadOlder = async () => {
     const serverIds = messages.map((m) => m.message_server_id).filter(Number.isFinite);
@@ -168,6 +171,16 @@ export function NewsletterMessagesPanel({
       setDownloadingServerId(null);
     }
   };
+
+  if (!canManageChannels) {
+    return (
+      <div className="rounded-xl border border-border bg-card p-4 text-xs text-muted-foreground">
+        {lang === 'ar'
+          ? 'يلزم توفر صلاحية إدارة القنوات لعرض منشورات القناة وتحديثاتها المباشرة.'
+          : 'Channel management permission is required to view channel posts and live updates.'}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

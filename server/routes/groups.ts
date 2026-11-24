@@ -2,14 +2,17 @@ import type {Router} from 'express';
 import {db, getAccountAliases} from '../db.ts';
 import {GowaError, gowaFetch, gowaFetchRaw, type GowaDevice} from '../gowa-client.ts';
 import {
+  assertDeviceAccess,
   createApiRouter,
   decodeImageUpload,
   handleRouteError,
-  requireAdmin,
   requireAuth,
+  requirePermission,
 } from '../middleware/auth.ts';
+import {filterAllowedDevices, hasPermission} from '../rbac.ts';
 import {decodeRouteParam} from '../security.ts';
 import {resolveAccountDisplayName} from '../services/chat-sync.ts';
+import type {AuthedRequest} from '../types.ts';
 
 export interface RawGowaGroup {
   JID: string;
@@ -166,24 +169,32 @@ async function enrichGroupsWithCounts(
 export function registerGroupRoutes(): Router {
   const router = createApiRouter();
 
-  router.get('/api/unified/groups', requireAuth, requireAdmin, async (req, res) => {
-    const filterDeviceIdsRaw =
-      typeof req.query.deviceIds === 'string' ? req.query.deviceIds.trim() : '';
-    const selectedDeviceSet = new Set<string>();
-    if (filterDeviceIdsRaw) {
-      for (const part of filterDeviceIdsRaw.split(',')) {
-        const clean = part.trim();
-        if (clean) selectedDeviceSet.add(clean);
+  router.get(
+    '/api/unified/groups',
+    requireAuth,
+    requirePermission('groups', 'read'),
+    async (req: AuthedRequest, res) => {
+      const filterDeviceIdsRaw =
+        typeof req.query.deviceIds === 'string' ? req.query.deviceIds.trim() : '';
+      const selectedDeviceSet = new Set<string>();
+      if (filterDeviceIdsRaw) {
+        for (const part of filterDeviceIdsRaw.split(',')) {
+          const clean = part.trim();
+          if (clean) selectedDeviceSet.add(clean);
+        }
       }
-    }
 
-    try {
-      const aliases = getAccountAliases();
-      const devices = (await gowaFetch<GowaDevice[]>('/devices')) ?? [];
-      const targetDevices =
-        selectedDeviceSet.size > 0
-          ? devices.filter((d) => selectedDeviceSet.has(d.id))
-          : devices;
+      try {
+        for (const requestedId of selectedDeviceSet) {
+          assertDeviceAccess(req.user, requestedId);
+        }
+        const aliases = getAccountAliases();
+        const allDevices = (await gowaFetch<GowaDevice[]>('/devices')) ?? [];
+        const devices = filterAllowedDevices(req.user!, allDevices);
+        const targetDevices =
+          selectedDeviceSet.size > 0
+            ? devices.filter((d) => selectedDeviceSet.has(d.id))
+            : devices;
 
       const deviceErrors: Array<{device_id: string; display_name: string; message: string}> = [];
       const items: Array<
@@ -307,46 +318,58 @@ export function registerGroupRoutes(): Router {
     }
   });
 
-  router.get('/api/devices/:deviceId/groups', requireAuth, requireAdmin, async (req, res) => {
-    const deviceId = decodeRouteParam(req.params.deviceId);
-    try {
-      const data = await gowaFetch<{data?: RawGowaGroup[]} | null>('/user/my/groups', {deviceId});
-      const enriched = await enrichGroupsWithCounts(deviceId, data?.data ?? []);
-      res.json({code: 'SUCCESS', message: 'ok', results: enriched});
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  });
+  router.get(
+    '/api/devices/:deviceId/groups',
+    requireAuth,
+    requirePermission('groups', 'read'),
+    async (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        const data = await gowaFetch<{data?: RawGowaGroup[]} | null>('/user/my/groups', {deviceId});
+        const enriched = await enrichGroupsWithCounts(deviceId, data?.data ?? []);
+        res.json({code: 'SUCCESS', message: 'ok', results: enriched});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
 
-  router.post('/api/devices/:deviceId/groups', requireAuth, requireAdmin, async (req, res) => {
-    const deviceId = decodeRouteParam(req.params.deviceId);
-    const body = req.body as {title?: unknown; participants?: unknown};
-    const title = typeof body.title === 'string' ? body.title.trim() : '';
-    const participants = Array.isArray(body.participants)
-      ? body.participants.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
-      : [];
-    if (!title) {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'اسم المجموعة مطلوب'});
-      return;
-    }
-    try {
-      const result = await gowaFetch('/group', {
-        method: 'POST',
-        deviceId,
-        body: {title, participants},
-      });
-      invalidateGroupMetaCache(deviceId);
-      res.status(201).json({code: 'SUCCESS', message: 'تم إنشاء المجموعة', results: result});
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  });
+  router.post(
+    '/api/devices/:deviceId/groups',
+    requireAuth,
+    requirePermission('groups', 'write'),
+    async (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      const body = req.body as {title?: unknown; participants?: unknown};
+      const title = typeof body.title === 'string' ? body.title.trim() : '';
+      const participants = Array.isArray(body.participants)
+        ? body.participants.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+        : [];
+      if (!title) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'اسم المجموعة مطلوب'});
+        return;
+      }
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        const result = await gowaFetch('/group', {
+          method: 'POST',
+          deviceId,
+          body: {title, participants},
+        });
+        invalidateGroupMetaCache(deviceId);
+        res.status(201).json({code: 'SUCCESS', message: 'تم إنشاء المجموعة', results: result});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
 
   router.post(
     '/api/devices/:deviceId/groups/join-with-link',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('groups', 'write'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const body = req.body as {link?: unknown};
       const link = typeof body.link === 'string' ? body.link.trim() : '';
@@ -355,6 +378,7 @@ export function registerGroupRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         const result = await gowaFetch('/group/join-with-link', {
           method: 'POST',
           deviceId,
@@ -371,8 +395,8 @@ export function registerGroupRoutes(): Router {
   router.get(
     '/api/devices/:deviceId/groups/info-from-link',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('groups', 'read'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const link = typeof req.query.link === 'string' ? req.query.link.trim() : '';
       if (!link) {
@@ -380,6 +404,7 @@ export function registerGroupRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         const result = await gowaFetch('/group/info-from-link', {
           deviceId,
           query: {link},
@@ -391,50 +416,11 @@ export function registerGroupRoutes(): Router {
     },
   );
 
-  router.get('/api/devices/:deviceId/groups/info', requireAuth, requireAdmin, async (req, res) => {
-    const deviceId = decodeRouteParam(req.params.deviceId);
-    const groupId = typeof req.query.group_id === 'string' ? req.query.group_id.trim() : '';
-    if (!groupId) {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المجموعة مطلوب'});
-      return;
-    }
-    try {
-      const result = await gowaFetch('/group/info', {
-        deviceId,
-        query: {group_id: groupId},
-      });
-      res.json({code: 'SUCCESS', message: 'ok', results: result});
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  });
-
-  router.post('/api/devices/:deviceId/groups/leave', requireAuth, requireAdmin, async (req, res) => {
-    const deviceId = decodeRouteParam(req.params.deviceId);
-    const body = req.body as {group_id?: unknown};
-    const groupId = typeof body.group_id === 'string' ? body.group_id.trim() : '';
-    if (!groupId) {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المجموعة مطلوب'});
-      return;
-    }
-    try {
-      await gowaFetch('/group/leave', {
-        method: 'POST',
-        deviceId,
-        body: {group_id: groupId},
-      });
-      invalidateGroupMetaCache(deviceId, groupId);
-      res.json({code: 'SUCCESS', message: 'تمت مغادرة المجموعة'});
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  });
-
   router.get(
-    '/api/devices/:deviceId/groups/participants',
+    '/api/devices/:deviceId/groups/info',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('groups', 'read'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const groupId = typeof req.query.group_id === 'string' ? req.query.group_id.trim() : '';
       if (!groupId) {
@@ -442,6 +428,58 @@ export function registerGroupRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
+        const result = await gowaFetch('/group/info', {
+          deviceId,
+          query: {group_id: groupId},
+        });
+        res.json({code: 'SUCCESS', message: 'ok', results: result});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/devices/:deviceId/groups/leave',
+    requireAuth,
+    requirePermission('groups', 'manage'),
+    async (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      const body = req.body as {group_id?: unknown};
+      const groupId = typeof body.group_id === 'string' ? body.group_id.trim() : '';
+      if (!groupId) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المجموعة مطلوب'});
+        return;
+      }
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        await gowaFetch('/group/leave', {
+          method: 'POST',
+          deviceId,
+          body: {group_id: groupId},
+        });
+        invalidateGroupMetaCache(deviceId, groupId);
+        res.json({code: 'SUCCESS', message: 'تمت مغادرة المجموعة'});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.get(
+    '/api/devices/:deviceId/groups/participants',
+    requireAuth,
+    requirePermission('groups', 'read'),
+    async (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      const groupId = typeof req.query.group_id === 'string' ? req.query.group_id.trim() : '';
+      if (!groupId) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المجموعة مطلوب'});
+        return;
+      }
+      try {
+        assertDeviceAccess(req.user, deviceId);
         const result = await gowaFetch('/group/participants', {
           deviceId,
           query: {group_id: groupId},
@@ -456,8 +494,8 @@ export function registerGroupRoutes(): Router {
   router.get(
     '/api/devices/:deviceId/groups/participants/export',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('groups', 'read'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const groupId = typeof req.query.group_id === 'string' ? req.query.group_id.trim() : '';
       if (!groupId) {
@@ -465,6 +503,7 @@ export function registerGroupRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         const asset = await gowaFetchRaw('/group/participants/export', {
           deviceId,
           query: {group_id: groupId},
@@ -481,8 +520,8 @@ export function registerGroupRoutes(): Router {
   router.post(
     '/api/devices/:deviceId/groups/participants/:action',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('groups', 'manage'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const action = req.params.action;
       const pathMap: Record<string, string> = {
@@ -506,6 +545,7 @@ export function registerGroupRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         const result = await gowaFetch(upstream, {
           method: 'POST',
           deviceId,
@@ -522,8 +562,8 @@ export function registerGroupRoutes(): Router {
   router.get(
     '/api/devices/:deviceId/groups/participant-requests',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('groups', 'read'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const groupId = typeof req.query.group_id === 'string' ? req.query.group_id.trim() : '';
       if (!groupId) {
@@ -531,6 +571,7 @@ export function registerGroupRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         const result = await gowaFetch('/group/participant-requests', {
           deviceId,
           query: {group_id: groupId},
@@ -545,8 +586,8 @@ export function registerGroupRoutes(): Router {
   router.post(
     '/api/devices/:deviceId/groups/participant-requests/:decision',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('groups', 'manage'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const decision = req.params.decision;
       if (decision !== 'approve' && decision !== 'reject') {
@@ -563,6 +604,7 @@ export function registerGroupRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         const result = await gowaFetch(`/group/participant-requests/${decision}`, {
           method: 'POST',
           deviceId,
@@ -576,97 +618,121 @@ export function registerGroupRoutes(): Router {
     },
   );
 
-  router.post('/api/devices/:deviceId/groups/name', requireAuth, requireAdmin, async (req, res) => {
-    const deviceId = decodeRouteParam(req.params.deviceId);
-    const body = req.body as {group_id?: unknown; name?: unknown};
-    const groupId = typeof body.group_id === 'string' ? body.group_id.trim() : '';
-    const name = typeof body.name === 'string' ? body.name.trim() : '';
-    if (!groupId || !name) {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المجموعة والاسم مطلوبان'});
-      return;
-    }
-    try {
-      const result = await gowaFetch('/group/name', {
-        method: 'POST',
-        deviceId,
-        body: {group_id: groupId, name},
-      });
-      invalidateGroupMetaCache(deviceId, groupId);
-      res.json({code: 'SUCCESS', message: 'تم تحديث اسم المجموعة', results: result});
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  });
+  router.post(
+    '/api/devices/:deviceId/groups/name',
+    requireAuth,
+    requirePermission('groups', 'manage'),
+    async (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      const body = req.body as {group_id?: unknown; name?: unknown};
+      const groupId = typeof body.group_id === 'string' ? body.group_id.trim() : '';
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!groupId || !name) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المجموعة والاسم مطلوبان'});
+        return;
+      }
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        const result = await gowaFetch('/group/name', {
+          method: 'POST',
+          deviceId,
+          body: {group_id: groupId, name},
+        });
+        invalidateGroupMetaCache(deviceId, groupId);
+        res.json({code: 'SUCCESS', message: 'تم تحديث اسم المجموعة', results: result});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
 
-  router.post('/api/devices/:deviceId/groups/topic', requireAuth, requireAdmin, async (req, res) => {
-    const deviceId = decodeRouteParam(req.params.deviceId);
-    const body = req.body as {group_id?: unknown; topic?: unknown};
-    const groupId = typeof body.group_id === 'string' ? body.group_id.trim() : '';
-    const topic = typeof body.topic === 'string' ? body.topic : '';
-    if (!groupId) {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المجموعة مطلوب'});
-      return;
-    }
-    try {
-      const result = await gowaFetch('/group/topic', {
-        method: 'POST',
-        deviceId,
-        body: {group_id: groupId, topic},
-      });
-      invalidateGroupMetaCache(deviceId, groupId);
-      res.json({code: 'SUCCESS', message: 'تم تحديث وصف المجموعة', results: result});
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  });
+  router.post(
+    '/api/devices/:deviceId/groups/topic',
+    requireAuth,
+    requirePermission('groups', 'manage'),
+    async (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      const body = req.body as {group_id?: unknown; topic?: unknown};
+      const groupId = typeof body.group_id === 'string' ? body.group_id.trim() : '';
+      const topic = typeof body.topic === 'string' ? body.topic : '';
+      if (!groupId) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المجموعة مطلوب'});
+        return;
+      }
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        const result = await gowaFetch('/group/topic', {
+          method: 'POST',
+          deviceId,
+          body: {group_id: groupId, topic},
+        });
+        invalidateGroupMetaCache(deviceId, groupId);
+        res.json({code: 'SUCCESS', message: 'تم تحديث وصف المجموعة', results: result});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
 
-  router.post('/api/devices/:deviceId/groups/locked', requireAuth, requireAdmin, async (req, res) => {
-    const deviceId = decodeRouteParam(req.params.deviceId);
-    const body = req.body as {group_id?: unknown; locked?: unknown};
-    const groupId = typeof body.group_id === 'string' ? body.group_id.trim() : '';
-    if (!groupId || typeof body.locked !== 'boolean') {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'بيانات القفل غير مكتملة'});
-      return;
-    }
-    try {
-      const result = await gowaFetch('/group/locked', {
-        method: 'POST',
-        deviceId,
-        body: {group_id: groupId, locked: body.locked},
-      });
-      invalidateGroupMetaCache(deviceId, groupId);
-      res.json({code: 'SUCCESS', message: 'تم تحديث إعداد القفل', results: result});
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  });
+  router.post(
+    '/api/devices/:deviceId/groups/locked',
+    requireAuth,
+    requirePermission('groups', 'manage'),
+    async (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      const body = req.body as {group_id?: unknown; locked?: unknown};
+      const groupId = typeof body.group_id === 'string' ? body.group_id.trim() : '';
+      if (!groupId || typeof body.locked !== 'boolean') {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'بيانات القفل غير مكتملة'});
+        return;
+      }
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        const result = await gowaFetch('/group/locked', {
+          method: 'POST',
+          deviceId,
+          body: {group_id: groupId, locked: body.locked},
+        });
+        invalidateGroupMetaCache(deviceId, groupId);
+        res.json({code: 'SUCCESS', message: 'تم تحديث إعداد القفل', results: result});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
 
-  router.post('/api/devices/:deviceId/groups/announce', requireAuth, requireAdmin, async (req, res) => {
-    const deviceId = decodeRouteParam(req.params.deviceId);
-    const body = req.body as {group_id?: unknown; announce?: unknown};
-    const groupId = typeof body.group_id === 'string' ? body.group_id.trim() : '';
-    if (!groupId || typeof body.announce !== 'boolean') {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'بيانات وضع الإعلانات غير مكتملة'});
-      return;
-    }
-    try {
-      const result = await gowaFetch('/group/announce', {
-        method: 'POST',
-        deviceId,
-        body: {group_id: groupId, announce: body.announce},
-      });
-      invalidateGroupMetaCache(deviceId, groupId);
-      res.json({code: 'SUCCESS', message: 'تم تحديث وضع الإعلانات', results: result});
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  });
+  router.post(
+    '/api/devices/:deviceId/groups/announce',
+    requireAuth,
+    requirePermission('groups', 'manage'),
+    async (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      const body = req.body as {group_id?: unknown; announce?: unknown};
+      const groupId = typeof body.group_id === 'string' ? body.group_id.trim() : '';
+      if (!groupId || typeof body.announce !== 'boolean') {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'بيانات وضع الإعلانات غير مكتملة'});
+        return;
+      }
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        const result = await gowaFetch('/group/announce', {
+          method: 'POST',
+          deviceId,
+          body: {group_id: groupId, announce: body.announce},
+        });
+        invalidateGroupMetaCache(deviceId, groupId);
+        res.json({code: 'SUCCESS', message: 'تم تحديث وضع الإعلانات', results: result});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
 
   router.get(
     '/api/devices/:deviceId/groups/invite-link',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('groups', 'read'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const groupId = typeof req.query.group_id === 'string' ? req.query.group_id.trim() : '';
       const reset = req.query.reset === 'true';
@@ -674,7 +740,15 @@ export function registerGroupRoutes(): Router {
         res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المجموعة مطلوب'});
         return;
       }
+      if (reset && !hasPermission(req.user!, 'groups', 'manage')) {
+        res.status(403).json({
+          code: 'FORBIDDEN',
+          message: 'ليس لديك صلاحية إعادة تعيين رابط دعوة المجموعة',
+        });
+        return;
+      }
       try {
+        assertDeviceAccess(req.user, deviceId);
         const result = await gowaFetch('/group/invite-link', {
           deviceId,
           query: {group_id: groupId, reset: reset ? true : undefined},
@@ -686,37 +760,43 @@ export function registerGroupRoutes(): Router {
     },
   );
 
-  router.post('/api/devices/:deviceId/groups/photo', requireAuth, requireAdmin, async (req, res) => {
-    const deviceId = decodeRouteParam(req.params.deviceId);
-    const body = req.body as {
-      group_id?: unknown;
-      filename?: unknown;
-      mimeType?: unknown;
-      dataBase64?: unknown;
-    };
-    const groupId = typeof body.group_id === 'string' ? body.group_id.trim() : '';
-    if (!groupId) {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المجموعة مطلوب'});
-      return;
-    }
-    try {
-      const form = new FormData();
-      form.append('group_id', groupId);
-      if (body.dataBase64) {
-        const {filename, blob} = decodeImageUpload(body.filename, body.mimeType, body.dataBase64);
-        form.append('photo', blob, filename);
+  router.post(
+    '/api/devices/:deviceId/groups/photo',
+    requireAuth,
+    requirePermission('groups', 'manage'),
+    async (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      const body = req.body as {
+        group_id?: unknown;
+        filename?: unknown;
+        mimeType?: unknown;
+        dataBase64?: unknown;
+      };
+      const groupId = typeof body.group_id === 'string' ? body.group_id.trim() : '';
+      if (!groupId) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المجموعة مطلوب'});
+        return;
       }
-      const result = await gowaFetch('/group/photo', {
-        method: 'POST',
-        deviceId,
-        formData: form,
-      });
-      db.prepare('DELETE FROM contact_avatars WHERE device_id = ? AND jid = ?').run(deviceId, groupId);
-      res.json({code: 'SUCCESS', message: 'تم تحديث صورة المجموعة', results: result});
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  });
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        const form = new FormData();
+        form.append('group_id', groupId);
+        if (body.dataBase64) {
+          const {filename, blob} = decodeImageUpload(body.filename, body.mimeType, body.dataBase64);
+          form.append('photo', blob, filename);
+        }
+        const result = await gowaFetch('/group/photo', {
+          method: 'POST',
+          deviceId,
+          formData: form,
+        });
+        db.prepare('DELETE FROM contact_avatars WHERE device_id = ? AND jid = ?').run(deviceId, groupId);
+        res.json({code: 'SUCCESS', message: 'تم تحديث صورة المجموعة', results: result});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
 
   return router;
 }

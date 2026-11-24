@@ -30,6 +30,7 @@ export function GroupsSidebar({
   isFetching,
   errorMessage,
   canAct,
+  canCreateOrJoin = canAct,
   onSelectedDeviceIdsChange,
   onKindFilterChange,
   onSearchChange,
@@ -51,6 +52,7 @@ export function GroupsSidebar({
   isFetching: boolean;
   errorMessage: string | null;
   canAct: boolean;
+  canCreateOrJoin?: boolean;
   onSelectedDeviceIdsChange: (deviceIds: string[]) => void;
   onKindFilterChange: (kind: DirectoryKindFilter) => void;
   onSearchChange: (value: string) => void;
@@ -87,16 +89,18 @@ export function GroupsSidebar({
 
         <div className="flex items-center gap-1">
           {canAct && (
+            <button
+              type="button"
+              onClick={onOpenPreview}
+              title={t.groups.previewLink}
+              aria-label={t.groups.previewLink}
+              className="flex size-9 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            >
+              <Eye className="size-4" />
+            </button>
+          )}
+          {canCreateOrJoin && (
             <>
-              <button
-                type="button"
-                onClick={onOpenPreview}
-                title={t.groups.previewLink}
-                aria-label={t.groups.previewLink}
-                className="flex size-9 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-              >
-                <Eye className="size-4" />
-              </button>
               <button
                 type="button"
                 onClick={onOpenJoin}

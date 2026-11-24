@@ -33,6 +33,7 @@ import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {cn} from '@/lib/utils';
+import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
 function ScheduleTypeIcon({type}: {type: string}) {
   switch (type) {
@@ -51,6 +52,8 @@ function ScheduleTypeIcon({type}: {type: string}) {
 
 function ScheduleItemCard({
   item,
+  canEditTime,
+  canManageStatus,
   statusLabels,
   recurrenceLabels,
   isBusy,
@@ -66,6 +69,8 @@ function ScheduleItemCard({
   onToggleCancelConfirm,
 }: {
   item: ScheduledSend;
+  canEditTime: boolean;
+  canManageStatus: boolean;
   statusLabels: Record<ScheduleStatus, string>;
   recurrenceLabels: Record<string, string>;
   isBusy: boolean;
@@ -114,7 +119,7 @@ function ScheduleItemCard({
               )}
             </div>
 
-            {canModify && !isEditing && (
+            {canModify && !isEditing && (canEditTime || canManageStatus) && (
               <div
                 className={cn(
                   'flex shrink-0 items-center gap-0.5 transition-opacity',
@@ -123,7 +128,7 @@ function ScheduleItemCard({
                     : 'opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100',
                 )}
               >
-                {item.message_type === 'text' && (
+                {canEditTime && item.message_type === 'text' && (
                   <button
                     type="button"
                     disabled={isBusy}
@@ -135,7 +140,7 @@ function ScheduleItemCard({
                     <Pencil className="size-3.5" />
                   </button>
                 )}
-                {canPause && (
+                {canManageStatus && canPause && (
                   <button
                     type="button"
                     disabled={isBusy}
@@ -147,7 +152,7 @@ function ScheduleItemCard({
                     <Pause className="size-3.5" />
                   </button>
                 )}
-                {canResume && (
+                {canManageStatus && canResume && (
                   <button
                     type="button"
                     disabled={isBusy}
@@ -159,16 +164,18 @@ function ScheduleItemCard({
                     <Play className="size-3.5" />
                   </button>
                 )}
-                <button
-                  type="button"
-                  disabled={isBusy}
-                  onClick={() => onToggleCancelConfirm(item.id)}
-                  title={t.scheduled.cancelSchedule}
-                  aria-label={t.scheduled.cancelSchedule}
-                  className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
-                >
-                  <Ban className="size-3.5" />
-                </button>
+                {canManageStatus && (
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => onToggleCancelConfirm(item.id)}
+                    title={t.scheduled.cancelSchedule}
+                    aria-label={t.scheduled.cancelSchedule}
+                    className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+                  >
+                    <Ban className="size-3.5" />
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -258,6 +265,9 @@ export function ScheduledPanelBody({
 }) {
   const {t} = useI18n();
   const queryClient = useQueryClient();
+  const user = useAuthStore((s) => s.user);
+  const canWriteSchedules = hasUserPermission(user, 'schedules:write');
+  const canManageSchedules = hasUserPermission(user, 'schedules:manage');
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTime, setEditingTime] = useState('');
@@ -348,17 +358,19 @@ export function ScheduledPanelBody({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 border-b border-border px-3 py-2.5">
-        <Button
-          type="button"
-          size="sm"
-          className="h-8 w-full text-xs"
-          onClick={onOpenCreateSchedule}
-        >
-          <Plus className="size-3.5" />
-          <span>{t.scheduled.newSchedule}</span>
-        </Button>
-      </div>
+      {canWriteSchedules && (
+        <div className="shrink-0 border-b border-border px-3 py-2.5">
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 w-full text-xs"
+            onClick={onOpenCreateSchedule}
+          >
+            <Plus className="size-3.5" />
+            <span>{t.scheduled.newSchedule}</span>
+          </Button>
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {schedulesQuery.isLoading ? (
@@ -386,6 +398,8 @@ export function ScheduledPanelBody({
               <ScheduleItemCard
                 key={item.id}
                 item={item}
+                canEditTime={canWriteSchedules}
+                canManageStatus={canManageSchedules}
                 statusLabels={statusLabels}
                 recurrenceLabels={recurrenceLabels}
                 isBusy={isBusy}

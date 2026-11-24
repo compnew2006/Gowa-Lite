@@ -2,10 +2,15 @@ import {http, results} from '@/lib/http';
 import type {
   AccountContact,
   AccountSummary,
+  AssignableAgent,
   AuthStatus,
   AvatarResponse,
+  BulkLifecycleResponse,
   BusinessProfileResponse,
+  ChatAssignmentInfo,
   ChatInfo,
+  ChatLifecycleEvent,
+  ChatLifecycleResponse,
   CheckResponse,
   ConversationNote,
   CreateSchedulePayload,
@@ -18,6 +23,7 @@ import type {
   GroupInviteLink,
   GroupParticipantsResult,
   ImageUploadPayload,
+  InboxPolicy,
   LanguagePreference,
   LiveUpdatesSubscription,
   LoginQr,
@@ -30,16 +36,19 @@ import type {
   PairCode,
   ParticipantRequestEntry,
   ParticipantStatus,
+  PermissionGroup,
   PrivacyResponse,
   RegistryDevice,
+  RoleRecord,
   ScheduleList,
   ThemePreference,
   UnifiedChatsResponse,
   UnifiedGroupsResponse,
   UnifiedStatusesResponse,
   User,
+  UserCreatePayload,
   UserInfoResponse,
-  UserRole,
+  UserUpdatePayload,
 } from '@/api/types';
 
 const enc = encodeURIComponent;
@@ -97,34 +106,54 @@ export function updateMyTheme(theme: ThemePreference): Promise<User> {
   return updateMyPreferences({theme});
 }
 
-// Users (Admin)
+// Users & RBAC Roles
 export function listUsers(): Promise<User[]> {
   return results(http.get('/users'));
 }
 
-export function createUser(payload: {
-  display_name: string;
-  username: string;
-  password: string;
-  role: UserRole;
-}): Promise<User> {
+export function createUser(payload: UserCreatePayload): Promise<User> {
   return results(http.post('/users', payload));
 }
 
-export function updateUser(
-  id: number,
-  payload: {
-    display_name?: string;
-    role?: UserRole;
-    is_active?: boolean;
-    password?: string;
-  },
-): Promise<User> {
+export function updateUser(id: number, payload: UserUpdatePayload): Promise<User> {
   return results(http.patch(`/users/${id}`, payload));
 }
 
 export async function deleteUser(id: number): Promise<void> {
   await http.delete(`/users/${id}`);
+}
+
+export function listPermissions(): Promise<PermissionGroup[]> {
+  return results(http.get('/permissions'));
+}
+
+export function listRoles(): Promise<RoleRecord[]> {
+  return results(http.get('/roles'));
+}
+
+export function createRole(payload: {
+  name: string;
+  description?: string;
+  permissions: string[];
+  is_default?: boolean;
+}): Promise<RoleRecord> {
+  return results(http.post('/roles', payload));
+}
+
+export function updateRole(
+  id: number,
+  payload: {
+    name?: string;
+    description?: string;
+    permissions?: string[];
+    is_default?: boolean;
+  },
+): Promise<RoleRecord> {
+  return results(http.patch(`/roles/${id}`, payload));
+}
+
+export async function deleteRole(id: number): Promise<void> {
+  await http.delete(`/roles/${id}`);
 }
 
 // Settings (Admin)
@@ -147,6 +176,14 @@ export function testGowaSettings(payload?: {
   gowa_password?: string;
 }): Promise<GowaProbeResult> {
   return results(http.post('/settings/gowa/test', payload ?? {}));
+}
+
+export function getInboxPolicy(): Promise<InboxPolicy> {
+  return results(http.get('/settings/inbox-policy'));
+}
+
+export function saveInboxPolicy(payload: Partial<InboxPolicy>): Promise<InboxPolicy> {
+  return results(http.put('/settings/inbox-policy', payload));
 }
 
 // Accounts / Devices
@@ -349,6 +386,78 @@ export function markUnifiedChatRead(
   chatJid: string,
 ): Promise<{chat_jid: string; last_read_seq: number}> {
   return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/read`));
+}
+
+// Chat Lifecycle & Assignment
+export async function listAssignableAgents(deviceId: string): Promise<AssignableAgent[]> {
+  const res = await results<AssignableAgent[] | null>(
+    http.get('/unified/assignable-agents', {params: {deviceId}}),
+  );
+  return res ?? [];
+}
+
+export function getChatLifecycle(deviceId: string, chatJid: string): Promise<ChatLifecycleResponse> {
+  return results(http.get(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/lifecycle`));
+}
+
+export function claimUnifiedChat(
+  deviceId: string,
+  chatJid: string,
+  cachedTitle?: string,
+): Promise<{assignment: ChatAssignmentInfo; event: ChatLifecycleEvent}> {
+  return results(
+    http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/claim`, {
+      ...(cachedTitle ? {cached_title: cachedTitle} : {}),
+    }),
+  );
+}
+
+export function assignUnifiedChat(
+  deviceId: string,
+  chatJid: string,
+  payload: {assigned_user_id: number | null; note?: string; cached_title?: string},
+): Promise<{assignment: ChatAssignmentInfo; event?: ChatLifecycleEvent}> {
+  return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/assign`, payload));
+}
+
+export function releaseUnifiedChat(
+  deviceId: string,
+  chatJid: string,
+  payload?: {note?: string; cached_title?: string},
+): Promise<{assignment: ChatAssignmentInfo; event?: ChatLifecycleEvent}> {
+  return results(
+    http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/release`, payload ?? {}),
+  );
+}
+
+export function closeUnifiedChat(
+  deviceId: string,
+  chatJid: string,
+  payload?: {reason?: string; cached_title?: string},
+): Promise<{assignment: ChatAssignmentInfo; event?: ChatLifecycleEvent}> {
+  return results(
+    http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/close`, payload ?? {}),
+  );
+}
+
+export function reopenUnifiedChat(
+  deviceId: string,
+  chatJid: string,
+  payload?: {assign_to_self?: boolean; note?: string; cached_title?: string},
+): Promise<{assignment: ChatAssignmentInfo; event?: ChatLifecycleEvent}> {
+  return results(
+    http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/reopen`, payload ?? {}),
+  );
+}
+
+export function bulkUnifiedChatsLifecycle(payload: {
+  items: Array<{device_id: string; chat_jid: string; cached_title?: string}>;
+  action: 'close' | 'release' | 'assign' | 'reopen';
+  assigned_user_id?: number | null;
+  note?: string;
+  reason?: string;
+}): Promise<BulkLifecycleResponse> {
+  return results(http.post('/unified/chats/bulk-lifecycle', payload));
 }
 
 // Conversation Notes (per chat)

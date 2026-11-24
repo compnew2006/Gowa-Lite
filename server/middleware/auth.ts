@@ -1,8 +1,15 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import express, {type NextFunction, type Request, type Response, type Router} from 'express';
-import {getSessionUser} from '../db.ts';
-import {GowaError} from '../gowa-client.ts';
+import {getSessionUser, type PublicUser} from '../db.ts';
+import {GowaError} from '../errors.ts';
+import {
+  hasAnyPermission,
+  hasDeviceAccess,
+  hasPermission,
+  isAdminSubject,
+  type PermissionResource,
+} from '../rbac.ts';
 import {
   SESSION_COOKIE_NAME,
   decodeRouteParam,
@@ -108,11 +115,54 @@ export function requireAdmin(req: AuthedRequest, res: Response, next: NextFuncti
     res.status(401).json({code: 'UNAUTHORIZED', message: 'يرجى تسجيل الدخول للمتابعة'});
     return;
   }
-  if (req.user.role !== 'admin') {
+  if (!isAdminSubject(req.user)) {
     res.status(403).json({code: 'FORBIDDEN', message: 'هذه الصلاحية مخصصة للمسؤولين فقط'});
     return;
   }
   next();
+}
+
+export function requirePermission(resource: PermissionResource, action: string) {
+  return (req: AuthedRequest, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({code: 'UNAUTHORIZED', message: 'يرجى تسجيل الدخول للمتابعة'});
+      return;
+    }
+    if (!hasPermission(req.user, resource, action)) {
+      res.status(403).json({
+        code: 'FORBIDDEN',
+        message: 'ليس لديك الصلاحية الكافية لتنفيذ هذا الإجراء',
+      });
+      return;
+    }
+    next();
+  };
+}
+
+export function requireAnyPermission(keys: string[]) {
+  return (req: AuthedRequest, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({code: 'UNAUTHORIZED', message: 'يرجى تسجيل الدخول للمتابعة'});
+      return;
+    }
+    if (!hasAnyPermission(req.user, keys)) {
+      res.status(403).json({
+        code: 'FORBIDDEN',
+        message: 'ليس لديك الصلاحية الكافية للوصول إلى هذا المورد',
+      });
+      return;
+    }
+    next();
+  };
+}
+
+export function assertDeviceAccess(user: PublicUser | undefined, deviceId: string): void {
+  if (!user) {
+    throw new GowaError(401, 'UNAUTHORIZED', 'يرجى تسجيل الدخول للمتابعة');
+  }
+  if (!hasDeviceAccess(user, deviceId)) {
+    throw new GowaError(403, 'DEVICE_FORBIDDEN', 'غير مصرح لك بالوصول إلى حساب واتساب هذا');
+  }
 }
 
 export function safeComparePasscode(a: string, b: string): boolean {
@@ -124,7 +174,11 @@ export function safeComparePasscode(a: string, b: string): boolean {
 
 export function handleRouteError(res: Response, err: unknown): void {
   if (err instanceof GowaError) {
-    res.status(err.status).json({code: err.code, message: err.message});
+    res.status(err.status).json({
+      code: err.code,
+      message: err.message,
+      ...(err.details !== undefined ? {results: err.details} : {}),
+    });
     return;
   }
   console.error('[server error]', err);

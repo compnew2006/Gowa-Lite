@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
 import type {Server as HttpServer} from 'node:http';
 import {WebSocket, WebSocketServer} from 'ws';
-import {getGowaConfig, type PublicUser} from './db.ts';
+import {getGowaConfig, getUserById, type PublicUser} from './db.ts';
 import {gowaFetch, type GowaDevice} from './gowa-client.ts';
+import {hasAnyPermission, hasDeviceAccess, hasPermission} from './rbac.ts';
 
 interface TicketEntry {
   user: PublicUser;
@@ -33,13 +34,98 @@ function consumeWsTicket(ticket: string): PublicUser | null {
 
 interface BridgeClient {
   socket: WebSocket;
-  user: PublicUser;
+  userId: number;
 }
 
 export interface GowaUpstreamEvent {
   code: string;
   message: string;
   result: unknown;
+}
+
+export function shouldDeliverWsEventToUser(
+  user: PublicUser,
+  payload: unknown,
+): {allowed: boolean; filteredPayload?: unknown} {
+  if (!user.is_active) {
+    return {allowed: false};
+  }
+  const obj =
+    typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>) : null;
+  const code = typeof obj?.code === 'string' ? obj.code : '';
+  const deviceId = typeof obj?.device_id === 'string' ? obj.device_id : '';
+
+  if (deviceId && !hasDeviceAccess(user, deviceId)) {
+    return {allowed: false};
+  }
+
+  if (code === 'CONVERSATION_NOTE_UPDATED') {
+    return {allowed: hasPermission(user, 'notes', 'read')};
+  }
+
+  if (code === 'CHAT_LIFECYCLE_UPDATED') {
+    return {allowed: hasPermission(user, 'chats', 'read')};
+  }
+
+  if (code === 'INBOX_POLICY_UPDATED') {
+    return {allowed: hasAnyPermission(user, ['chats:read', 'settings:read', 'settings:write'])};
+  }
+
+  if (code === 'SCHEDULE_UPDATED') {
+    return {allowed: hasPermission(user, 'schedules', 'read')};
+  }
+
+  if (
+    code === 'LOGIN_SUCCESS' ||
+    code === 'DEVICE_LOGGED_OUT' ||
+    code === 'DEVICE_REMOVED'
+  ) {
+    return {
+      allowed: hasAnyPermission(user, [
+        'accounts:read',
+        'chats:read',
+        'groups:read',
+        'misc:status.read',
+      ]),
+    };
+  }
+
+  if (code === 'LIST_DEVICES') {
+    if (
+      !hasAnyPermission(user, ['accounts:read', 'chats:read', 'groups:read', 'misc:status.read'])
+    ) {
+      return {allowed: false};
+    }
+    if (obj && Array.isArray(obj.result)) {
+      const filteredDevices = obj.result.filter((item) => {
+        if (typeof item !== 'object' || item === null) return false;
+        const id = (item as {id?: unknown}).id;
+        return typeof id === 'string' && hasDeviceAccess(user, id);
+      });
+      return {allowed: true, filteredPayload: {...obj, result: filteredDevices}};
+    }
+    return {allowed: true};
+  }
+
+  const resultObj =
+    typeof obj?.result === 'object' && obj.result !== null
+      ? (obj.result as Record<string, unknown>)
+      : null;
+  const innerPayload =
+    typeof resultObj?.payload === 'object' && resultObj.payload !== null
+      ? (resultObj.payload as Record<string, unknown>)
+      : null;
+  const chatJid = String(
+    resultObj?.chat_jid || innerPayload?.chat_jid || innerPayload?.from || '',
+  )
+    .trim()
+    .toLowerCase();
+
+  if (chatJid === 'status@broadcast') {
+    return {allowed: hasPermission(user, 'misc', 'status.read')};
+  }
+
+  return {allowed: hasPermission(user, 'chats', 'read')};
 }
 
 export function buildUpstreamWsTarget(
@@ -105,14 +191,24 @@ export class GowaWsBridge {
     });
 
     this.wss.on('connection', (ws: WebSocket, user: PublicUser) => {
-      const client: BridgeClient = {socket: ws, user};
+      const liveUser = getUserById(user.id);
+      if (!liveUser || !liveUser.is_active) {
+        ws.close(4001, 'Session revoked');
+        return;
+      }
+
+      const client: BridgeClient = {socket: ws, userId: liveUser.id};
       this.clients.add(client);
+
+      const allowedDevices = Array.from(this.upstreamSockets.keys()).filter((id) =>
+        id ? hasDeviceAccess(liveUser, id) : true,
+      );
 
       ws.send(
         JSON.stringify({
           code: 'BRIDGE_STATUS',
-          message: this.upstreamSockets.size > 0 ? 'connected' : 'idle',
-          result: {upstream_devices: Array.from(this.upstreamSockets.keys())},
+          message: allowedDevices.length > 0 ? 'connected' : 'idle',
+          result: {upstream_devices: allowedDevices},
         }),
       );
 
@@ -131,10 +227,24 @@ export class GowaWsBridge {
   }
 
   broadcast(payload: unknown): void {
-    const serialized = JSON.stringify(payload);
+    let defaultSerialized: string | null = null;
     for (const client of this.clients) {
-      if (client.socket.readyState === WebSocket.OPEN) {
-        client.socket.send(serialized);
+      if (client.socket.readyState !== WebSocket.OPEN) continue;
+      const liveUser = getUserById(client.userId);
+      if (!liveUser || !liveUser.is_active) {
+        client.socket.close(4001, 'Session revoked');
+        this.clients.delete(client);
+        continue;
+      }
+      const decision = shouldDeliverWsEventToUser(liveUser, payload);
+      if (!decision.allowed) continue;
+      if (decision.filteredPayload !== undefined) {
+        client.socket.send(JSON.stringify(decision.filteredPayload));
+      } else {
+        if (defaultSerialized === null) {
+          defaultSerialized = JSON.stringify(payload);
+        }
+        client.socket.send(defaultSerialized);
       }
     }
   }

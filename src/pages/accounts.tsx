@@ -21,7 +21,7 @@ import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {matchesNormalizedQuery} from '@/lib/phone';
 import {cn} from '@/lib/utils';
-import {useAuthStore} from '@/stores/auth';
+import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
 const SIDEBAR_STORAGE_KEY = 'gowa-lite:accounts-sidebar-width';
 
@@ -38,6 +38,8 @@ export default function AccountsPage() {
   const queryClient = useQueryClient();
   const {t} = useI18n();
   const user = useAuthStore((s) => s.user);
+  const canWriteAccounts = hasUserPermission(user, 'accounts:write');
+  const canViewSettings = hasUserAnyPermission(user, ['settings:read', 'settings:write']);
 
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState<AccountStateFilter>('all');
@@ -110,7 +112,7 @@ export default function AccountsPage() {
     return (
       <GowaSetupNotice
         apiErr={apiErr}
-        isAdmin={user?.role === 'admin'}
+        isAdmin={canViewSettings}
         onRetry={() => void query.refetch()}
       />
     );
@@ -135,7 +137,7 @@ export default function AccountsPage() {
               </div>
 
               <div className="flex items-center gap-1">
-                <CreateDeviceDialog compact />
+                {canWriteAccounts && <CreateDeviceDialog compact />}
                 <button
                   type="button"
                   onClick={() => void query.refetch()}
@@ -315,7 +317,7 @@ export default function AccountsPage() {
             icon={Smartphone}
             title={t.accounts.selectPrompt}
             hint={t.accounts.selectHint}
-            action={<CreateDeviceDialog />}
+            action={canWriteAccounts ? <CreateDeviceDialog /> : undefined}
           />
         }
       />

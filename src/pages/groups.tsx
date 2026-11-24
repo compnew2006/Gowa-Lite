@@ -30,7 +30,7 @@ import {onWsEvent} from '@/lib/events';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {parseParticipantsList} from '@/lib/participants';
-import {useAuthStore} from '@/stores/auth';
+import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
 const SIDEBAR_STORAGE_KEY = 'gowa-lite:groups-sidebar-width';
 
@@ -42,6 +42,8 @@ export default function GroupsPage() {
   const queryClient = useQueryClient();
   const {t} = useI18n();
   const user = useAuthStore((s) => s.user);
+  const canWriteGroups = hasUserPermission(user, 'groups:write');
+  const canViewSettings = hasUserAnyPermission(user, ['settings:read', 'settings:write']);
 
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
   const [kindFilter, setKindFilter] = useState<DirectoryKindFilter>('all');
@@ -159,7 +161,7 @@ export default function GroupsPage() {
     return (
       <GowaSetupNotice
         apiErr={apiErr}
-        isAdmin={user?.role === 'admin'}
+        isAdmin={canViewSettings}
         onRetry={() => void query.refetch()}
       />
     );
@@ -205,6 +207,7 @@ export default function GroupsPage() {
             isFetching={query.isFetching}
             errorMessage={apiErr ? apiErr.message : null}
             canAct={actionableAccounts.length > 0}
+            canCreateOrJoin={canWriteGroups && actionableAccounts.length > 0}
             onSelectedDeviceIdsChange={setSelectedDeviceIds}
             onKindFilterChange={setKindFilter}
             onSearchChange={setSearch}

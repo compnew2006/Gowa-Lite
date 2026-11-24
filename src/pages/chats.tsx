@@ -32,7 +32,7 @@ import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {toWhatsAppJid} from '@/lib/phone';
 import {cn} from '@/lib/utils';
-import {useAuthStore} from '@/stores/auth';
+import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
 function buildFallbackUnifiedChat(
   deviceId: string,
@@ -82,6 +82,8 @@ function SplitWorkspacePane({
   onRemove: () => void;
 }) {
   const {t} = useI18n();
+  const user = useAuthStore((s) => s.user);
+  const canWriteChats = hasUserPermission(user, 'chats:write');
   const [search, setSearch] = useState('');
   const [hasMedia, setHasMedia] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -184,7 +186,7 @@ function SplitWorkspacePane({
             onHasMediaChange={setHasMedia}
             onRefresh={() => void paginated.refresh()}
             onLoadMore={() => void paginated.loadMore()}
-            onOpenNewChat={() => setNewChatOpen(true)}
+            onOpenNewChat={canWriteChats ? () => setNewChatOpen(true) : undefined}
             onSelect={(chat) => {
               paginated.markExtraChatRead(chat.device_id, chat.jid);
               setSelectedKey(chatUniqueKey(chat));
@@ -211,6 +213,8 @@ export default function ChatsPage() {
   const queryClient = useQueryClient();
   const {t} = useI18n();
   const user = useAuthStore((s) => s.user);
+  const canWriteChats = hasUserPermission(user, 'chats:write');
+  const canViewSettings = hasUserAnyPermission(user, ['settings:read', 'settings:write']);
   const [searchParams] = useSearchParams();
   const searchParamsKey = searchParams.toString();
   const lastAppliedParamsRef = useRef<string | null>(null);
@@ -254,9 +258,14 @@ export default function ChatsPage() {
   });
   const {query, chats, accounts, deviceErrors} = paginated;
 
+  const apiErr = query.isError ? toApiError(query.error) : null;
+  const hasActiveFilter =
+    selectedDeviceIds.length > 0 || Boolean(search.trim()) || hasMedia;
+
   const globalChatsQuery = useQuery({
     queryKey: ['unified-chats', [], '', false],
     queryFn: () => listUnifiedChats({}),
+    enabled: hasActiveFilter && !(apiErr && isGowaConnectionError(apiErr)),
     staleTime: 20_000,
   });
 
@@ -333,6 +342,12 @@ export default function ChatsPage() {
       } else if (code === 'SCHEDULE_UPDATED') {
         invalidateScoped('unified-chat-schedules');
         void queryClient.invalidateQueries({queryKey: ['schedules']});
+      } else if (code === 'CHAT_LIFECYCLE_UPDATED') {
+        invalidateChats();
+        invalidateScoped('chat-lifecycle');
+        void queryClient.invalidateQueries({queryKey: ['assignable-agents']});
+      } else if (code === 'INBOX_POLICY_UPDATED') {
+        void queryClient.invalidateQueries({queryKey: ['inbox-policy']});
       }
     });
   }, [queryClient]);
@@ -370,13 +385,11 @@ export default function ChatsPage() {
     ]);
   };
 
-  const apiErr = query.isError ? toApiError(query.error) : null;
-
   if (apiErr && isGowaConnectionError(apiErr)) {
     return (
       <GowaSetupNotice
         apiErr={apiErr}
-        isAdmin={user?.role === 'admin'}
+        isAdmin={canViewSettings}
         onRetry={() => void query.refetch()}
       />
     );
@@ -485,7 +498,7 @@ export default function ChatsPage() {
           onHasMediaChange={setHasMedia}
           onRefresh={() => void paginated.refresh()}
           onLoadMore={() => void paginated.loadMore()}
-          onOpenNewChat={() => setNewChatOpen(true)}
+          onOpenNewChat={canWriteChats ? () => setNewChatOpen(true) : undefined}
           onSelect={(chat) => {
             paginated.markExtraChatRead(chat.device_id, chat.jid);
             setSelectedKey(chatUniqueKey(chat));

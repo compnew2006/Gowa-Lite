@@ -10,6 +10,8 @@ export type ContextDrawerTab = 'notes' | 'scheduled';
 export function ChatContextDrawer({
   chat,
   activeTab,
+  canReadNotes = true,
+  canReadSchedules = true,
   notesCount,
   scheduledCount,
   onTabChange,
@@ -18,6 +20,8 @@ export function ChatContextDrawer({
 }: {
   chat: UnifiedChat;
   activeTab: ContextDrawerTab;
+  canReadNotes?: boolean;
+  canReadSchedules?: boolean;
   notesCount: number;
   scheduledCount: number;
   onTabChange: (tab: ContextDrawerTab) => void;
@@ -38,47 +42,51 @@ export function ChatContextDrawer({
           role="tablist"
           className="flex min-w-0 flex-1 items-center gap-1 rounded-lg bg-secondary p-0.5 text-xs"
         >
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'notes'}
-            onClick={() => onTabChange('notes')}
-            className={cn(
-              'flex min-w-0 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-md px-2 py-1.5 font-medium transition-colors',
-              activeTab === 'notes'
-                ? 'bg-card text-foreground shadow-2xs'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            <StickyNote className="size-3.5 shrink-0" />
-            <span className="truncate">{t.chats.notesTab}</span>
-            {notesCount > 0 && (
-              <span className="text-[11px] text-muted-foreground tabular-nums">
-                ({notesCount})
-              </span>
-            )}
-          </button>
+          {canReadNotes && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'notes'}
+              onClick={() => onTabChange('notes')}
+              className={cn(
+                'flex min-w-0 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-md px-2 py-1.5 font-medium transition-colors',
+                activeTab === 'notes'
+                  ? 'bg-card text-foreground shadow-2xs'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <StickyNote className="size-3.5 shrink-0" />
+              <span className="truncate">{t.chats.notesTab}</span>
+              {notesCount > 0 && (
+                <span className="text-[11px] text-muted-foreground tabular-nums">
+                  ({notesCount})
+                </span>
+              )}
+            </button>
+          )}
 
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'scheduled'}
-            onClick={() => onTabChange('scheduled')}
-            className={cn(
-              'flex min-w-0 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-md px-2 py-1.5 font-medium transition-colors',
-              activeTab === 'scheduled'
-                ? 'bg-card text-foreground shadow-2xs'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            <CalendarClock className="size-3.5 shrink-0" />
-            <span className="truncate">{t.chats.scheduledTab}</span>
-            {scheduledCount > 0 && (
-              <span className="text-[11px] text-muted-foreground tabular-nums">
-                ({scheduledCount})
-              </span>
-            )}
-          </button>
+          {canReadSchedules && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'scheduled'}
+              onClick={() => onTabChange('scheduled')}
+              className={cn(
+                'flex min-w-0 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-md px-2 py-1.5 font-medium transition-colors',
+                activeTab === 'scheduled'
+                  ? 'bg-card text-foreground shadow-2xs'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <CalendarClock className="size-3.5 shrink-0" />
+              <span className="truncate">{t.chats.scheduledTab}</span>
+              {scheduledCount > 0 && (
+                <span className="text-[11px] text-muted-foreground tabular-nums">
+                  ({scheduledCount})
+                </span>
+              )}
+            </button>
+          )}
         </div>
 
         <button
@@ -92,11 +100,11 @@ export function ChatContextDrawer({
         </button>
       </div>
 
-      {activeTab === 'notes' ? (
+      {activeTab === 'notes' && canReadNotes ? (
         <NotesPanelBody chat={chat} />
-      ) : (
+      ) : activeTab === 'scheduled' && canReadSchedules ? (
         <ScheduledPanelBody chat={chat} onOpenCreateSchedule={onOpenCreateSchedule} />
-      )}
+      ) : null}
     </aside>
   );
 }

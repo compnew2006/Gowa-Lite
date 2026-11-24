@@ -3,15 +3,20 @@ import {
   ArrowLeftRight,
   ArrowRight,
   CalendarClock,
+  CheckCircle2,
+  Hand,
   History,
   Image as ImageIcon,
   ListChecks,
   Loader2,
+  RotateCcw,
   Search,
   StickyNote,
+  UserCheck,
+  UserMinus,
   X,
 } from 'lucide-react';
-import type {UnifiedChat} from '@/api/types';
+import type {ChatAssignmentInfo, ChatAssignmentSummary, UnifiedChat} from '@/api/types';
 import {ContactAvatar} from '@/components/contact-avatar';
 import {Button} from '@/components/ui/button';
 import type {ContextDrawerTab} from '@/features/chat/chat-context-drawer';
@@ -41,11 +46,24 @@ export function MessageViewHeader({
   selectedMediaCount,
   onToggleSelectMode,
   drawerTab,
+  canReadNotes = true,
+  canReadSchedules = true,
   notesCount,
   activeScheduledCount,
   onToggleDrawerTab,
   isHistoryPending,
   onFetchHistory,
+  lifecycle,
+  currentUserId,
+  canAssign = false,
+  canClose = false,
+  canViewAll = false,
+  isLifecyclePending = false,
+  onClaim,
+  onOpenAssign,
+  onRelease,
+  onCloseChat,
+  onReopen,
 }: {
   chat: UnifiedChat;
   displayName: string;
@@ -66,16 +84,73 @@ export function MessageViewHeader({
   selectedMediaCount: number;
   onToggleSelectMode: () => void;
   drawerTab: ContextDrawerTab | null;
+  canReadNotes?: boolean;
+  canReadSchedules?: boolean;
   notesCount: number;
   activeScheduledCount: number;
   onToggleDrawerTab: (tab: ContextDrawerTab) => void;
   isHistoryPending: boolean;
   onFetchHistory: () => void;
+  lifecycle?: ChatAssignmentSummary | ChatAssignmentInfo;
+  currentUserId?: number;
+  canAssign?: boolean;
+  canClose?: boolean;
+  canViewAll?: boolean;
+  isLifecyclePending?: boolean;
+  onClaim?: () => void;
+  onOpenAssign?: () => void;
+  onRelease?: () => void;
+  onCloseChat?: () => void;
+  onReopen?: () => void;
 }) {
   const {isRtl, t} = useI18n();
 
+  const status = lifecycle?.status ?? 'pending';
+  const assignedUserId = lifecycle?.assigned_user_id ?? null;
+  const isAssignedToMe =
+    status === 'open' && currentUserId !== undefined && assignedUserId === currentUserId;
+  const isOpenOwnerOrSupervisor = status === 'open' && (isAssignedToMe || canViewAll);
+
+  const lifecycleLabel =
+    status === 'closed'
+      ? lifecycle?.closed_by_name
+        ? t.chats.lifecycleClosedBy(lifecycle.closed_by_name)
+        : t.chats.lifecycleClosed
+      : status === 'open'
+        ? isAssignedToMe
+          ? t.chats.lifecycleOpenAssignedYou
+          : lifecycle?.assigned_user_name
+            ? t.chats.lifecycleOpenAssignedTo(lifecycle.assigned_user_name)
+            : t.chats.lifecyclePending
+        : t.chats.lifecyclePending;
+
+  const statusDotClass =
+    status === 'closed'
+      ? 'bg-muted-foreground'
+      : status === 'open'
+        ? 'bg-emerald-500'
+        : 'bg-amber-500';
+
+  const statusTextClass =
+    status === 'closed'
+      ? 'text-muted-foreground'
+      : status === 'open'
+        ? 'text-emerald-700 dark:text-emerald-400'
+        : 'text-amber-700 dark:text-amber-400';
+
+  const showPendingAssignButtons = Boolean(lifecycle) && status === 'pending' && canAssign;
+  const showOpenActionButtons =
+    Boolean(lifecycle) && status === 'open' && isOpenOwnerOrSupervisor && (canAssign || canClose);
+  const showPendingCloseButton = Boolean(lifecycle) && status === 'pending' && canClose;
+  const showReopenButton = Boolean(lifecycle) && status === 'closed' && canClose;
+  const hasLifecycleButtons =
+    showPendingAssignButtons ||
+    showOpenActionButtons ||
+    showPendingCloseButton ||
+    showReopenButton;
+
   return (
-    <div className="flex min-h-[58px] shrink-0 items-center justify-between gap-3 border-b border-border bg-card px-4 py-1.5">
+    <div className="flex min-h-[58px] shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-4 py-1.5">
       <div className="flex min-w-0 items-center gap-3">
         {onBack && (
           <Button
@@ -109,10 +184,21 @@ export function MessageViewHeader({
               {formatJidPhone(chat.jid)}
             </span>
           </div>
-          <p className="truncate text-xs text-muted-foreground">
-            {t.chats.autoReplyVia}{' '}
-            <span className="font-medium text-primary">{chat.device_display_name}</span>
+          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 truncate text-xs text-muted-foreground">
+            <span>
+              {t.chats.autoReplyVia}{' '}
+              <span className="font-medium text-primary">{chat.device_display_name}</span>
+            </span>
             {total > 0 && <span className="tabular-nums">{t.chats.messagesCount(total)}</span>}
+            {lifecycle && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className={cn('inline-flex items-center gap-1.5 font-medium', statusTextClass)}>
+                  <span className={cn('size-2 shrink-0 rounded-full', statusDotClass)} />
+                  <span>{lifecycleLabel}</span>
+                </span>
+              </>
+            )}
             {!isDeviceReady && (
               <span className="text-destructive">{t.chats.accountOfflineInline}</span>
             )}
@@ -145,7 +231,116 @@ export function MessageViewHeader({
         </div>
       </div>
 
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {hasLifecycleButtons && (
+          <div className="flex items-center gap-1.5">
+            {showPendingAssignButtons && (
+              <>
+                {onClaim && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={isLifecyclePending}
+                    onClick={onClaim}
+                    className="h-8 whitespace-nowrap shrink-0 px-2.5 text-xs"
+                  >
+                    <Hand className="size-3.5" />
+                    <span>{t.chats.claimAction}</span>
+                  </Button>
+                )}
+                {onOpenAssign && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={isLifecyclePending}
+                    onClick={onOpenAssign}
+                    className="h-8 whitespace-nowrap shrink-0 px-2.5 text-xs"
+                  >
+                    <UserCheck className="size-3.5" />
+                    <span>{t.chats.assignAction}</span>
+                  </Button>
+                )}
+              </>
+            )}
+
+            {showOpenActionButtons && (
+              <>
+                {canAssign && onOpenAssign && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={isLifecyclePending}
+                    onClick={onOpenAssign}
+                    className="h-8 whitespace-nowrap shrink-0 px-2.5 text-xs"
+                  >
+                    <UserCheck className="size-3.5" />
+                    <span>{t.chats.transferAction}</span>
+                  </Button>
+                )}
+                {canAssign && onRelease && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={isLifecyclePending}
+                    onClick={onRelease}
+                    title={t.chats.releaseAction}
+                    className="h-8 whitespace-nowrap shrink-0 px-2.5 text-xs"
+                  >
+                    <UserMinus className="size-3.5" />
+                    <span className="hidden sm:inline">{t.chats.releaseAction}</span>
+                  </Button>
+                )}
+                {canClose && onCloseChat && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={isLifecyclePending}
+                    onClick={onCloseChat}
+                    className="h-8 whitespace-nowrap shrink-0 px-2.5 text-xs"
+                  >
+                    <CheckCircle2 className="size-3.5" />
+                    <span>{t.chats.closeAction}</span>
+                  </Button>
+                )}
+              </>
+            )}
+
+            {showPendingCloseButton && onCloseChat && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={isLifecyclePending}
+                onClick={onCloseChat}
+                className="h-8 whitespace-nowrap shrink-0 px-2.5 text-xs"
+              >
+                <CheckCircle2 className="size-3.5" />
+                <span>{t.chats.closeAction}</span>
+              </Button>
+            )}
+
+            {showReopenButton && onReopen && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={isLifecyclePending}
+                onClick={onReopen}
+                className="h-8 whitespace-nowrap shrink-0 px-2.5 text-xs"
+              >
+                <RotateCcw className="size-3.5" />
+                <span>{t.chats.reopenAction}</span>
+              </Button>
+            )}
+
+            <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-border" />
+          </div>
+        )}
+
         {searchOpen && (
           <div className="flex items-center gap-1 rounded-full bg-secondary px-3 py-1">
             <input
@@ -167,43 +362,47 @@ export function MessageViewHeader({
           </div>
         )}
 
-        <button
-          type="button"
-          onClick={() => onToggleDrawerTab('notes')}
-          title={t.chats.notesTitle}
-          aria-label={t.chats.notesTitle}
-          aria-pressed={drawerTab === 'notes'}
-          className={cn(
-            'flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 transition-colors',
-            drawerTab === 'notes'
-              ? 'bg-accent text-accent-foreground'
-              : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-          )}
-        >
-          <StickyNote className="size-4" />
-          {notesCount > 0 && (
-            <span className="text-[11px] font-semibold tabular-nums">{notesCount}</span>
-          )}
-        </button>
+        {canReadNotes && (
+          <button
+            type="button"
+            onClick={() => onToggleDrawerTab('notes')}
+            title={t.chats.notesTitle}
+            aria-label={t.chats.notesTitle}
+            aria-pressed={drawerTab === 'notes'}
+            className={cn(
+              'flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 transition-colors',
+              drawerTab === 'notes'
+                ? 'bg-accent text-accent-foreground'
+                : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+            )}
+          >
+            <StickyNote className="size-4" />
+            {notesCount > 0 && (
+              <span className="text-[11px] font-semibold tabular-nums">{notesCount}</span>
+            )}
+          </button>
+        )}
 
-        <button
-          type="button"
-          onClick={() => onToggleDrawerTab('scheduled')}
-          title={t.chats.scheduledMessagesTitle}
-          aria-label={t.chats.scheduledMessagesTitle}
-          aria-pressed={drawerTab === 'scheduled'}
-          className={cn(
-            'flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 transition-colors',
-            drawerTab === 'scheduled'
-              ? 'bg-accent text-accent-foreground'
-              : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-          )}
-        >
-          <CalendarClock className="size-4" />
-          {activeScheduledCount > 0 && (
-            <span className="text-[11px] font-semibold tabular-nums">{activeScheduledCount}</span>
-          )}
-        </button>
+        {canReadSchedules && (
+          <button
+            type="button"
+            onClick={() => onToggleDrawerTab('scheduled')}
+            title={t.chats.scheduledMessagesTitle}
+            aria-label={t.chats.scheduledMessagesTitle}
+            aria-pressed={drawerTab === 'scheduled'}
+            className={cn(
+              'flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 transition-colors',
+              drawerTab === 'scheduled'
+                ? 'bg-accent text-accent-foreground'
+                : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+            )}
+          >
+            <CalendarClock className="size-4" />
+            {activeScheduledCount > 0 && (
+              <span className="text-[11px] font-semibold tabular-nums">{activeScheduledCount}</span>
+            )}
+          </button>
+        )}
 
         <button
           type="button"

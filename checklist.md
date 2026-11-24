@@ -3,7 +3,7 @@
 > المرجع الهندسي المعتمد: `affaan-m/ECC` (`skills/coding-standards/SKILL.md` — commit `d29cf651c795869f733669c33e3d33dfd8307d10`)
 > المرجع الوظيفي: `compnew2006/gowa-ui` | مرجع التصميم: `pbakaus/impeccable` (`v4.10.0`)
 > تاريخ الإنشاء: `2026-11-23` | تاريخ التحديث: `2026-11-24`
-> الحالة الحالية: **33/45 بندًا مكتملًا** — المتبقي هو التحقق الحي أمام خادم GOWA (`PROD-03`) ومراحل التطوير 4–7 (`11` بندًا).
+> الحالة الحالية: **39/45 بندًا مكتملًا** — المتبقي هو التحقق الحي أمام خادم GOWA (`PROD-03`) ومراحل التطوير 6–7 (`5` بنود).
 
 ---
 
@@ -16,18 +16,6 @@
 ### خارطة التطوير الجديدة
 
 > المرجع التفصيلي: `plan.md`
-
-#### المرحلة الرابعة: نظام الأدوار المخصصة وتقييد الحسابات (`/settings/roles` و`/settings/users`)
-
-- [ ] **RBAC-01 (`P0`)**: إنشاء جداول `roles`, `role_permissions`, `user_device_access` في `SQLite` مع ترحيل تلقائي آمن للمستخدمين الحاليين (`admin` / `agent`) وقراءة الصلاحيات الفعالة والحسابات المسموحة داخل الجلسة (`getSessionUser`).
-- [ ] **RBAC-02 (`P0`)**: تطبيق middleware الخادم `requirePermission(resource, action)` و`assertDeviceAccess(user, deviceId)` على جميع مسارات الـ API و`ws-bridge.ts` (Fail-Closed)، وإضافة مسارات `/api/roles`, `/api/permissions` وتحديث `/api/users` لحماية آخر مسؤول نشط وإبطال الجلسات عند التعطيل.
-- [ ] **RBAC-03 (`P1`)**: بناء واجهتَي `/settings/roles` (`PermissionMatrix` بمربعات ثلاثية الحالة وحارس تغييرات غير محفوظة) و`/settings/users` (تعيين الدور + تحديد حسابات واتساب المسموحة + إعادة توجيه `/users`) وربط `RequirePermission` في `App.tsx` و`AppShell`.
-
-#### المرحلة الخامسة: محرك دورة حياة المحادثة وتعيين جهات الاتصال (`Assign Contact` & `Lifecycle`)
-
-- [ ] **LIFECYCLE-01 (`P0`)**: إنشاء جدولي `chat_assignments` و`chat_lifecycle_events` في `SQLite` وخدمة `server/services/chat-lifecycle.ts` مع معاملات `BEGIN IMMEDIATE` للاستلام الذري (`409 Conflict` عند التسابق) وإعادة الفتح التلقائي للمحادثات المغلقة عند ورود رسالة من العميل.
-- [ ] **LIFECYCLE-02 (`P0`)**: إضافة مسارات الخادم `claim`, `assign`, `release`, `close`, `reopen`, `bulk-lifecycle`, `assignable-agents` (مع عداد المحادثات المفتوحة لكل وكيل)، وإعداد سياسة المعاينة/القفل والاستلام التلقائي عند الرد (`/api/settings/inbox-policy`) مع بث الأحداث عبر WebSocket.
-- [ ] **LIFECYCLE-03 (`P1`)**: بناء مكون `AssignChatDialog` الموحد (تعيين/تحويل/إلغاء تعيين مع حمل الوكلاء)، أزرار دورة الحياة في `MessageViewHeader`، قفل الـ Composer عند الإغلاق أو القفل الصارم، وعرض رسائل النظام الزمنية داخل `MessageView`.
 
 #### المرحلة السادسة: تبويبات `All - Me - Pending - Closed` والعدادات الخادمية في `/chats`
 
@@ -45,7 +33,7 @@
 ## سجل الأعمال المكتملة
 
 <details>
-<summary>عرض تفاصيل المراحل المكتملة (`33/33`)</summary>
+<summary>عرض تفاصيل المراحل المكتملة (`39/39`)</summary>
 
 ### المرحلة الأساسية 1: الاحتواء الأمني، تثبيت الجلسة، إصلاح محرك المزامنة/غير المقروء/المجدولة، وتحديث شريط المحادثات (`12/12`)
 
@@ -111,5 +99,17 @@
 - [x] **AUTH-FIX-01 (`P0`)**: منع انهيار تفكيك `{token, user}` من `null` في صفحتَي الدخول والإعداد الأولي عند وصول رد `2xx` غير JSON أو غير مكتمل، عبر التحقق الصارم في `unwrapApiResults` (`src/lib/http.ts`) وحراسة الجلسة في `LoginPage` و`SetupPage` مع اختبار وحدة في `tests/phase4.test.ts`.
 - [x] **CHAT-OVERLAP-01 (`P1`)**: إضافة شارة «متاح أيضًا على حساب آخر» مع أسماء الحسابات في قائمة المحادثات وترويسة المحادثة مع إمكانية التبديل المباشر إلى محادثة العميل على الحساب الآخر، مع استبعاد الحالات والقنوات وتوحيد صيغة `@c.us` و`@s.whatsapp.net`.
 - [x] **MISC-STATUS-01 (`P1`)**: تجميع وعرض حالات واتساب (`status@broadcast`) لجميع الحسابات في `/#/misc` (مع تصفية حسب الحساب وبحث ومعاينة وسائط ورابط فتح محادثة المرسل وتحديث فوري عبر WebSocket)، واستبعاد `status@broadcast` من صندوق المحادثات والتنبيهات الواردة.
+
+### المرحلة الرابعة: نظام الأدوار المخصصة وتقييد الحسابات (`/settings/roles` و`/settings/users`) (`3/3`)
+
+- [x] **RBAC-01 (`P0`)**: إنشاء جداول `roles`, `role_permissions`, `user_device_access` في `SQLite` مع ترحيل تلقائي آمن للمستخدمين الحاليين (`admin` / `agent`)، وتوليد 29 صلاحية قياسية عبر 9 موارد، وقراءة الصلاحيات الفعالة والحسابات المسموحة لحظيًا داخل الجلسة (`getSessionUser`).
+- [x] **RBAC-02 (`P0`)**: تطبيق `requirePermission` و`assertDeviceAccess` على جميع مسارات الـ API وبث WebSocket (`ws-bridge.ts`) بنمط Fail-Closed، وإضافة مسارات `/api/roles`, `/api/permissions` وتحديث `/api/users` مع حماية منع تصعيد الصلاحيات وآخر مسؤول نشط وإبطال الجلسات واتصال WebSocket (`4001`) فور التعطيل (`tests/phase4-rbac.test.ts`).
+- [x] **RBAC-03 (`P1`)**: بناء واجهتَي `/settings/roles` (`PermissionMatrix` ثلاثية الحالة مع حارس تغييرات غير محفوظة) و`/settings/users` (تعيين الدور وتخصيص حسابات واتساب المسموحة وإعادة توجيه `/users`) وتطبيق حراسة المكونات والواجهات في `App.tsx` و`AppShell` والصفحات الفرعية.
+
+### المرحلة الخامسة: محرك دورة حياة المحادثة وتعيين جهات الاتصال (`Assign Contact` & `Lifecycle`) (`3/3`)
+
+- [x] **LIFECYCLE-01 (`P0`)**: إنشاء جدولي `chat_assignments` و`chat_lifecycle_events` في `SQLite` وخدمة `server/services/chat-lifecycle.ts` مع معاملات `BEGIN IMMEDIATE` للاستلام الذري (`409 Conflict` عند التسابق)، إعادة تعيين المحادثات المفتوحة للانتظار عند حذف الوكيل (`deleteUser`)، وإعادة الفتح التلقائي للمحادثات المغلقة عند ورود رسالة من العميل.
+- [x] **LIFECYCLE-02 (`P0`)**: إضافة مسارات الخادم `claim`, `assign`, `release`, `close`, `reopen`, `bulk-lifecycle`, `assignable-agents` (مع عداد المحادثات المفتوحة لكل وكيل)، وسياسة الصندوق (`/api/settings/inbox-policy`) المفروضة على الإرسال (`/send`, `/send-media`) مع بث أحداث `CHAT_LIFECYCLE_UPDATED` و`INBOX_POLICY_UPDATED` عبر WebSocket (`tests/phase5-lifecycle.test.ts`).
+- [x] **LIFECYCLE-03 (`P1`)**: بناء مكون `AssignChatDialog` الموحد، أزرار ومؤشر دورة الحياة في `MessageViewHeader`، قفل المرسل في `MessageComposer` مع أزرار التعافي، بطاقة إعدادات سياسة الصندوق في `/settings`، وعرض أحداث النظام الزمنية مدمجة بالترتيب الزمني داخل `MessageView`.
 
 </details>

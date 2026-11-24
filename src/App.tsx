@@ -1,4 +1,4 @@
-import {useEffect} from 'react';
+import {Suspense, lazy, useEffect} from 'react';
 import {Loader2} from 'lucide-react';
 import {Navigate, Route, Routes} from 'react-router-dom';
 import {Toaster} from 'sonner';
@@ -6,17 +6,25 @@ import {getAuthStatus} from '@/api/client';
 import {AppShell} from '@/components/layout/app-shell';
 import {useI18n} from '@/lib/i18n';
 import {wsClient} from '@/lib/ws';
-import AccountPage from '@/pages/account';
-import AccountsPage from '@/pages/accounts';
-import ChatsPage from '@/pages/chats';
-import GroupsPage from '@/pages/groups';
-import LoginPage from '@/pages/login';
-import MiscPage from '@/pages/misc';
-import ScheduledPage from '@/pages/scheduled';
-import SettingsPage from '@/pages/settings';
-import SetupPage from '@/pages/setup';
-import UsersPage from '@/pages/users';
-import {applyLanguageToDom, applyThemeToDom, useAuthStore} from '@/stores/auth';
+import {
+  applyLanguageToDom,
+  applyThemeToDom,
+  firstAllowedRoute,
+  hasUserAnyPermission,
+  useAuthStore,
+} from '@/stores/auth';
+
+const AccountPage = lazy(() => import('@/pages/account'));
+const AccountsPage = lazy(() => import('@/pages/accounts'));
+const ChatsPage = lazy(() => import('@/pages/chats'));
+const GroupsPage = lazy(() => import('@/pages/groups'));
+const LoginPage = lazy(() => import('@/pages/login'));
+const MiscPage = lazy(() => import('@/pages/misc'));
+const RolesPage = lazy(() => import('@/pages/roles'));
+const ScheduledPage = lazy(() => import('@/pages/scheduled'));
+const SettingsPage = lazy(() => import('@/pages/settings'));
+const SetupPage = lazy(() => import('@/pages/setup'));
+const UsersPage = lazy(() => import('@/pages/users'));
 
 function BootLoader() {
   const {t} = useI18n();
@@ -30,12 +38,23 @@ function BootLoader() {
   );
 }
 
-function RequireAdmin({children}: {children: React.ReactNode}) {
+function RequirePermission({
+  perms,
+  children,
+}: {
+  perms: string[];
+  children: React.ReactNode;
+}) {
   const user = useAuthStore((s) => s.user);
-  if (user?.role !== 'admin') {
-    return <Navigate to="/chats" replace />;
+  if (!hasUserAnyPermission(user, perms)) {
+    return <Navigate to={firstAllowedRoute(user)} replace />;
   }
   return <>{children}</>;
+}
+
+function DefaultRedirect() {
+  const user = useAuthStore((s) => s.user);
+  return <Navigate to={firstAllowedRoute(user)} replace />;
 }
 
 function AppToaster() {
@@ -109,74 +128,92 @@ export default function App() {
     content = (
       <Routes>
         <Route element={<AppShell />}>
-          <Route path="/chats" element={<ChatsPage />} />
+          <Route
+            path="/chats"
+            element={
+              <RequirePermission perms={['chats:read']}>
+                <ChatsPage />
+              </RequirePermission>
+            }
+          />
           <Route
             path="/scheduled"
             element={
-              <RequireAdmin>
+              <RequirePermission perms={['schedules:read', 'schedules:write', 'schedules:manage']}>
                 <ScheduledPage />
-              </RequireAdmin>
+              </RequirePermission>
             }
           />
           <Route
             path="/groups"
             element={
-              <RequireAdmin>
+              <RequirePermission perms={['groups:read', 'groups:write', 'groups:manage']}>
                 <GroupsPage />
-              </RequireAdmin>
+              </RequirePermission>
             }
           />
           <Route
             path="/account"
             element={
-              <RequireAdmin>
+              <RequirePermission perms={['accounts:read', 'accounts:write']}>
                 <AccountPage />
-              </RequireAdmin>
+              </RequirePermission>
             }
           />
           <Route
             path="/misc"
             element={
-              <RequireAdmin>
+              <RequirePermission
+                perms={['misc:status.read', 'misc:channels.manage', 'misc:calls.reject']}
+              >
                 <MiscPage />
-              </RequireAdmin>
+              </RequirePermission>
             }
           />
           <Route
             path="/accounts"
             element={
-              <RequireAdmin>
+              <RequirePermission perms={['accounts:read', 'accounts:write']}>
                 <AccountsPage />
-              </RequireAdmin>
+              </RequirePermission>
+            }
+          />
+          <Route path="/users" element={<Navigate to="/settings/users" replace />} />
+          <Route
+            path="/settings/users"
+            element={
+              <RequirePermission perms={['users:read', 'users:write', 'users:delete']}>
+                <UsersPage />
+              </RequirePermission>
             }
           />
           <Route
-            path="/users"
+            path="/settings/roles"
             element={
-              <RequireAdmin>
-                <UsersPage />
-              </RequireAdmin>
+              <RequirePermission perms={['roles:read', 'roles:write', 'roles:delete']}>
+                <RolesPage />
+              </RequirePermission>
             }
           />
           <Route
             path="/settings"
             element={
-              <RequireAdmin>
+              <RequirePermission perms={['settings:read', 'settings:write']}>
                 <SettingsPage />
-              </RequireAdmin>
+              </RequirePermission>
             }
           />
-          <Route path="/" element={<Navigate to="/chats" replace />} />
+          <Route path="/" element={<DefaultRedirect />} />
         </Route>
-        <Route path="*" element={<Navigate to="/chats" replace />} />
+        <Route path="*" element={<DefaultRedirect />} />
       </Routes>
     );
   }
 
   return (
-    <>
+    <Suspense fallback={<BootLoader />}>
       {content}
       <AppToaster />
-    </>
+    </Suspense>
   );
 }

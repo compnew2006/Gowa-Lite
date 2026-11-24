@@ -71,7 +71,7 @@ export function usePaginatedChats({
         limit: CHATS_PAGE_SIZE,
         offset: 0,
       }),
-    refetchInterval: 30_000,
+    refetchInterval: (q) => (q.state.error ? false : 30_000),
   });
 
   const activeExtra = extraState.signature === filterSignature ? extraState : null;

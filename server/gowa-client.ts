@@ -1,6 +1,9 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import {getGowaConfig, type GowaConfig} from './db.ts';
+import {GowaError} from './errors.ts';
+
+export {GowaError};
 
 export interface GowaEnvelope<T> {
   code: string;
@@ -97,18 +100,6 @@ export interface GowaDownloadedMedia {
   file_path: string;
   file_url?: string;
   file_size: number;
-}
-
-export class GowaError extends Error {
-  status: number;
-  code: string;
-
-  constructor(status: number, code: string, message: string) {
-    super(message);
-    this.name = 'GowaError';
-    this.status = status;
-    this.code = code;
-  }
 }
 
 export function validateGowaUrl(rawUrl: string): string {
@@ -212,9 +203,11 @@ export async function gowaFetch<T>(
   }
 
   const text = await response.text();
-  let parsed: Partial<GowaEnvelope<T>> | null = null;
+  let parsed: (Partial<GowaEnvelope<T>> & {title?: unknown; detail?: unknown}) | null = null;
   try {
-    parsed = text ? (JSON.parse(text) as Partial<GowaEnvelope<T>>) : null;
+    parsed = text
+      ? (JSON.parse(text) as Partial<GowaEnvelope<T>> & {title?: unknown; detail?: unknown})
+      : null;
   } catch {
     parsed = null;
   }
@@ -227,11 +220,28 @@ export async function gowaFetch<T>(
     );
   }
 
+  if (
+    response.status === 504 ||
+    (response.status >= 520 && response.status <= 524)
+  ) {
+    const cfReason =
+      response.status === 522 || response.status === 524
+        ? `تعذر اتصال Cloudflare بالخادم الأصلي لـ gowa (رمز ${response.status} — انتهت مهلة الاتصال بالخادم، تأكد من تشغيل خدمة gowa أو النفق)`
+        : `تعذر الوصول إلى الخادم الأصلي لـ gowa عبر الوسيط (رمز ${response.status})`;
+    throw new GowaError(502, 'GOWA_UNREACHABLE', cfReason);
+  }
+
   if (!response.ok) {
+    const fallbackDetail =
+      typeof parsed?.title === 'string'
+        ? parsed.title
+        : typeof parsed?.detail === 'string'
+          ? parsed.detail
+          : `استجاب خادم gowa برمز خطأ ${response.status}`;
     throw new GowaError(
       response.status >= 400 && response.status < 500 ? response.status : 502,
       parsed?.code || 'GOWA_HTTP_ERROR',
-      parsed?.message || `استجاب خادم gowa برمز خطأ ${response.status}`,
+      parsed?.message || fallbackDetail,
     );
   }
 

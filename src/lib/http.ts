@@ -19,8 +19,53 @@ http.interceptors.request.use((config) => {
   return config;
 });
 
+const COOKIE_CHECK_COOLDOWN_MS = 15_000;
+const COOKIE_CHECK_STORAGE_KEY = 'gowa-lite:proxy-cookie-check-at';
+
+function isProxyCookieCheckPayload(payload: unknown, responseUrl?: string): boolean {
+  if (responseUrl && /\/__cookie_check\.html/i.test(responseUrl)) {
+    return true;
+  }
+  return (
+    typeof payload === 'string' &&
+    (/<title>\s*Cookie check\s*<\/title>/i.test(payload) || /verifyCanSetCookies/i.test(payload))
+  );
+}
+
+function tryRecoverProxyCookieCheck(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const last = Number(window.sessionStorage.getItem(COOKIE_CHECK_STORAGE_KEY) || '0');
+    const now = Date.now();
+    if (!Number.isFinite(last) || now - last > COOKIE_CHECK_COOLDOWN_MS) {
+      window.sessionStorage.setItem(COOKIE_CHECK_STORAGE_KEY, String(now));
+      window.location.replace(
+        `/__cookie_check.html?return_url=${encodeURIComponent(window.location.href)}`,
+      );
+    }
+  } catch {
+    // Ignore storage access errors in restricted iframes
+  }
+}
+
 http.interceptors.response.use(
-  (response: AxiosResponse) => response,
+  (response: AxiosResponse) => {
+    const reqUrl =
+      typeof (response.request as {responseURL?: unknown} | undefined)?.responseURL === 'string'
+        ? (response.request as {responseURL: string}).responseURL
+        : undefined;
+    if (isProxyCookieCheckPayload(response.data, reqUrl)) {
+      tryRecoverProxyCookieCheck();
+      const proxyErr: ApiError = {
+        status: 401,
+        code: 'PROXY_COOKIE_CHECK',
+        message:
+          'بوابة المعاينة تطلب تأكيد ملفات تعريف الارتباط (Cookies). يرجى فتح رابط المعاينة في تبويب مستقل أو السماح بالـ Cookies ثم إعادة المحاولة.',
+      };
+      return Promise.reject(proxyErr);
+    }
+    return response;
+  },
   (error: unknown) => {
     if (error instanceof AxiosError) {
       const status = error.response?.status ?? 0;
@@ -68,6 +113,26 @@ export function toApiError(error: unknown): ApiError {
 }
 
 export function unwrapApiResults<T>(payload: unknown, status = 502): T {
+  if (isProxyCookieCheckPayload(payload)) {
+    const proxyErr: ApiError = {
+      status: 401,
+      code: 'PROXY_COOKIE_CHECK',
+      message:
+        'بوابة المعاينة تطلب تأكيد ملفات تعريف الارتباط (Cookies). يرجى فتح رابط المعاينة في تبويب مستقل أو السماح بالـ Cookies ثم إعادة المحاولة.',
+    };
+    throw proxyErr;
+  }
+
+  if (typeof payload === 'string' && /<(?:!doctype|html)\b/i.test(payload)) {
+    const htmlErr: ApiError = {
+      status,
+      code: 'INVALID_RESPONSE',
+      message:
+        'استجابة HTML غير متوقعة بدل JSON (قد تكون المهلة أو جلسة بوابة المعاينة انتهت) — يرجى تحديث الصفحة',
+    };
+    throw htmlErr;
+  }
+
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
     const invalidErr: ApiError = {
       status,

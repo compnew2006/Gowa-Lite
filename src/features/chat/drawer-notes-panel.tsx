@@ -15,7 +15,7 @@ import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {cn} from '@/lib/utils';
-import {useAuthStore} from '@/stores/auth';
+import {hasUserPermission, isAdminUser, useAuthStore} from '@/stores/auth';
 
 function getAuthorInitials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -43,14 +43,18 @@ function formatRelativeNoteTime(iso: string, lang: 'ar' | 'en'): string {
 
 function NoteRow({
   note,
-  canModify,
+  canPin,
+  canEdit,
+  canDelete,
   isBusy,
   onTogglePin,
   onSaveEdit,
   onDelete,
 }: {
   note: ConversationNote;
-  canModify: boolean;
+  canPin: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
   isBusy: boolean;
   onTogglePin: (note: ConversationNote) => void;
   onSaveEdit: (noteId: number, content: string) => Promise<void>;
@@ -120,7 +124,7 @@ function NoteRow({
               )}
             </div>
 
-            {!editing && (
+            {!editing && (canPin || canEdit || canDelete) && (
               <div
                 className={cn(
                   'flex shrink-0 items-center gap-0.5 transition-opacity',
@@ -129,46 +133,49 @@ function NoteRow({
                     : 'opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100',
                 )}
               >
-                <button
-                  type="button"
-                  disabled={isBusy}
-                  onClick={() => onTogglePin(note)}
-                  title={note.is_pinned ? t.chats.unpinNote : t.chats.pinNote}
-                  aria-label={note.is_pinned ? t.chats.unpinNote : t.chats.pinNote}
-                  className={cn(
-                    'flex size-6 cursor-pointer items-center justify-center rounded-md transition-colors hover:bg-secondary disabled:opacity-40',
-                    note.is_pinned ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
-                  )}
-                >
-                  {note.is_pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
-                </button>
+                {canPin && (
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => onTogglePin(note)}
+                    title={note.is_pinned ? t.chats.unpinNote : t.chats.pinNote}
+                    aria-label={note.is_pinned ? t.chats.unpinNote : t.chats.pinNote}
+                    className={cn(
+                      'flex size-6 cursor-pointer items-center justify-center rounded-md transition-colors hover:bg-secondary disabled:opacity-40',
+                      note.is_pinned ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    {note.is_pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
+                  </button>
+                )}
 
-                {canModify && (
-                  <>
-                    <button
-                      type="button"
-                      disabled={isBusy}
-                      onClick={() => {
-                        setConfirmingDelete(false);
-                        setEditing(true);
-                      }}
-                      title={t.editAction}
-                      aria-label={t.editAction}
-                      className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-40"
-                    >
-                      <Pencil className="size-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isBusy}
-                      onClick={() => setConfirmingDelete((prev) => !prev)}
-                      title={t.deleteAction}
-                      aria-label={t.deleteAction}
-                      className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </button>
-                  </>
+                {canEdit && (
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => {
+                      setConfirmingDelete(false);
+                      setEditing(true);
+                    }}
+                    title={t.editAction}
+                    aria-label={t.editAction}
+                    className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-40"
+                  >
+                    <Pencil className="size-3.5" />
+                  </button>
+                )}
+
+                {canDelete && (
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => setConfirmingDelete((prev) => !prev)}
+                    title={t.deleteAction}
+                    aria-label={t.deleteAction}
+                    className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
                 )}
               </div>
             )}
@@ -258,6 +265,9 @@ export function NotesPanelBody({chat}: {chat: UnifiedChat}) {
   const {t} = useI18n();
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
+  const canWriteNotes = hasUserPermission(currentUser, 'notes:write');
+  const canDeleteAnyNote = hasUserPermission(currentUser, 'notes:delete');
+  const isAdmin = isAdminUser(currentUser);
   const [filter, setFilter] = useState<'all' | 'pinned'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [newContent, setNewContent] = useState('');
@@ -335,8 +345,13 @@ export function NotesPanelBody({chat}: {chat: UnifiedChat}) {
   const regularNotes = useMemo(() => filteredNotes.filter((n) => !n.is_pinned), [filteredNotes]);
   const isBusy = createMutation.isPending || updateMutation.isPending || deleteMutation.isPending;
 
-  const canModifyNote = (note: ConversationNote) =>
-    Boolean(currentUser) && (currentUser!.id === note.created_by_id || currentUser!.role === 'admin');
+  const canEditNote = (note: ConversationNote) =>
+    canWriteNotes &&
+    Boolean(currentUser) &&
+    (currentUser!.id === note.created_by_id || isAdmin || canDeleteAnyNote);
+  const canDeleteNote = (note: ConversationNote) =>
+    Boolean(currentUser) &&
+    (isAdmin || canDeleteAnyNote || (canWriteNotes && currentUser!.id === note.created_by_id));
 
   const renderNoteRows = (notes: ConversationNote[]) => (
     <div className="divide-y divide-border/70">
@@ -344,7 +359,9 @@ export function NotesPanelBody({chat}: {chat: UnifiedChat}) {
         <NoteRow
           key={note.id}
           note={note}
-          canModify={canModifyNote(note)}
+          canPin={canWriteNotes}
+          canEdit={canEditNote(note)}
+          canDelete={canDeleteNote(note)}
           isBusy={isBusy}
           onTogglePin={(item) => updateMutation.mutate({noteId: item.id, is_pinned: !item.is_pinned})}
           onSaveEdit={async (noteId, content) => {
@@ -447,54 +464,56 @@ export function NotesPanelBody({chat}: {chat: UnifiedChat}) {
         )}
       </div>
 
-      <div className="shrink-0 border-t border-border bg-card p-3">
-        <div className="rounded-xl border border-input bg-secondary/40 p-2.5 focus-within:border-ring">
-          <textarea
-            rows={2}
-            value={newContent}
-            onChange={(e) => setNewContent(e.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                if (newContent.trim() && !createMutation.isPending) createMutation.mutate();
-              }
-            }}
-            placeholder={t.chats.writeNotePlaceholder}
-            className="max-h-32 min-h-[44px] w-full resize-none bg-transparent text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none"
-          />
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={() => setPinOnCreate((prev) => !prev)}
-              aria-pressed={pinOnCreate}
-              className={cn(
-                'inline-flex h-7 cursor-pointer items-center gap-1 rounded-md px-2 text-[11px] font-medium transition-colors',
-                pinOnCreate
-                  ? 'bg-accent text-accent-foreground'
-                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-              )}
-            >
-              <Pin className="size-3" />
-              <span>{t.chats.pinOnCreate}</span>
-            </button>
-            <Button
-              type="button"
-              size="sm"
-              className="h-7 px-3 text-xs"
-              disabled={!newContent.trim() || createMutation.isPending}
-              onClick={() => createMutation.mutate()}
-            >
-              {createMutation.isPending ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <Send className="size-3.5" />
-              )}
-              <span>{t.chats.addNoteSubmit}</span>
-            </Button>
+      {canWriteNotes && (
+        <div className="shrink-0 border-t border-border bg-card p-3">
+          <div className="rounded-xl border border-input bg-secondary/40 p-2.5 focus-within:border-ring">
+            <textarea
+              rows={2}
+              value={newContent}
+              onChange={(e) => setNewContent(e.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  if (newContent.trim() && !createMutation.isPending) createMutation.mutate();
+                }
+              }}
+              placeholder={t.chats.writeNotePlaceholder}
+              className="max-h-32 min-h-[44px] w-full resize-none bg-transparent text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none"
+            />
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setPinOnCreate((prev) => !prev)}
+                aria-pressed={pinOnCreate}
+                className={cn(
+                  'inline-flex h-7 cursor-pointer items-center gap-1 rounded-md px-2 text-[11px] font-medium transition-colors',
+                  pinOnCreate
+                    ? 'bg-accent text-accent-foreground'
+                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                )}
+              >
+                <Pin className="size-3" />
+                <span>{t.chats.pinOnCreate}</span>
+              </button>
+              <Button
+                type="button"
+                size="sm"
+                className="h-7 px-3 text-xs"
+                disabled={!newContent.trim() || createMutation.isPending}
+                onClick={() => createMutation.mutate()}
+              >
+                {createMutation.isPending ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Send className="size-3.5" />
+                )}
+                <span>{t.chats.addNoteSubmit}</span>
+              </Button>
+            </div>
           </div>
+          <p className="mt-1.5 text-[10.5px] text-muted-foreground">{t.chats.noteShortcutHint}</p>
         </div>
-        <p className="mt-1.5 text-[10.5px] text-muted-foreground">{t.chats.noteShortcutHint}</p>
-      </div>
+      )}
     </div>
   );
 }

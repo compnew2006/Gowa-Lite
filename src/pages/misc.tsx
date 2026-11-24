@@ -45,7 +45,7 @@ import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {matchesNormalizedQuery} from '@/lib/phone';
 import {cn} from '@/lib/utils';
-import {useAuthStore} from '@/stores/auth';
+import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
 type MiscSidebarMode = 'status' | 'following' | 'discover' | 'lookup' | 'calls';
 
@@ -56,6 +56,10 @@ export default function MiscPage() {
   const isRtl = lang === 'ar';
   const BackIcon = isRtl ? ArrowRight : ArrowLeft;
   const user = useAuthStore((s) => s.user);
+  const canViewStatuses = hasUserPermission(user, 'misc:status.read');
+  const canManageChannels = hasUserPermission(user, 'misc:channels.manage');
+  const canRejectCalls = hasUserPermission(user, 'misc:calls.reject');
+  const canViewSettings = hasUserAnyPermission(user, ['settings:read', 'settings:write']);
   const queryClient = useQueryClient();
 
   const deviceState = useActiveDevice();
@@ -64,7 +68,31 @@ export default function MiscPage() {
   const latestDeviceIdRef = useRef(deviceId);
   latestDeviceIdRef.current = deviceId;
 
-  const [mode, setMode] = useState<MiscSidebarMode>('status');
+  const allowedTabs = useMemo(() => {
+    const list: Array<{id: MiscSidebarMode; label: string; icon: typeof CircleDashed}> = [];
+    if (canViewStatuses) {
+      list.push({id: 'status', label: t.misc.tabStatus, icon: CircleDashed});
+    }
+    if (canManageChannels) {
+      list.push(
+        {id: 'following', label: t.misc.tabFollowing, icon: Radio},
+        {id: 'discover', label: t.misc.tabDiscover, icon: Compass},
+        {id: 'lookup', label: t.misc.tabLookup, icon: Search},
+      );
+    }
+    if (canRejectCalls) {
+      list.push({id: 'calls', label: t.misc.tabCalls, icon: PhoneOff});
+    }
+    return list;
+  }, [canManageChannels, canRejectCalls, canViewStatuses, t.misc]);
+
+  const [mode, setMode] = useState<MiscSidebarMode>(() => allowedTabs[0]?.id ?? 'status');
+
+  useEffect(() => {
+    if (allowedTabs.length > 0 && !allowedTabs.some((tab) => tab.id === mode)) {
+      setMode(allowedTabs[0].id);
+    }
+  }, [allowedTabs, mode]);
   const [statusAccountFilter, setStatusAccountFilter] = useState('all');
   const [statusSearch, setStatusSearch] = useState('');
   const [selectedStatusGroupKey, setSelectedStatusGroupKey] = useState<string | null>(null);
@@ -88,12 +116,13 @@ export default function MiscPage() {
   const statusesQuery = useQuery({
     queryKey: ['misc-statuses'],
     queryFn: () => listMiscStatuses(),
-    enabled: mode === 'status',
+    enabled: canViewStatuses && mode === 'status',
     retry: 1,
     refetchInterval: 60_000,
   });
 
   useEffect(() => {
+    if (!canViewStatuses) return;
     return onWsEvent((event) => {
       if (
         event.code === 'LOGIN_SUCCESS' ||
@@ -108,19 +137,21 @@ export default function MiscPage() {
         void queryClient.invalidateQueries({queryKey: ['misc-statuses']});
       }
     });
-  }, [queryClient]);
+  }, [canViewStatuses, queryClient]);
+
+  const isChannelTab = mode === 'following' || mode === 'discover' || mode === 'lookup';
 
   const followingQuery = useQuery({
     queryKey: ['newsletters', deviceId],
     queryFn: () => listDeviceNewsletters(deviceId),
-    enabled: Boolean(deviceId) && mode !== 'status',
+    enabled: Boolean(deviceId) && canManageChannels && isChannelTab,
     retry: 1,
   });
 
   const liveUpdatesQuery = useQuery({
     queryKey: ['newsletter-live-updates', deviceId],
     queryFn: () => listNewsletterLiveUpdates(deviceId),
-    enabled: Boolean(deviceId) && mode !== 'status',
+    enabled: Boolean(deviceId) && canManageChannels && isChannelTab,
     retry: false,
   });
 
@@ -235,7 +266,7 @@ export default function MiscPage() {
     return (
       <GowaSetupNotice
         apiErr={deviceErr}
-        isAdmin={user?.role === 'admin'}
+        isAdmin={canViewSettings}
         onRetry={() => void deviceState.refetch()}
       />
     );
@@ -430,15 +461,7 @@ export default function MiscPage() {
             )}
 
             <div className="flex flex-wrap items-center gap-1.5">
-              {(
-                [
-                  {id: 'status', label: t.misc.tabStatus, icon: CircleDashed},
-                  {id: 'following', label: t.misc.tabFollowing, icon: Radio},
-                  {id: 'discover', label: t.misc.tabDiscover, icon: Compass},
-                  {id: 'lookup', label: t.misc.tabLookup, icon: Search},
-                  {id: 'calls', label: t.misc.tabCalls, icon: PhoneOff},
-                ] as const
-              ).map((tab) => {
+              {allowedTabs.map((tab) => {
                 const Icon = tab.icon;
                 const active = mode === tab.id;
                 return (

@@ -1,12 +1,17 @@
 import path from 'node:path';
 import {
   markCachedMessageRevoked,
+  parseTimestampMs,
   syncChatWatermarks,
   upsertCachedMessages,
   type CachedMessagePayload,
 } from '../db.ts';
 import {GowaError, type GowaChatInfo, type GowaDevice} from '../gowa-client.ts';
 import type {GowaUpstreamEvent} from '../ws-bridge.ts';
+import {
+  handleIncomingCustomerMessageLifecycle,
+  type ChatLifecycleWsPayload,
+} from './chat-lifecycle.ts';
 
 export const MAX_MEDIA_UPLOAD_BYTES = 20 * 1024 * 1024;
 
@@ -308,11 +313,15 @@ function extractMediaFromWsPayload(raw: Record<string, unknown>): {
   return {mediaType: detectedType, content, filename, url};
 }
 
-export function handleUpstreamGowaEvent(deviceId: string, event: GowaUpstreamEvent): void {
-  if (!deviceId) return;
+export function handleUpstreamGowaEvent(
+  deviceId: string,
+  event: GowaUpstreamEvent,
+  onLifecycleEvent?: (payload: ChatLifecycleWsPayload) => void,
+): ChatLifecycleWsPayload | null {
+  if (!deviceId) return null;
   const code = (event.code || '').toUpperCase();
   const raw = unwrapEventPayload(event.result);
-  if (!raw) return;
+  if (!raw) return null;
 
   const revokedCodes = new Set([
     'MESSAGE_REVOKED',
@@ -339,7 +348,7 @@ export function handleUpstreamGowaEvent(deviceId: string, event: GowaUpstreamEve
     if (revokedId) {
       markCachedMessageRevoked(deviceId, revokedId, {chatJid, revokedBy});
     }
-    return;
+    return null;
   }
 
   if (code === 'MESSAGE_RECEIVED' || code === 'MESSAGE') {
@@ -349,7 +358,7 @@ export function handleUpstreamGowaEvent(deviceId: string, event: GowaUpstreamEve
       rawChatJid && !rawChatJid.includes('@') && /^\+?\d{5,}$/.test(rawChatJid)
         ? `${rawChatJid.replace(/^\+/, '')}@s.whatsapp.net`
         : rawChatJid;
-    if (!id || !chatJid || isNewsletterJid(chatJid)) return;
+    if (!id || !chatJid || isNewsletterJid(chatJid)) return null;
 
     const isFromMe = Boolean(raw.is_from_me ?? raw.from_me);
     if (raw.is_revoked === true || raw.revoked === true || raw.media_type === 'revoked') {
@@ -360,7 +369,7 @@ export function handleUpstreamGowaEvent(deviceId: string, event: GowaUpstreamEve
             ? raw.sender_jid.trim()
             : undefined;
       markCachedMessageRevoked(deviceId, id, {chatJid, revokedBy});
-      return;
+      return null;
     }
 
     const media = extractMediaFromWsPayload(raw);
@@ -401,7 +410,19 @@ export function handleUpstreamGowaEvent(deviceId: string, event: GowaUpstreamEve
 
     upsertCachedMessages(deviceId, chatJid, [msg], {markUnreadCandidate: true});
     syncChatWatermarks([{device_id: deviceId, chat_jid: chatJid, last_message_time: timestamp}]);
-    return;
+
+    if (!isFromMe && !isStatusBroadcastJid(chatJid)) {
+      const lifecyclePayload = handleIncomingCustomerMessageLifecycle(
+        deviceId,
+        chatJid,
+        parseTimestampMs(timestamp),
+      );
+      if (lifecyclePayload) {
+        onLifecycleEvent?.(lifecyclePayload);
+        return lifecyclePayload;
+      }
+    }
+    return null;
   }
 
   if (code === 'MESSAGE_EDITED' || code === 'MESSAGE.EDITED') {
@@ -447,6 +468,7 @@ export function handleUpstreamGowaEvent(deviceId: string, event: GowaUpstreamEve
       ]);
     }
   }
+  return null;
 }
 
 export function recipientMatchesChatJid(recipient: string, chatJid: string): boolean {

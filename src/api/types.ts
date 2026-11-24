@@ -14,15 +14,73 @@ export type UserRole = 'admin' | 'agent';
 export type ThemePreference = 'light' | 'dark' | 'system';
 export type LanguagePreference = 'ar' | 'en';
 
+export type PermissionResource =
+  | 'chats'
+  | 'notes'
+  | 'schedules'
+  | 'groups'
+  | 'accounts'
+  | 'misc'
+  | 'users'
+  | 'roles'
+  | 'settings';
+
+export interface PermissionItem {
+  key: string;
+  resource: PermissionResource;
+  action: string;
+}
+
+export interface PermissionGroup {
+  resource: PermissionResource;
+  permissions: PermissionItem[];
+}
+
+export interface RoleRecord {
+  id: number;
+  name: string;
+  slug: string;
+  description: string;
+  is_system: boolean;
+  is_default: boolean;
+  permissions: string[];
+  user_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface User {
   id: number;
   username: string;
   display_name: string;
   role: UserRole;
+  role_id: number;
+  role_slug: string;
+  role_name: string;
+  permissions: string[];
+  allowed_device_ids: string[];
   is_active: boolean;
   created_at: string;
   theme: ThemePreference;
   language: LanguagePreference;
+}
+
+export interface UserCreatePayload {
+  display_name: string;
+  username: string;
+  password: string;
+  role_id?: number;
+  role?: UserRole;
+  allowed_device_ids?: string[];
+}
+
+export interface UserUpdatePayload {
+  display_name?: string;
+  role_id?: number;
+  role?: UserRole;
+  allowed_device_ids?: string[];
+  is_active?: boolean;
+  password?: string;
 }
 
 export interface AuthStatus {
@@ -100,11 +158,24 @@ export interface ChatInfo {
   archived: boolean;
 }
 
+export type ChatLifecycleStatus = 'pending' | 'open' | 'closed';
+
+export interface ChatAssignmentSummary {
+  status: ChatLifecycleStatus;
+  assigned_user_id: number | null;
+  assigned_user_name: string | null;
+  closed_by_id: number | null;
+  closed_by_name: string | null;
+  closed_at: string | null;
+  close_reason: string;
+}
+
 export interface UnifiedChat extends ChatInfo {
   device_id: string;
   device_display_name: string;
   device_state: DeviceState;
   unread_count?: number;
+  lifecycle?: ChatAssignmentSummary;
 }
 
 export interface UnifiedChatsPagination {
@@ -473,4 +544,66 @@ export interface UnifiedStatusesResponse {
   accounts: UnifiedStatusAccountSummary[];
   device_errors: Array<{device_id: string; display_name: string; message: string}>;
 }
+
+export type UnassignedReplyPolicy = 'auto_claim' | 'allow_without_claim' | 'require_claim';
+export type ClosedReplyPolicy = 'block' | 'reopen_and_claim';
+
+export interface InboxPolicy {
+  unassigned_reply_policy: UnassignedReplyPolicy;
+  closed_reply_policy: ClosedReplyPolicy;
+}
+
+export type ChatLifecycleEventType =
+  | 'claimed'
+  | 'auto_claimed'
+  | 'assigned'
+  | 'transferred'
+  | 'released'
+  | 'closed'
+  | 'reopened'
+  | 'reopened_by_customer';
+
+export interface ChatAssignmentInfo extends ChatAssignmentSummary {
+  device_id: string;
+  chat_jid: string;
+  assigned_at: string | null;
+  claimed_at: string | null;
+  cached_title: string;
+  last_activity_ms: number;
+  updated_at: number;
+}
+
+export interface ChatLifecycleEvent {
+  id: number;
+  device_id: string;
+  chat_jid: string;
+  event_type: ChatLifecycleEventType;
+  actor_user_id: number | null;
+  actor_name: string;
+  target_user_id: number | null;
+  target_name: string;
+  note: string;
+  created_at: string;
+  created_at_ms: number;
+}
+
+export interface ChatLifecycleResponse {
+  assignment: ChatAssignmentInfo;
+  events: ChatLifecycleEvent[];
+}
+
+export interface AssignableAgent {
+  id: number;
+  username: string;
+  display_name: string;
+  role_slug: string;
+  role_name: string;
+  open_chat_count: number;
+}
+
+export interface BulkLifecycleResponse {
+  succeeded: ChatAssignmentInfo[];
+  failed: Array<{device_id: string; chat_jid: string; code: string; message: string}>;
+}
+
 

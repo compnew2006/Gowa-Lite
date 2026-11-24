@@ -107,6 +107,7 @@ function MessageBubbleActions({
   isOut,
   isRevoked,
   isDeviceReady,
+  canReactAndReply,
   copyableText,
   copied,
   isReactionPickerOpen,
@@ -123,6 +124,7 @@ function MessageBubbleActions({
   isOut: boolean;
   isRevoked: boolean;
   isDeviceReady: boolean;
+  canReactAndReply: boolean;
   copyableText: string;
   copied: boolean;
   isReactionPickerOpen: boolean;
@@ -166,60 +168,64 @@ function MessageBubbleActions({
         isOut ? 'ltr:order-first rtl:order-last' : 'ltr:order-last rtl:order-first',
       )}
     >
-      <div ref={pickerRef} className="relative">
-        <button
-          type="button"
-          disabled={!isDeviceReady || isRevoked}
-          onClick={() => onToggleReactionPicker(message.id)}
-          title={isDeviceReady ? t.chats.addReaction : t.chats.accountCurrentlyOffline}
-          aria-label={t.chats.addReaction}
-          aria-expanded={isReactionPickerOpen}
-          className={cn(
-            'flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40',
-            isReactionPickerOpen && 'bg-secondary text-foreground',
-          )}
-        >
-          <SmilePlus className="size-3.5" />
-        </button>
+      {canReactAndReply && (
+        <>
+          <div ref={pickerRef} className="relative">
+            <button
+              type="button"
+              disabled={!isDeviceReady || isRevoked}
+              onClick={() => onToggleReactionPicker(message.id)}
+              title={isDeviceReady ? t.chats.addReaction : t.chats.accountCurrentlyOffline}
+              aria-label={t.chats.addReaction}
+              aria-expanded={isReactionPickerOpen}
+              className={cn(
+                'flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40',
+                isReactionPickerOpen && 'bg-secondary text-foreground',
+              )}
+            >
+              <SmilePlus className="size-3.5" />
+            </button>
 
-        {isReactionPickerOpen && !isRevoked && (
-          <div
-            role="menu"
-            className={cn(
-              'absolute bottom-full z-30 mb-1.5 flex items-center gap-0.5 rounded-full border border-border bg-popover px-1.5 py-1 shadow-lg',
-              isOut ? 'ltr:right-0 rtl:right-0' : 'ltr:left-0 rtl:left-0',
-            )}
-          >
-            {QUICK_REACTION_EMOJIS.map((emoji) => (
-              <button
-                key={emoji}
-                type="button"
-                onClick={() => {
-                  onReact(message, emoji);
-                  onCloseReactionPicker();
-                }}
+            {isReactionPickerOpen && !isRevoked && (
+              <div
+                role="menu"
                 className={cn(
-                  'flex size-8 cursor-pointer items-center justify-center rounded-full text-base transition-transform hover:scale-115 hover:bg-muted',
-                  myReactionEmoji === emoji && 'bg-primary/15 ring-1 ring-primary/50',
+                  'absolute bottom-full z-30 mb-1.5 flex items-center gap-0.5 rounded-full border border-border bg-popover px-1.5 py-1 shadow-lg',
+                  isOut ? 'ltr:right-0 rtl:right-0' : 'ltr:left-0 rtl:left-0',
                 )}
               >
-                {emoji}
-              </button>
-            ))}
+                {QUICK_REACTION_EMOJIS.map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => {
+                      onReact(message, emoji);
+                      onCloseReactionPicker();
+                    }}
+                    className={cn(
+                      'flex size-8 cursor-pointer items-center justify-center rounded-full text-base transition-transform hover:scale-115 hover:bg-muted',
+                      myReactionEmoji === emoji && 'bg-primary/15 ring-1 ring-primary/50',
+                    )}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      <button
-        type="button"
-        disabled={!isDeviceReady || isRevoked}
-        onClick={() => onReply(message)}
-        title={isDeviceReady ? t.chats.reply : t.chats.accountCurrentlyOffline}
-        aria-label={t.chats.reply}
-        className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        <Reply className="size-3.5" />
-      </button>
+          <button
+            type="button"
+            disabled={!isDeviceReady || isRevoked}
+            onClick={() => onReply(message)}
+            title={isDeviceReady ? t.chats.reply : t.chats.accountCurrentlyOffline}
+            aria-label={t.chats.reply}
+            className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Reply className="size-3.5" />
+          </button>
+        </>
+      )}
 
       {copyableText && (
         <button
@@ -266,6 +272,7 @@ export function MessageBubble({
   quoted,
   deviceId,
   isDeviceReady,
+  canReactAndReply = true,
   isReactionPickerOpen,
   onToggleReactionPicker,
   onCloseReactionPicker,
@@ -282,6 +289,7 @@ export function MessageBubble({
   quoted: MessageInfo | null | undefined;
   deviceId: string;
   isDeviceReady: boolean;
+  canReactAndReply?: boolean;
   isReactionPickerOpen: boolean;
   onToggleReactionPicker: (messageId: string) => void;
   onCloseReactionPicker: () => void;
@@ -400,7 +408,7 @@ export function MessageBubble({
 
           <MessageReactionsBar
             groupedReactions={groupedReactions}
-            interactive={isDeviceReady && !isRevoked}
+            interactive={canReactAndReply && isDeviceReady && !isRevoked}
             onReact={(emoji) => onReact(message, emoji)}
           />
 
@@ -416,6 +424,7 @@ export function MessageBubble({
             isOut={isOut}
             isRevoked={isRevoked}
             isDeviceReady={isDeviceReady}
+            canReactAndReply={canReactAndReply}
             copyableText={copyableText}
             copied={copied}
             isReactionPickerOpen={isReactionPickerOpen}

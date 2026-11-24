@@ -17,6 +17,7 @@ import {Label} from '@/components/ui/label';
 import {Skeleton} from '@/components/ui/skeleton';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
 export function AccountProfilePanel({
   device,
@@ -27,6 +28,8 @@ export function AccountProfilePanel({
 }) {
   const {t} = useI18n();
   const queryClient = useQueryClient();
+  const user = useAuthStore((s) => s.user);
+  const canWriteAccounts = hasUserPermission(user, 'accounts:write');
   const [pushName, setPushName] = useState('');
   const [myAvatarUrl, setMyAvatarUrl] = useState<string | null>(null);
   const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -115,66 +118,74 @@ export function AccountProfilePanel({
             <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground" dir="ltr">
               {device.jid || device.phone_number || device.id}
             </p>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <input
-                ref={avatarFileInputRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/gif"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  e.target.value = '';
-                  if (file) avatarMutation.mutate(file);
-                }}
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={avatarMutation.isPending}
-                onClick={() => avatarFileInputRef.current?.click()}
-              >
-                <Camera className="size-3.5" />
-                <span>{t.account.uploadAvatar}</span>
-              </Button>
-              {(device.jid || device.phone_number) && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={loadMyAvatarMutation.isPending}
-                  onClick={() => loadMyAvatarMutation.mutate()}
-                >
-                  {t.account.loadMyAvatar}
-                </Button>
-              )}
-            </div>
+            {(canWriteAccounts || device.jid || device.phone_number) && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {canWriteAccounts && (
+                  <>
+                    <input
+                      ref={avatarFileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/gif"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        if (file) avatarMutation.mutate(file);
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={avatarMutation.isPending}
+                      onClick={() => avatarFileInputRef.current?.click()}
+                    >
+                      <Camera className="size-3.5" />
+                      <span>{t.account.uploadAvatar}</span>
+                    </Button>
+                  </>
+                )}
+                {(device.jid || device.phone_number) && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={loadMyAvatarMutation.isPending}
+                    onClick={() => loadMyAvatarMutation.mutate()}
+                  >
+                    {t.account.loadMyAvatar}
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!pushName.trim()) return;
-            pushNameMutation.mutate();
-          }}
-          className="border-t border-border pt-4"
-        >
-          <Label htmlFor="workspace-push-name-input">{t.account.pushNameLabel}</Label>
-          <div className="mt-1.5 flex flex-wrap items-center gap-2">
-            <Input
-              id="workspace-push-name-input"
-              className="min-w-[200px] flex-1"
-              value={pushName}
-              onChange={(e) => setPushName(e.target.value)}
-              placeholder={t.account.pushNamePlaceholder}
-              required
-            />
-            <Button type="submit" disabled={pushNameMutation.isPending || !pushName.trim()}>
-              {t.account.updatePushName}
-            </Button>
-          </div>
-        </form>
+        {canWriteAccounts && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!pushName.trim()) return;
+              pushNameMutation.mutate();
+            }}
+            className="border-t border-border pt-4"
+          >
+            <Label htmlFor="workspace-push-name-input">{t.account.pushNameLabel}</Label>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <Input
+                id="workspace-push-name-input"
+                className="min-w-[200px] flex-1"
+                value={pushName}
+                onChange={(e) => setPushName(e.target.value)}
+                placeholder={t.account.pushNamePlaceholder}
+                required
+              />
+              <Button type="submit" disabled={pushNameMutation.isPending || !pushName.trim()}>
+                {t.account.updatePushName}
+              </Button>
+            </div>
+          </form>
+        )}
       </div>
 
       {/* Privacy Table */}

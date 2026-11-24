@@ -10,6 +10,7 @@ import {NewsletterMessagesPanel} from '@/features/groups/newsletter-messages-pan
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {cn} from '@/lib/utils';
+import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
 export function NewsletterAvatar({
   name,
@@ -60,6 +61,8 @@ export function NewsletterWorkspacePanel({
   const {lang, t} = useI18n();
   const isRtl = lang === 'ar';
   const BackIcon = isRtl ? ArrowRight : ArrowLeft;
+  const user = useAuthStore((s) => s.user);
+  const canManageChannels = hasUserPermission(user, 'misc:channels.manage');
   const nl = item.newsletter;
   const title = nl.thread_metadata?.name?.text?.trim() || item.name || item.jid;
   const description = nl.thread_metadata?.description?.text?.trim();
@@ -122,30 +125,31 @@ export function NewsletterWorkspacePanel({
           </div>
         </div>
 
-        {isFollowed ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="shrink-0 whitespace-nowrap"
-            disabled={unfollowMutation.isPending}
-            onClick={() => unfollowMutation.mutate()}
-          >
-            <UserMinus className="size-3.5" />
-            <span>{t.misc.unfollow}</span>
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            size="sm"
-            className="shrink-0 whitespace-nowrap"
-            disabled={followMutation.isPending}
-            onClick={() => followMutation.mutate()}
-          >
-            <UserPlus className="size-3.5" />
-            <span>{t.misc.follow}</span>
-          </Button>
-        )}
+        {canManageChannels &&
+          (isFollowed ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0 whitespace-nowrap"
+              disabled={unfollowMutation.isPending}
+              onClick={() => unfollowMutation.mutate()}
+            >
+              <UserMinus className="size-3.5" />
+              <span>{t.misc.unfollow}</span>
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              className="shrink-0 whitespace-nowrap"
+              disabled={followMutation.isPending}
+              onClick={() => followMutation.mutate()}
+            >
+              <UserPlus className="size-3.5" />
+              <span>{t.misc.follow}</span>
+            </Button>
+          ))}
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">

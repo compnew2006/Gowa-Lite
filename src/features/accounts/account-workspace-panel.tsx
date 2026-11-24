@@ -29,6 +29,7 @@ import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {cn} from '@/lib/utils';
+import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
 type AccountWorkspaceTab = 'connection' | 'profile' | 'tools';
 
@@ -58,6 +59,10 @@ export function AccountWorkspacePanel({
   const {lang, t} = useI18n();
   const isRtl = lang === 'ar';
   const BackIcon = isRtl ? ArrowRight : ArrowLeft;
+  const user = useAuthStore((s) => s.user);
+  const canWriteAccounts = hasUserPermission(user, 'accounts:write');
+  const canRejectCalls = hasUserPermission(user, 'misc:calls.reject');
+  const canReadChats = hasUserPermission(user, 'chats:read');
 
   const [activeTab, setActiveTab] = useState<AccountWorkspaceTab>('connection');
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -153,36 +158,40 @@ export function AccountWorkspacePanel({
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1.5">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => onEditAlias(device)}
-            title={t.accounts.editAliasAria}
-            aria-label={t.accounts.editAliasAria}
-          >
-            <Pencil className="size-4" />
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={reconnectMutation.isPending}
-            onClick={() => reconnectMutation.mutate()}
-          >
-            <RefreshCw className={cn('size-3.5', reconnectMutation.isPending && 'animate-spin')} />
-            <span className="hidden sm:inline">{t.accounts.reconnectDevice}</span>
-          </Button>
-        </div>
+        {canWriteAccounts && (
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => onEditAlias(device)}
+              title={t.accounts.editAliasAria}
+              aria-label={t.accounts.editAliasAria}
+            >
+              <Pencil className="size-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={reconnectMutation.isPending}
+              onClick={() => reconnectMutation.mutate()}
+            >
+              <RefreshCw className={cn('size-3.5', reconnectMutation.isPending && 'animate-spin')} />
+              <span className="hidden sm:inline">{t.accounts.reconnectDevice}</span>
+            </Button>
+          </div>
+        )}
       </header>
 
       {/* Workspace Tabs */}
       <div className="flex shrink-0 items-center gap-1 border-b border-border bg-card/60 px-4 py-2 overflow-x-auto">
         {(
           [
-            {id: 'connection', label: t.accounts.tabConnection, icon: Smartphone},
-            {id: 'profile', label: t.accounts.tabProfile, icon: Shield},
-            {id: 'tools', label: t.accounts.tabTools, icon: Wrench},
-          ] as const
+            {id: 'connection' as const, label: t.accounts.tabConnection, icon: Smartphone},
+            {id: 'profile' as const, label: t.accounts.tabProfile, icon: Shield},
+            ...(canRejectCalls
+              ? [{id: 'tools' as const, label: t.accounts.tabTools, icon: Wrench}]
+              : []),
+          ]
         ).map((tab) => {
           const Icon = tab.icon;
           const active = activeTab === tab.id;
@@ -210,7 +219,7 @@ export function AccountWorkspacePanel({
         <div className="mx-auto max-w-3xl space-y-5">
           {activeTab === 'connection' && (
             <>
-              {!isLoggedIn && (
+              {!isLoggedIn && canWriteAccounts && (
                 <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-5">
                   <h3 className="text-sm font-semibold text-foreground">
                     {t.accounts.pairingPromptTitle}
@@ -260,13 +269,15 @@ export function AccountWorkspacePanel({
 
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Link
-                    to={`/chats?device=${encodeURIComponent(device.id)}`}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted whitespace-nowrap"
-                  >
-                    <MessagesSquare className="size-3.5" />
-                    <span>{t.accounts.openInChats}</span>
-                  </Link>
+                  {canReadChats && (
+                    <Link
+                      to={`/chats?device=${encodeURIComponent(device.id)}`}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted whitespace-nowrap"
+                    >
+                      <MessagesSquare className="size-3.5" />
+                      <span>{t.accounts.openInChats}</span>
+                    </Link>
+                  )}
                   <Link
                     to={`/account?device=${encodeURIComponent(device.id)}`}
                     className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted whitespace-nowrap"
@@ -276,28 +287,30 @@ export function AccountWorkspacePanel({
                   </Link>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  {isLoggedIn && (
+                {canWriteAccounts && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {isLoggedIn && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={logoutMutation.isPending}
+                        onClick={() => logoutMutation.mutate()}
+                      >
+                        <LogOut className="size-3.5" />
+                        <span>{t.accounts.logoutDevice}</span>
+                      </Button>
+                    )}
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       size="sm"
-                      disabled={logoutMutation.isPending}
-                      onClick={() => logoutMutation.mutate()}
+                      className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      onClick={() => setConfirmDelete(true)}
                     >
-                      <LogOut className="size-3.5" />
-                      <span>{t.accounts.logoutDevice}</span>
+                      <Trash2 className="size-3.5" />
+                      <span>{t.deleteAction}</span>
                     </Button>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                    onClick={() => setConfirmDelete(true)}
-                  >
-                    <Trash2 className="size-3.5" />
-                    <span>{t.deleteAction}</span>
-                  </Button>
-                </div>
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -310,7 +323,7 @@ export function AccountWorkspacePanel({
             />
           )}
 
-          {activeTab === 'tools' && <RejectCallPanel deviceId={device.id} />}
+          {activeTab === 'tools' && canRejectCalls && <RejectCallPanel deviceId={device.id} />}
         </div>
       </div>
 

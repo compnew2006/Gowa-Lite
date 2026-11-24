@@ -8,6 +8,7 @@ import {
   Moon,
   Radio,
   Settings,
+  ShieldCheck,
   Smartphone,
   Sun,
   UserCog,
@@ -32,7 +33,7 @@ import {
 } from '@/lib/notifications';
 import {cn} from '@/lib/utils';
 import {wsClient, useWsStore} from '@/lib/ws';
-import {useAuthStore} from '@/stores/auth';
+import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
 export function AppShell() {
   const navigate = useNavigate();
@@ -49,10 +50,12 @@ export function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const notifiedIdsRef = useRef<Set<string>>(new Set());
 
+  const canReadChats = hasUserPermission(user, 'chats:read');
+
   const unreadQuery = useQuery({
     queryKey: ['unified-chats', [], '', false],
     queryFn: () => listUnifiedChats({}),
-    enabled: Boolean(user),
+    enabled: Boolean(user) && canReadChats,
     refetchInterval: 30_000,
     staleTime: 20_000,
   });
@@ -144,23 +147,71 @@ export function AppShell() {
   ]);
 
   const primaryNav = [
-    {to: '/chats', label: t.nav.chats, icon: MessagesSquare, adminOnly: false},
-    {to: '/scheduled', label: t.nav.scheduled, icon: CalendarClock, adminOnly: true},
-    {to: '/groups', label: t.nav.groups, icon: UsersRound, adminOnly: true},
-    {to: '/account', label: t.nav.account, icon: UserCog, adminOnly: true},
-    {to: '/misc', label: t.nav.misc, icon: Radio, adminOnly: true},
-    {to: '/accounts', label: t.nav.accounts, icon: Smartphone, adminOnly: true},
-    {to: '/users', label: t.nav.users, icon: Users, adminOnly: true},
+    {to: '/chats', label: t.nav.chats, icon: MessagesSquare, perms: ['chats:read']},
+    {
+      to: '/scheduled',
+      label: t.nav.scheduled,
+      icon: CalendarClock,
+      perms: ['schedules:read', 'schedules:write', 'schedules:manage'],
+    },
+    {
+      to: '/groups',
+      label: t.nav.groups,
+      icon: UsersRound,
+      perms: ['groups:read', 'groups:write', 'groups:manage'],
+    },
+    {
+      to: '/account',
+      label: t.nav.account,
+      icon: UserCog,
+      perms: ['accounts:read', 'accounts:write'],
+    },
+    {
+      to: '/misc',
+      label: t.nav.misc,
+      icon: Radio,
+      perms: ['misc:status.read', 'misc:channels.manage', 'misc:calls.reject'],
+    },
+    {
+      to: '/accounts',
+      label: t.nav.accounts,
+      icon: Smartphone,
+      perms: ['accounts:read', 'accounts:write'],
+    },
+    {
+      to: '/settings/users',
+      label: t.nav.users,
+      icon: Users,
+      perms: ['users:read', 'users:write', 'users:delete'],
+    },
   ];
 
-  const allNav = [
-    ...primaryNav,
-    {to: '/settings', label: t.nav.settings, icon: Settings, adminOnly: true},
+  const canAccessGowaSettings = hasUserAnyPermission(user, ['settings:read', 'settings:write']);
+  const canAccessRoles = hasUserAnyPermission(user, ['roles:read', 'roles:write', 'roles:delete']);
+  const canAccessUsers = hasUserAnyPermission(user, ['users:read', 'users:write', 'users:delete']);
+  const settingsEntryTo = canAccessGowaSettings
+    ? '/settings'
+    : canAccessRoles
+      ? '/settings/roles'
+      : canAccessUsers
+        ? '/settings/users'
+        : null;
+
+  const mobileSettingsNav = [
+    ...(canAccessRoles
+      ? [{to: '/settings/roles', label: t.nav.roles, icon: ShieldCheck, perms: ['roles:read', 'roles:write', 'roles:delete']}]
+      : []),
+    ...(canAccessGowaSettings
+      ? [{to: '/settings', label: t.nav.settings, icon: Settings, perms: ['settings:read', 'settings:write']}]
+      : []),
   ];
 
-  const isAdmin = user?.role === 'admin';
-  const visiblePrimary = primaryNav.filter((item) => !item.adminOnly || isAdmin);
-  const visibleAll = allNav.filter((item) => !item.adminOnly || isAdmin);
+  const visiblePrimary = primaryNav.filter((item) => hasUserAnyPermission(user, item.perms));
+  const visibleAll = [...visiblePrimary, ...mobileSettingsNav];
+  const roleDisplayName = user
+    ? (t.rbac.systemRoleNames[user.role_slug] ?? user.role_name) ||
+      (user.role === 'admin' ? t.nav.adminRole : t.nav.agentRole)
+    : '';
   const isDark =
     typeof document !== 'undefined'
       ? document.documentElement.classList.contains('dark')
@@ -275,19 +326,23 @@ export function AppShell() {
             {isDark ? <Sun className="size-5" /> : <Moon className="size-5" />}
           </button>
 
-          {isAdmin && (
+          {(canAccessGowaSettings || canAccessRoles) && settingsEntryTo && (
             <NavLink
-              to="/settings"
-              title={t.nav.settings}
-              aria-label={t.nav.settings}
-              className={({isActive}) =>
-                cn(
+              to={settingsEntryTo}
+              end
+              title={canAccessGowaSettings ? t.nav.settings : t.nav.roles}
+              aria-label={canAccessGowaSettings ? t.nav.settings : t.nav.roles}
+              className={() => {
+                const active =
+                  location.pathname === '/settings' ||
+                  location.pathname.startsWith('/settings/roles');
+                return cn(
                   'flex size-10 items-center justify-center rounded-full transition-colors',
-                  isActive
+                  active
                     ? 'bg-secondary text-foreground'
                     : 'text-muted-foreground hover:bg-secondary/70 hover:text-foreground',
-                )
-              }
+                );
+              }}
             >
               <Settings className="size-5" />
             </NavLink>
@@ -295,7 +350,7 @@ export function AppShell() {
 
           {user && (
             <div
-              title={`${user.display_name} (${isAdmin ? t.nav.adminRole : t.nav.agentRole})`}
+              title={`${user.display_name} (${roleDisplayName})`}
               className="mt-1 flex size-9 items-center justify-center rounded-full bg-accent text-xs font-bold text-accent-foreground select-none"
             >
               {user.display_name.slice(0, 1).toUpperCase()}
@@ -363,9 +418,7 @@ export function AppShell() {
             {user && (
               <div className="border-t border-border p-3 text-xs">
                 <p className="truncate font-semibold text-foreground">{user.display_name}</p>
-                <p className="mt-0.5 text-muted-foreground">
-                  {isAdmin ? t.nav.adminRole : t.nav.agentRole}
-                </p>
+                <p className="mt-0.5 text-muted-foreground">{roleDisplayName}</p>
               </div>
             )}
           </aside>

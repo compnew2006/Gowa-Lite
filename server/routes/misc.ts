@@ -7,30 +7,46 @@ import {
   type GowaMessageInfo,
   type GowaPagination,
 } from '../gowa-client.ts';
-import {createApiRouter, handleRouteError, requireAdmin, requireAuth} from '../middleware/auth.ts';
+import {
+  assertDeviceAccess,
+  createApiRouter,
+  handleRouteError,
+  requireAuth,
+  requirePermission,
+} from '../middleware/auth.ts';
+import {filterAllowedDevices} from '../rbac.ts';
 import {decodeRouteParam} from '../security.ts';
 import {normalizeWhatsAppJid, resolveAccountDisplayName} from '../services/chat-sync.ts';
+import type {AuthedRequest} from '../types.ts';
 
 export function registerMiscRoutes(): Router {
   const router = createApiRouter();
 
-  router.get('/api/misc/statuses', requireAuth, requireAdmin, async (req, res) => {
-    const rawDeviceIds =
-      typeof req.query.deviceIds === 'string' ? req.query.deviceIds : '';
-    const selectedDeviceSet = new Set(
-      rawDeviceIds
-        .split(',')
-        .map((id) => id.trim())
-        .filter(Boolean),
-    );
+  router.get(
+    '/api/misc/statuses',
+    requireAuth,
+    requirePermission('misc', 'status.read'),
+    async (req: AuthedRequest, res) => {
+      const rawDeviceIds =
+        typeof req.query.deviceIds === 'string' ? req.query.deviceIds : '';
+      const selectedDeviceSet = new Set(
+        rawDeviceIds
+          .split(',')
+          .map((id) => id.trim())
+          .filter(Boolean),
+      );
 
-    try {
-      const aliases = getAccountAliases();
-      const devices = (await gowaFetch<GowaDevice[]>('/devices')) ?? [];
-      const targetDevices =
-        selectedDeviceSet.size > 0
-          ? devices.filter((d) => selectedDeviceSet.has(d.id))
-          : devices;
+      try {
+        for (const requestedId of selectedDeviceSet) {
+          assertDeviceAccess(req.user, requestedId);
+        }
+        const aliases = getAccountAliases();
+        const allDevices = (await gowaFetch<GowaDevice[]>('/devices')) ?? [];
+        const devices = filterAllowedDevices(req.user!, allDevices);
+        const targetDevices =
+          selectedDeviceSet.size > 0
+            ? devices.filter((d) => selectedDeviceSet.has(d.id))
+            : devices;
 
       const statusCounts = new Map<string, number>();
       const deviceErrors: Array<{device_id: string; display_name: string; message: string}> = [];
@@ -144,21 +160,27 @@ export function registerMiscRoutes(): Router {
     }
   });
 
-  router.get('/api/devices/:deviceId/newsletters', requireAuth, requireAdmin, async (req, res) => {
-    const deviceId = decodeRouteParam(req.params.deviceId);
-    try {
-      const data = await gowaFetch<{data?: unknown[]} | null>('/user/my/newsletters', {deviceId});
-      res.json({code: 'SUCCESS', message: 'ok', results: data?.data ?? []});
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  });
+  router.get(
+    '/api/devices/:deviceId/newsletters',
+    requireAuth,
+    requirePermission('misc', 'channels.manage'),
+    async (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        const data = await gowaFetch<{data?: unknown[]} | null>('/user/my/newsletters', {deviceId});
+        res.json({code: 'SUCCESS', message: 'ok', results: data?.data ?? []});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
 
   router.post(
     '/api/devices/:deviceId/newsletters/follow',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('misc', 'channels.manage'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const body = req.body as {newsletter_id?: unknown};
       const newsletterId = typeof body.newsletter_id === 'string' ? body.newsletter_id.trim() : '';
@@ -167,6 +189,7 @@ export function registerMiscRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         await gowaFetch('/newsletter/follow', {
           method: 'POST',
           deviceId,
@@ -182,8 +205,8 @@ export function registerMiscRoutes(): Router {
   router.post(
     '/api/devices/:deviceId/newsletters/unfollow',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('misc', 'channels.manage'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const body = req.body as {newsletter_id?: unknown};
       const newsletterId = typeof body.newsletter_id === 'string' ? body.newsletter_id.trim() : '';
@@ -192,6 +215,7 @@ export function registerMiscRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         await gowaFetch('/newsletter/unfollow', {
           method: 'POST',
           deviceId,
@@ -207,8 +231,8 @@ export function registerMiscRoutes(): Router {
   router.get(
     '/api/devices/:deviceId/newsletters/info',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('misc', 'channels.manage'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const newsletterId =
         typeof req.query.newsletter_id === 'string' ? req.query.newsletter_id.trim() : undefined;
@@ -218,6 +242,7 @@ export function registerMiscRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         const result = await gowaFetch('/newsletter/info', {
           deviceId,
           query: {newsletter_id: newsletterId, invite},
@@ -232,8 +257,8 @@ export function registerMiscRoutes(): Router {
   router.get(
     '/api/devices/:deviceId/newsletters/directory',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('misc', 'channels.manage'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const view = typeof req.query.view === 'string' ? req.query.view.trim() : undefined;
       const searchText =
@@ -246,6 +271,7 @@ export function registerMiscRoutes(): Router {
       const limit = req.query.limit ? Number(req.query.limit) : 20;
 
       try {
+        assertDeviceAccess(req.user, deviceId);
         const result = await gowaFetch('/newsletter/directory', {
           deviceId,
           query: {
@@ -267,8 +293,8 @@ export function registerMiscRoutes(): Router {
   router.get(
     '/api/devices/:deviceId/newsletters/messages',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('misc', 'channels.manage'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const newsletterId =
         typeof req.query.newsletter_id === 'string' ? req.query.newsletter_id.trim() : '';
@@ -279,6 +305,7 @@ export function registerMiscRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         const result = await gowaFetch('/newsletter/messages', {
           deviceId,
           query: {
@@ -297,8 +324,8 @@ export function registerMiscRoutes(): Router {
   router.get(
     '/api/devices/:deviceId/newsletters/message-updates',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('misc', 'channels.manage'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const newsletterId =
         typeof req.query.newsletter_id === 'string' ? req.query.newsletter_id.trim() : '';
@@ -309,6 +336,7 @@ export function registerMiscRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         const result = await gowaFetch('/newsletter/message-updates', {
           deviceId,
           query: {
@@ -327,8 +355,8 @@ export function registerMiscRoutes(): Router {
   router.get(
     '/api/devices/:deviceId/newsletters/messages/:serverId/download',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('misc', 'channels.manage'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const serverId = Number(req.params.serverId);
       const newsletterId =
@@ -338,6 +366,7 @@ export function registerMiscRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         const result = await gowaFetch(`/newsletter/messages/${serverId}/download`, {
           deviceId,
           query: {newsletter_id: newsletterId},
@@ -352,10 +381,11 @@ export function registerMiscRoutes(): Router {
   router.get(
     '/api/devices/:deviceId/newsletters/live-updates',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('misc', 'channels.manage'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       try {
+        assertDeviceAccess(req.user, deviceId);
         const data = await gowaFetch<{data?: unknown[]} | null>('/newsletter/live-updates', {
           deviceId,
         });
@@ -369,8 +399,8 @@ export function registerMiscRoutes(): Router {
   router.post(
     '/api/devices/:deviceId/newsletters/live-updates',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('misc', 'channels.manage'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const body = req.body as {newsletter_id?: unknown};
       const newsletterId = typeof body.newsletter_id === 'string' ? body.newsletter_id.trim() : '';
@@ -379,6 +409,7 @@ export function registerMiscRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         const result = await gowaFetch('/newsletter/live-updates', {
           method: 'POST',
           deviceId,
@@ -394,8 +425,8 @@ export function registerMiscRoutes(): Router {
   router.delete(
     '/api/devices/:deviceId/newsletters/live-updates',
     requireAuth,
-    requireAdmin,
-    async (req, res) => {
+    requirePermission('misc', 'channels.manage'),
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const newsletterId =
         typeof req.query.newsletter_id === 'string' ? req.query.newsletter_id.trim() : '';
@@ -404,6 +435,7 @@ export function registerMiscRoutes(): Router {
         return;
       }
       try {
+        assertDeviceAccess(req.user, deviceId);
         await gowaFetch('/newsletter/live-updates', {
           method: 'DELETE',
           deviceId,
@@ -416,26 +448,32 @@ export function registerMiscRoutes(): Router {
     },
   );
 
-  router.post('/api/devices/:deviceId/call/reject', requireAuth, requireAdmin, async (req, res) => {
-    const deviceId = decodeRouteParam(req.params.deviceId);
-    const body = req.body as {caller_jid?: unknown; call_id?: unknown};
-    const callerJid = typeof body.caller_jid === 'string' ? body.caller_jid.trim() : '';
-    const callId = typeof body.call_id === 'string' ? body.call_id.trim() : '';
-    if (!callerJid || !callId) {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المتصل ومعرّف المكالمة مطلوبان'});
-      return;
-    }
-    try {
-      const result = await gowaFetch('/call/reject', {
-        method: 'POST',
-        deviceId,
-        body: {caller_jid: callerJid, call_id: callId},
-      });
-      res.json({code: 'SUCCESS', message: 'تم رفض المكالمة', results: result});
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  });
+  router.post(
+    '/api/devices/:deviceId/call/reject',
+    requireAuth,
+    requirePermission('misc', 'calls.reject'),
+    async (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      const body = req.body as {caller_jid?: unknown; call_id?: unknown};
+      const callerJid = typeof body.caller_jid === 'string' ? body.caller_jid.trim() : '';
+      const callId = typeof body.call_id === 'string' ? body.call_id.trim() : '';
+      if (!callerJid || !callId) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المتصل ومعرّف المكالمة مطلوبان'});
+        return;
+      }
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        const result = await gowaFetch('/call/reject', {
+          method: 'POST',
+          deviceId,
+          body: {caller_jid: callerJid, call_id: callId},
+        });
+        res.json({code: 'SUCCESS', message: 'تم رفض المكالمة', results: result});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
 
   return router;
 }

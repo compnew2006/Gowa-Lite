@@ -2,19 +2,32 @@ import {useEffect, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {CheckCircle2, Loader2, PlugZap, Save, XCircle} from 'lucide-react';
 import {toast} from 'sonner';
-import {getGowaSettings, saveGowaSettings, testGowaSettings} from '@/api/client';
-import type {GowaProbeResult} from '@/api/types';
+import {
+  getGowaSettings,
+  getInboxPolicy,
+  saveGowaSettings,
+  saveInboxPolicy,
+  testGowaSettings,
+} from '@/api/client';
+import type {
+  ClosedReplyPolicy,
+  GowaProbeResult,
+  UnassignedReplyPolicy,
+} from '@/api/types';
+import {SettingsTabs} from '@/components/settings-tabs';
 import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
-import {useAuthStore} from '@/stores/auth';
+import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
 export default function SettingsPage() {
   const queryClient = useQueryClient();
   const {t} = useI18n();
+  const user = useAuthStore((s) => s.user);
   const setGowaConfigured = useAuthStore((s) => s.setGowaConfigured);
+  const canWrite = hasUserPermission(user, 'settings:write');
 
   const [gowaUrl, setGowaUrl] = useState('');
   const [gowaUsername, setGowaUsername] = useState('');
@@ -22,9 +35,17 @@ export default function SettingsPage() {
   const [clearPassword, setClearPassword] = useState(false);
   const [probeResult, setProbeResult] = useState<GowaProbeResult | null>(null);
 
+  const [unassignedPolicy, setUnassignedPolicy] = useState<UnassignedReplyPolicy>('auto_claim');
+  const [closedPolicy, setClosedPolicy] = useState<ClosedReplyPolicy>('block');
+
   const query = useQuery({
     queryKey: ['gowa-settings'],
     queryFn: getGowaSettings,
+  });
+
+  const policyQuery = useQuery({
+    queryKey: ['inbox-policy'],
+    queryFn: getInboxPolicy,
   });
 
   useEffect(() => {
@@ -35,6 +56,13 @@ export default function SettingsPage() {
       setClearPassword(false);
     }
   }, [query.data]);
+
+  useEffect(() => {
+    if (policyQuery.data) {
+      setUnassignedPolicy(policyQuery.data.unassigned_reply_policy);
+      setClosedPolicy(policyQuery.data.closed_reply_policy);
+    }
+  }, [policyQuery.data]);
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -71,22 +99,92 @@ export default function SettingsPage() {
     },
   });
 
+  const savePolicyMutation = useMutation({
+    mutationFn: () =>
+      saveInboxPolicy({
+        unassigned_reply_policy: unassignedPolicy,
+        closed_reply_policy: closedPolicy,
+      }),
+    onSuccess: () => {
+      toast.success(t.settings.policySavedToast);
+      void queryClient.invalidateQueries({queryKey: ['inbox-policy']});
+    },
+    onError: (err) => toast.error(toApiError(err).message),
+  });
+
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
+    if (!canWrite) return;
     saveMutation.mutate();
   };
 
+  const handlePolicySubmit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!canWrite) return;
+    savePolicyMutation.mutate();
+  };
+
+  const unassignedOptions: Array<{
+    value: UnassignedReplyPolicy;
+    title: string;
+    desc: string;
+  }> = [
+    {
+      value: 'auto_claim',
+      title: t.settings.unassignedAutoClaimTitle,
+      desc: t.settings.unassignedAutoClaimDesc,
+    },
+    {
+      value: 'require_claim',
+      title: t.settings.unassignedRequireClaimTitle,
+      desc: t.settings.unassignedRequireClaimDesc,
+    },
+    {
+      value: 'allow_without_claim',
+      title: t.settings.unassignedAllowTitle,
+      desc: t.settings.unassignedAllowDesc,
+    },
+  ];
+
+  const closedOptions: Array<{
+    value: ClosedReplyPolicy;
+    title: string;
+    desc: string;
+  }> = [
+    {
+      value: 'block',
+      title: t.settings.closedBlockTitle,
+      desc: t.settings.closedBlockDesc,
+    },
+    {
+      value: 'reopen_and_claim',
+      title: t.settings.closedReopenTitle,
+      desc: t.settings.closedReopenDesc,
+    },
+  ];
+
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-5">
-      <div>
-        <h1 className="text-lg font-bold text-foreground">{t.settings.pageTitle}</h1>
-        <p className="text-xs text-muted-foreground">{t.settings.pageSubtitle}</p>
+    <div className="flex flex-col gap-5">
+      <div className="flex flex-col gap-3">
+        <SettingsTabs />
+        <div>
+          <h1 className="text-lg font-bold text-foreground" style={{textWrap: 'balance'}}>
+            {t.settings.pageTitle}
+          </h1>
+          <p className="text-xs text-muted-foreground">{t.settings.pageSubtitle}</p>
+        </div>
       </div>
 
       <form
         onSubmit={handleSubmit}
-        className="flex flex-col gap-4 rounded-xl border border-border bg-card p-6"
+        className="flex max-w-2xl flex-col gap-4 rounded-xl border border-border bg-card p-6"
       >
+        {!canWrite && (
+          <div className="rounded-lg border border-border bg-muted/40 px-3.5 py-2 text-xs text-muted-foreground">
+            {t.settings.readOnlyNotice}
+          </div>
+        )}
+
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="settings-gowa-url">{t.settings.gowaUrl}</Label>
           <Input
@@ -94,6 +192,7 @@ export default function SettingsPage() {
             dir="ltr"
             placeholder="http://localhost:3000"
             value={gowaUrl}
+            disabled={!canWrite}
             onChange={(e) => setGowaUrl(e.target.value)}
           />
         </div>
@@ -106,6 +205,7 @@ export default function SettingsPage() {
               dir="ltr"
               placeholder={t.optional}
               value={gowaUsername}
+              disabled={!canWrite}
               onChange={(e) => setGowaUsername(e.target.value)}
             />
           </div>
@@ -122,10 +222,10 @@ export default function SettingsPage() {
                   : t.optional
               }
               value={gowaPassword}
-              disabled={clearPassword}
+              disabled={!canWrite || clearPassword}
               onChange={(e) => setGowaPassword(e.target.value)}
             />
-            {query.data?.has_password && (
+            {canWrite && query.data?.has_password && (
               <label className="mt-1 flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
                 <input
                   type="checkbox"
@@ -166,30 +266,120 @@ export default function SettingsPage() {
           </div>
         )}
 
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={testMutation.isPending || !gowaUrl.trim()}
-            onClick={() => testMutation.mutate()}
-          >
-            {testMutation.isPending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <PlugZap className="size-4" />
-            )}
-            <span>{t.settings.testButton}</span>
-          </Button>
+        {canWrite && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={testMutation.isPending || !gowaUrl.trim()}
+              onClick={() => testMutation.mutate()}
+            >
+              {testMutation.isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <PlugZap className="size-4" />
+              )}
+              <span>{t.settings.testButton}</span>
+            </Button>
 
-          <Button type="submit" disabled={saveMutation.isPending}>
-            {saveMutation.isPending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Save className="size-4" />
-            )}
-            <span>{t.settings.saveButton}</span>
-          </Button>
+            <Button type="submit" disabled={saveMutation.isPending}>
+              {saveMutation.isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Save className="size-4" />
+              )}
+              <span>{t.settings.saveButton}</span>
+            </Button>
+          </div>
+        )}
+      </form>
+
+      <form
+        onSubmit={handlePolicySubmit}
+        className="flex max-w-2xl flex-col gap-5 rounded-xl border border-border bg-card p-6"
+      >
+        <div>
+          <h2 className="text-base font-bold text-foreground">{t.settings.inboxPolicyTitle}</h2>
+          <p className="mt-1 text-xs text-muted-foreground">{t.settings.inboxPolicySubtitle}</p>
         </div>
+
+        <fieldset disabled={!canWrite} className="flex flex-col gap-2">
+          <legend className="mb-1 text-xs font-semibold text-foreground">
+            {t.settings.unassignedReplyLabel}
+          </legend>
+          {unassignedOptions.map((opt) => (
+            <label
+              key={opt.value}
+              className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3.5 py-2.5 transition-colors ${
+                unassignedPolicy === opt.value
+                  ? 'border-primary/60 bg-accent/50'
+                  : 'border-border hover:bg-muted/40'
+              } ${!canWrite ? 'cursor-default opacity-80' : ''}`}
+            >
+              <input
+                type="radio"
+                name="unassigned_reply_policy"
+                value={opt.value}
+                checked={unassignedPolicy === opt.value}
+                onChange={() => setUnassignedPolicy(opt.value)}
+                className="mt-0.5 shrink-0"
+              />
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-foreground">{opt.title}</p>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+                  {opt.desc}
+                </p>
+              </div>
+            </label>
+          ))}
+        </fieldset>
+
+        <fieldset disabled={!canWrite} className="flex flex-col gap-2">
+          <legend className="mb-1 text-xs font-semibold text-foreground">
+            {t.settings.closedReplyLabel}
+          </legend>
+          {closedOptions.map((opt) => (
+            <label
+              key={opt.value}
+              className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3.5 py-2.5 transition-colors ${
+                closedPolicy === opt.value
+                  ? 'border-primary/60 bg-accent/50'
+                  : 'border-border hover:bg-muted/40'
+              } ${!canWrite ? 'cursor-default opacity-80' : ''}`}
+            >
+              <input
+                type="radio"
+                name="closed_reply_policy"
+                value={opt.value}
+                checked={closedPolicy === opt.value}
+                onChange={() => setClosedPolicy(opt.value)}
+                className="mt-0.5 shrink-0"
+              />
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-foreground">{opt.title}</p>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+                  {opt.desc}
+                </p>
+              </div>
+            </label>
+          ))}
+        </fieldset>
+
+        {canWrite && (
+          <div className="flex justify-end border-t border-border pt-4">
+            <Button
+              type="submit"
+              disabled={savePolicyMutation.isPending || policyQuery.isLoading}
+            >
+              {savePolicyMutation.isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Save className="size-4" />
+              )}
+              <span>{t.settings.savePolicyBtn}</span>
+            </Button>
+          </div>
+        )}
       </form>
     </div>
   );

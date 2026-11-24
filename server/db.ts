@@ -1,6 +1,16 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import {DatabaseSync, type SQLInputValue} from 'node:sqlite';
+import dotenv from 'dotenv';
+import {GowaError} from './errors.ts';
+import {
+  ALL_PERMISSION_KEYS,
+  SYSTEM_ROLE_DEFINITIONS,
+  normalizeDeviceIdsInput,
+  normalizePermissionsInput,
+} from './rbac.ts';
+
+dotenv.config({quiet: true});
 
 export type UserRole = 'admin' | 'agent';
 export type ThemePreference = 'light' | 'dark' | 'system';
@@ -11,10 +21,28 @@ export interface PublicUser {
   username: string;
   display_name: string;
   role: UserRole;
+  role_id: number | null;
+  role_slug: string;
+  role_name: string;
+  permissions: string[];
+  allowed_device_ids: string[];
   is_active: boolean;
   created_at: string;
   theme: ThemePreference;
   language: LanguagePreference;
+}
+
+export interface RoleRecord {
+  id: number;
+  slug: string;
+  name: string;
+  description: string;
+  is_system: boolean;
+  is_default: boolean;
+  permissions: string[];
+  user_count: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface GowaConfig {
@@ -28,9 +56,21 @@ interface UserRow {
   username: string;
   display_name: string;
   role: UserRole;
+  role_id: number | null;
   password_hash: string;
   is_active: number;
   created_at: string;
+}
+
+interface RoleRow {
+  id: number;
+  slug: string;
+  name: string;
+  description: string;
+  is_system: number;
+  is_default: number;
+  created_at: string;
+  updated_at: string;
 }
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
@@ -168,6 +208,68 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_conversation_notes_chat
     ON conversation_notes(device_id, chat_jid, is_pinned DESC, updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS roles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    description TEXT NOT NULL DEFAULT '',
+    is_system INTEGER NOT NULL DEFAULT 0,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS role_permissions (
+    role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    permission_key TEXT NOT NULL,
+    PRIMARY KEY (role_id, permission_key)
+  );
+
+  CREATE TABLE IF NOT EXISTS user_device_access (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    PRIMARY KEY (user_id, device_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_user_device_access_user
+    ON user_device_access(user_id);
+
+  CREATE TABLE IF NOT EXISTS chat_assignments (
+    device_id TEXT NOT NULL,
+    chat_jid TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'open', 'closed')),
+    assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    assigned_at TEXT,
+    claimed_at TEXT,
+    closed_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    closed_at TEXT,
+    close_reason TEXT NOT NULL DEFAULT '',
+    cached_title TEXT NOT NULL DEFAULT '',
+    last_activity_ms INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (device_id, chat_jid)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_chat_assignments_status_owner
+    ON chat_assignments(status, assigned_user_id, last_activity_ms DESC);
+
+  CREATE TABLE IF NOT EXISTS chat_lifecycle_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT NOT NULL,
+    chat_jid TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    actor_name TEXT NOT NULL DEFAULT '',
+    target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    target_name TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_chat_lifecycle_events_chat
+    ON chat_lifecycle_events(device_id, chat_jid, id ASC);
 `);
 
 {
@@ -188,6 +290,82 @@ db.exec(`
     db.exec('ALTER TABLE chat_sync_state ADD COLUMN catchup_prev_ms INTEGER NOT NULL DEFAULT 0');
   }
 }
+
+{
+  const userCols = queryAll<{name: string}>('PRAGMA table_info(users)');
+  if (!userCols.some((c) => c.name === 'role_id')) {
+    db.exec('ALTER TABLE users ADD COLUMN role_id INTEGER REFERENCES roles(id)');
+  }
+}
+
+export function seedAndMigrateRbac(): void {
+  const sp = 'gowa_rbac_seed';
+  db.exec(`SAVEPOINT ${sp}`);
+  try {
+    const selectBySlug = db.prepare('SELECT id FROM roles WHERE slug = ?');
+    const insertRole = db.prepare(
+      `INSERT INTO roles (slug, name, description, is_system, is_default)
+       VALUES (?, ?, ?, 1, 0)`,
+    );
+    const updateSystemRole = db.prepare(
+      `UPDATE roles
+       SET description = ?, is_system = 1
+       WHERE id = ?`,
+    );
+    const clearRolePerms = db.prepare('DELETE FROM role_permissions WHERE role_id = ?');
+    const insertRolePerm = db.prepare(
+      'INSERT OR IGNORE INTO role_permissions (role_id, permission_key) VALUES (?, ?)',
+    );
+
+    const roleIdsBySlug = new Map<string, number>();
+
+    for (const def of SYSTEM_ROLE_DEFINITIONS) {
+      let existing = selectBySlug.get(def.slug) as {id: number} | undefined;
+      if (!existing) {
+        const info = insertRole.run(def.slug, def.name, def.description);
+        existing = {id: Number(info.lastInsertRowid)};
+      } else {
+        updateSystemRole.run(def.description, existing.id);
+      }
+      roleIdsBySlug.set(def.slug, existing.id);
+      clearRolePerms.run(existing.id);
+      for (const permKey of def.permissions) {
+        insertRolePerm.run(existing.id, permKey);
+      }
+    }
+
+    const defaultRow = queryOne<{count: number}>(
+      'SELECT COUNT(*) AS count FROM roles WHERE is_default = 1',
+    );
+    if ((defaultRow?.count ?? 0) === 0) {
+      const agentId = roleIdsBySlug.get('agent');
+      if (agentId) {
+        db.prepare('UPDATE roles SET is_default = 1 WHERE id = ?').run(agentId);
+      }
+    }
+
+    const adminId = roleIdsBySlug.get('admin');
+    const agentId = roleIdsBySlug.get('agent');
+    if (adminId) {
+      db.prepare("UPDATE users SET role_id = ? WHERE role = 'admin' AND role_id IS NULL").run(
+        adminId,
+      );
+    }
+    if (agentId) {
+      db.prepare("UPDATE users SET role_id = ? WHERE role != 'admin' AND role_id IS NULL").run(
+        agentId,
+      );
+    }
+
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+  } catch (err) {
+    db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+    throw err;
+  }
+}
+
+seedAndMigrateRbac();
 
 function scryptAsync(password: string, salt: string, keylen: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -249,26 +427,107 @@ export function hasAnyUsers(): boolean {
 
 export function countActiveAdmins(): number {
   const row = queryOne<{count: number}>(
-    "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND is_active = 1",
+    `SELECT COUNT(*) AS count
+     FROM users u
+     LEFT JOIN roles r ON r.id = u.role_id
+     WHERE u.is_active = 1
+       AND (r.slug = 'admin' OR (u.role_id IS NULL AND u.role = 'admin'))`,
   );
   return row?.count ?? 0;
 }
 
+function getRolePermissions(roleId: number | null): string[] {
+  if (!roleId) return [];
+  const rows = queryAll<{permission_key: string}>(
+    'SELECT permission_key FROM role_permissions WHERE role_id = ?',
+    roleId,
+  );
+  const set = new Set(rows.map((r) => r.permission_key));
+  return ALL_PERMISSION_KEYS.filter((key) => set.has(key));
+}
+
+function getUserAllowedDeviceIds(userId: number): string[] {
+  const rows = queryAll<{device_id: string}>(
+    'SELECT device_id FROM user_device_access WHERE user_id = ? ORDER BY device_id ASC',
+    userId,
+  );
+  return rows.map((r) => r.device_id);
+}
+
+function loadRolePermissionsMap(): Map<number, string[]> {
+  const rows = queryAll<{role_id: number; permission_key: string}>(
+    'SELECT role_id, permission_key FROM role_permissions',
+  );
+  const byRole = new Map<number, Set<string>>();
+  for (const row of rows) {
+    let set = byRole.get(row.role_id);
+    if (!set) {
+      set = new Set<string>();
+      byRole.set(row.role_id, set);
+    }
+    set.add(row.permission_key);
+  }
+  const ordered = new Map<number, string[]>();
+  for (const [roleId, set] of byRole.entries()) {
+    ordered.set(
+      roleId,
+      ALL_PERMISSION_KEYS.filter((key) => set.has(key)),
+    );
+  }
+  return ordered;
+}
+
+function loadUserDevicesMap(): Map<number, string[]> {
+  const rows = queryAll<{user_id: number; device_id: string}>(
+    'SELECT user_id, device_id FROM user_device_access ORDER BY device_id ASC',
+  );
+  const byUser = new Map<number, string[]>();
+  for (const row of rows) {
+    let list = byUser.get(row.user_id);
+    if (!list) {
+      list = [];
+      byUser.set(row.user_id, list);
+    }
+    list.push(row.device_id);
+  }
+  return byUser;
+}
+
+type HydratedUserRow = UserRow & {
+  theme: ThemePreference;
+  language: LanguagePreference;
+  role_slug: string | null;
+  role_name: string | null;
+};
+
 function toPublicUser(
-  row: UserRow,
-  theme?: ThemePreference,
-  language?: LanguagePreference,
+  row: HydratedUserRow,
+  permissions?: string[],
+  allowedDeviceIds?: string[],
 ): PublicUser {
-  const prefs = theme && language ? {theme, language} : getUserPreferences(row.id);
+  const roleSlug = row.role_slug || (row.role === 'admin' ? 'admin' : 'agent');
+  const roleName =
+    row.role_name || (roleSlug === 'admin' ? 'مسؤول النظام' : 'وكيل خدمة');
+  const resolvedPermissions =
+    roleSlug === 'admin'
+      ? [...ALL_PERMISSION_KEYS]
+      : (permissions ?? getRolePermissions(row.role_id));
+  const resolvedDevices = allowedDeviceIds ?? getUserAllowedDeviceIds(row.id);
+
   return {
     id: row.id,
     username: row.username,
     display_name: row.display_name,
-    role: row.role,
+    role: roleSlug === 'admin' ? 'admin' : 'agent',
+    role_id: row.role_id,
+    role_slug: roleSlug,
+    role_name: roleName,
+    permissions: resolvedPermissions,
+    allowed_device_ids: resolvedDevices,
     is_active: row.is_active === 1,
     created_at: row.created_at,
-    theme: theme ?? prefs.theme,
-    language: language ?? prefs.language,
+    theme: row.theme,
+    language: row.language,
   };
 }
 
@@ -307,60 +566,378 @@ export function setUserTheme(userId: number, theme: ThemePreference): void {
   setUserPreferences(userId, {theme});
 }
 
-type UserWithPrefsRow = UserRow & {theme: ThemePreference; language: LanguagePreference};
+function getRoleRowById(id: number): RoleRow | undefined {
+  return queryOne<RoleRow>(
+    'SELECT id, slug, name, description, is_system, is_default, created_at, updated_at FROM roles WHERE id = ?',
+    id,
+  );
+}
+
+function getRoleRowBySlug(slug: string): RoleRow | undefined {
+  return queryOne<RoleRow>(
+    'SELECT id, slug, name, description, is_system, is_default, created_at, updated_at FROM roles WHERE slug = ?',
+    slug,
+  );
+}
+
+function getDefaultRoleRow(): RoleRow | undefined {
+  return (
+    queryOne<RoleRow>(
+      'SELECT id, slug, name, description, is_system, is_default, created_at, updated_at FROM roles WHERE is_default = 1 ORDER BY id ASC LIMIT 1',
+    ) ?? getRoleRowBySlug('agent')
+  );
+}
+
+function toRoleRecord(
+  row: RoleRow,
+  permissions?: string[],
+  userCount?: number,
+): RoleRecord {
+  const count =
+    userCount ??
+    (queryOne<{count: number}>('SELECT COUNT(*) AS count FROM users WHERE role_id = ?', row.id)
+      ?.count ?? 0);
+  return {
+    id: row.id,
+    slug: row.slug,
+    name: row.name,
+    description: row.description,
+    is_system: row.is_system === 1,
+    is_default: row.is_default === 1,
+    permissions: permissions ?? getRolePermissions(row.id),
+    user_count: Number(count),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export function listRoles(): RoleRecord[] {
+  const rows = queryAll<RoleRow & {user_count: number}>(
+    `SELECT r.id, r.slug, r.name, r.description, r.is_system, r.is_default, r.created_at, r.updated_at,
+            COUNT(u.id) AS user_count
+     FROM roles r
+     LEFT JOIN users u ON u.role_id = r.id
+     GROUP BY r.id
+     ORDER BY r.is_system DESC, r.id ASC`,
+  );
+  const permsMap = loadRolePermissionsMap();
+  return rows.map((row) => toRoleRecord(row, permsMap.get(row.id) ?? [], row.user_count));
+}
+
+export function getRoleById(id: number): RoleRecord | null {
+  const row = getRoleRowById(id);
+  return row ? toRoleRecord(row) : null;
+}
+
+export function getRoleBySlug(slug: string): RoleRecord | null {
+  const row = getRoleRowBySlug(slug);
+  return row ? toRoleRecord(row) : null;
+}
+
+function generateCustomRoleSlug(name: string): string {
+  const ascii = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32);
+  const base = ascii ? `custom-${ascii}` : `role-${crypto.randomBytes(3).toString('hex')}`;
+  let candidate = base;
+  let counter = 2;
+  while (getRoleRowBySlug(candidate)) {
+    candidate = `${base}-${counter++}`;
+  }
+  return candidate;
+}
+
+export function createRole(input: {
+  name: string;
+  description?: string;
+  permissions: unknown;
+  is_default?: boolean;
+}): RoleRecord {
+  const cleanName = input.name.trim();
+  const cleanDescription = (input.description ?? '').trim();
+  if (cleanName.length < 2 || cleanName.length > 60) {
+    throw new GowaError(400, 'VALIDATION_ERROR', 'اسم الدور يجب أن يكون بين 2 و 60 حرفًا');
+  }
+  if (cleanDescription.length > 250) {
+    throw new GowaError(400, 'VALIDATION_ERROR', 'وصف الدور يجب ألا يتجاوز 250 حرفًا');
+  }
+
+  const normalizedPermissions = normalizePermissionsInput(input.permissions);
+  const duplicate = queryOne<{id: number}>('SELECT id FROM roles WHERE name = ?', cleanName);
+  if (duplicate) {
+    throw new GowaError(409, 'ROLE_NAME_TAKEN', 'يوجد دور آخر بنفس الاسم بالفعل');
+  }
+
+  const slug = generateCustomRoleSlug(cleanName);
+  const isDefault = input.is_default === true;
+  const sp = 'gowa_create_role';
+  db.exec(`SAVEPOINT ${sp}`);
+  try {
+    if (isDefault) {
+      db.prepare('UPDATE roles SET is_default = 0').run();
+    }
+    const info = db
+      .prepare(
+        `INSERT INTO roles (slug, name, description, is_system, is_default)
+         VALUES (?, ?, ?, 0, ?)`,
+      )
+      .run(slug, cleanName, cleanDescription, isDefault ? 1 : 0);
+    const roleId = Number(info.lastInsertRowid);
+    const insertPerm = db.prepare(
+      'INSERT INTO role_permissions (role_id, permission_key) VALUES (?, ?)',
+    );
+    for (const permKey of normalizedPermissions) {
+      insertPerm.run(roleId, permKey);
+    }
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+    const created = getRoleById(roleId);
+    if (!created) throw new Error('Failed to load newly created role');
+    return created;
+  } catch (err) {
+    db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+    throw err;
+  }
+}
+
+export function updateRole(
+  id: number,
+  patch: {
+    name?: string;
+    description?: string;
+    permissions?: unknown;
+    is_default?: boolean;
+  },
+): RoleRecord | null {
+  const existing = getRoleRowById(id);
+  if (!existing) return null;
+  if (existing.is_system === 1) {
+    throw new GowaError(
+      403,
+      'SYSTEM_ROLE_PROTECTED',
+      'لا يمكن تعديل الأدوار النظامية الأساسية، يمكنك استنساخ الدور إلى دور مخصص',
+    );
+  }
+
+  let nextName = existing.name;
+  if (patch.name !== undefined) {
+    const cleanName = patch.name.trim();
+    if (cleanName.length < 2 || cleanName.length > 60) {
+      throw new GowaError(400, 'VALIDATION_ERROR', 'اسم الدور يجب أن يكون بين 2 و 60 حرفًا');
+    }
+    const duplicate = queryOne<{id: number}>(
+      'SELECT id FROM roles WHERE name = ? AND id != ?',
+      cleanName,
+      id,
+    );
+    if (duplicate) {
+      throw new GowaError(409, 'ROLE_NAME_TAKEN', 'يوجد دور آخر بنفس الاسم بالفعل');
+    }
+    nextName = cleanName;
+  }
+
+  let nextDescription = existing.description;
+  if (patch.description !== undefined) {
+    const cleanDesc = patch.description.trim();
+    if (cleanDesc.length > 250) {
+      throw new GowaError(400, 'VALIDATION_ERROR', 'وصف الدور يجب ألا يتجاوز 250 حرفًا');
+    }
+    nextDescription = cleanDesc;
+  }
+
+  const nextPermissions =
+    patch.permissions !== undefined ? normalizePermissionsInput(patch.permissions) : undefined;
+
+  const nextDefault =
+    patch.is_default === undefined ? existing.is_default === 1 : patch.is_default;
+
+  const sp = 'gowa_update_role';
+  db.exec(`SAVEPOINT ${sp}`);
+  try {
+    if (patch.is_default === true) {
+      db.prepare('UPDATE roles SET is_default = 0 WHERE id != ?').run(id);
+    } else if (patch.is_default === false && existing.is_default === 1) {
+      const agentRole = getRoleRowBySlug('agent');
+      if (agentRole && agentRole.id !== id) {
+        db.prepare('UPDATE roles SET is_default = 1 WHERE id = ?').run(agentRole.id);
+      }
+    }
+
+    db.prepare(
+      `UPDATE roles
+       SET name = ?, description = ?, is_default = ?, updated_at = datetime('now')
+       WHERE id = ?`,
+    ).run(nextName, nextDescription, nextDefault ? 1 : 0, id);
+
+    if (nextPermissions) {
+      db.prepare('DELETE FROM role_permissions WHERE role_id = ?').run(id);
+      const insertPerm = db.prepare(
+        'INSERT INTO role_permissions (role_id, permission_key) VALUES (?, ?)',
+      );
+      for (const permKey of nextPermissions) {
+        insertPerm.run(id, permKey);
+      }
+    }
+
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+    return getRoleById(id);
+  } catch (err) {
+    db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+    throw err;
+  }
+}
+
+export function deleteRole(id: number): boolean {
+  const existing = getRoleRowById(id);
+  if (!existing) return false;
+  if (existing.is_system === 1) {
+    throw new GowaError(403, 'SYSTEM_ROLE_PROTECTED', 'لا يمكن حذف الأدوار النظامية الأساسية');
+  }
+  const usage = queryOne<{count: number}>(
+    'SELECT COUNT(*) AS count FROM users WHERE role_id = ?',
+    id,
+  );
+  if ((usage?.count ?? 0) > 0) {
+    throw new GowaError(409, 'ROLE_IN_USE', 'لا يمكن حذف دور مرتبط بمستخدمين حاليين');
+  }
+
+  const sp = 'gowa_delete_role';
+  db.exec(`SAVEPOINT ${sp}`);
+  try {
+    if (existing.is_default === 1) {
+      const agentRole = getRoleRowBySlug('agent');
+      if (agentRole && agentRole.id !== id) {
+        db.prepare('UPDATE roles SET is_default = 1 WHERE id = ?').run(agentRole.id);
+      }
+    }
+    const result = db.prepare('DELETE FROM roles WHERE id = ?').run(id);
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+    return result.changes > 0;
+  } catch (err) {
+    db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+    throw err;
+  }
+}
+
+const USER_SELECT_BASE = `
+  SELECT u.id, u.username, u.display_name, u.role, u.role_id, u.password_hash, u.is_active, u.created_at,
+         COALESCE(p.theme, 'system') AS theme,
+         COALESCE(p.language, 'ar') AS language,
+         r.slug AS role_slug,
+         r.name AS role_name
+  FROM users u
+  LEFT JOIN user_preferences p ON p.user_id = u.id
+  LEFT JOIN roles r ON r.id = u.role_id
+`;
 
 export function listUsers(): PublicUser[] {
-  const rows = queryAll<UserWithPrefsRow>(
-    `SELECT u.id, u.username, u.display_name, u.role, u.password_hash, u.is_active, u.created_at,
-            COALESCE(p.theme, 'system') AS theme,
-            COALESCE(p.language, 'ar') AS language
-     FROM users u
-     LEFT JOIN user_preferences p ON p.user_id = u.id
-     ORDER BY u.id ASC`,
+  const rows = queryAll<HydratedUserRow>(`${USER_SELECT_BASE} ORDER BY u.id ASC`);
+  const permsMap = loadRolePermissionsMap();
+  const devicesMap = loadUserDevicesMap();
+  return rows.map((row) =>
+    toPublicUser(
+      row,
+      row.role_id ? (permsMap.get(row.role_id) ?? []) : undefined,
+      devicesMap.get(row.id) ?? [],
+    ),
   );
-  return rows.map((row) => toPublicUser(row, row.theme, row.language));
 }
 
 export function getUserById(id: number): PublicUser | null {
-  const row = queryOne<UserWithPrefsRow>(
-    `SELECT u.id, u.username, u.display_name, u.role, u.password_hash, u.is_active, u.created_at,
-            COALESCE(p.theme, 'system') AS theme,
-            COALESCE(p.language, 'ar') AS language
-     FROM users u
-     LEFT JOIN user_preferences p ON p.user_id = u.id
-     WHERE u.id = ?`,
-    id,
-  );
-  return row ? toPublicUser(row, row.theme, row.language) : null;
+  const row = queryOne<HydratedUserRow>(`${USER_SELECT_BASE} WHERE u.id = ?`, id);
+  return row ? toPublicUser(row) : null;
+}
+
+function resolveRoleForUserWrite(roleId?: number, legacyRole?: UserRole): RoleRow {
+  if (roleId !== undefined) {
+    const found = getRoleRowById(roleId);
+    if (!found) {
+      throw new GowaError(400, 'INVALID_ROLE', 'الدور المحدد غير موجود');
+    }
+    return found;
+  }
+  if (legacyRole === 'admin') {
+    const admin = getRoleRowBySlug('admin');
+    if (admin) return admin;
+  }
+  if (legacyRole === 'agent') {
+    const agent = getRoleRowBySlug('agent');
+    if (agent) return agent;
+  }
+  const def = getDefaultRoleRow();
+  if (!def) {
+    throw new Error('Default RBAC role is missing');
+  }
+  return def;
 }
 
 export function createUser(input: {
   username: string;
   display_name: string;
-  role: UserRole;
+  role?: UserRole;
+  role_id?: number;
+  allowed_device_ids?: unknown;
   password: string;
   passwordHashOverride?: string;
 }): PublicUser {
+  const resolvedRole = resolveRoleForUserWrite(input.role_id, input.role);
+  const legacyRole: UserRole = resolvedRole.slug === 'admin' ? 'admin' : 'agent';
+  const deviceIds =
+    input.allowed_device_ids !== undefined
+      ? normalizeDeviceIdsInput(input.allowed_device_ids)
+      : [];
   const passwordHash = input.passwordHashOverride ?? hashPassword(input.password);
-  const info = db
-    .prepare(
-      `INSERT INTO users (username, display_name, role, password_hash, is_active)
-       VALUES (?, ?, ?, ?, 1)`,
-    )
-    .run(input.username.trim(), input.display_name.trim(), input.role, passwordHash);
-  const userId = Number(info.lastInsertRowid);
-  setUserTheme(userId, 'system');
-  const created = getUserById(userId);
-  if (!created) {
-    throw new Error('Failed to load newly created user');
+
+  const sp = 'gowa_create_user';
+  db.exec(`SAVEPOINT ${sp}`);
+  try {
+    const info = db
+      .prepare(
+        `INSERT INTO users (username, display_name, role, role_id, password_hash, is_active)
+         VALUES (?, ?, ?, ?, ?, 1)`,
+      )
+      .run(
+        input.username.trim(),
+        input.display_name.trim(),
+        legacyRole,
+        resolvedRole.id,
+        passwordHash,
+      );
+    const userId = Number(info.lastInsertRowid);
+    setUserTheme(userId, 'system');
+
+    if (deviceIds.length > 0) {
+      const insertDevice = db.prepare(
+        'INSERT OR IGNORE INTO user_device_access (user_id, device_id) VALUES (?, ?)',
+      );
+      for (const deviceId of deviceIds) {
+        insertDevice.run(userId, deviceId);
+      }
+    }
+
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+    const created = getUserById(userId);
+    if (!created) {
+      throw new Error('Failed to load newly created user');
+    }
+    return created;
+  } catch (err) {
+    db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+    throw err;
   }
-  return created;
 }
 
 export async function createUserAsync(input: {
   username: string;
   display_name: string;
-  role: UserRole;
+  role?: UserRole;
+  role_id?: number;
+  allowed_device_ids?: unknown;
   password: string;
 }): Promise<PublicUser> {
   const passwordHashOverride = await hashPasswordAsync(input.password);
@@ -372,19 +949,38 @@ export function updateUser(
   patch: {
     display_name?: string;
     role?: UserRole;
+    role_id?: number;
+    allowed_device_ids?: unknown;
     is_active?: boolean;
     password?: string;
     passwordHashOverride?: string;
   },
 ): PublicUser | null {
   const existing = queryOne<UserRow>(
-    'SELECT id, username, display_name, role, password_hash, is_active, created_at FROM users WHERE id = ?',
+    'SELECT id, username, display_name, role, role_id, password_hash, is_active, created_at FROM users WHERE id = ?',
     id,
   );
   if (!existing) return null;
 
   const nextDisplayName = patch.display_name?.trim() || existing.display_name;
-  const nextRole = patch.role ?? existing.role;
+  let nextRoleId = existing.role_id;
+  let nextRole: UserRole = existing.role;
+
+  if (patch.role_id !== undefined) {
+    const targetRole = resolveRoleForUserWrite(patch.role_id);
+    nextRoleId = targetRole.id;
+    nextRole = targetRole.slug === 'admin' ? 'admin' : 'agent';
+  } else if (patch.role !== undefined && (patch.role !== existing.role || nextRoleId === null)) {
+    const targetRole = resolveRoleForUserWrite(undefined, patch.role);
+    nextRoleId = targetRole.id;
+    nextRole = targetRole.slug === 'admin' ? 'admin' : 'agent';
+  }
+
+  const nextDeviceIds =
+    patch.allowed_device_ids !== undefined
+      ? normalizeDeviceIdsInput(patch.allowed_device_ids)
+      : undefined;
+
   const nextActive = patch.is_active === undefined ? existing.is_active : patch.is_active ? 1 : 0;
   const nextPasswordHash = patch.passwordHashOverride
     ? patch.passwordHashOverride
@@ -392,17 +988,36 @@ export function updateUser(
       ? hashPassword(patch.password)
       : existing.password_hash;
 
-  db.prepare(
-    `UPDATE users
-     SET display_name = ?, role = ?, is_active = ?, password_hash = ?
-     WHERE id = ?`,
-  ).run(nextDisplayName, nextRole, nextActive, nextPasswordHash, id);
+  const sp = 'gowa_update_user';
+  db.exec(`SAVEPOINT ${sp}`);
+  try {
+    db.prepare(
+      `UPDATE users
+       SET display_name = ?, role = ?, role_id = ?, is_active = ?, password_hash = ?
+       WHERE id = ?`,
+    ).run(nextDisplayName, nextRole, nextRoleId, nextActive, nextPasswordHash, id);
 
-  if (nextActive === 0) {
-    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+    if (nextDeviceIds !== undefined) {
+      db.prepare('DELETE FROM user_device_access WHERE user_id = ?').run(id);
+      const insertDevice = db.prepare(
+        'INSERT OR IGNORE INTO user_device_access (user_id, device_id) VALUES (?, ?)',
+      );
+      for (const deviceId of nextDeviceIds) {
+        insertDevice.run(id, deviceId);
+      }
+    }
+
+    if (nextActive === 0) {
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+    }
+
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+    return getUserById(id);
+  } catch (err) {
+    db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+    throw err;
   }
-
-  return getUserById(id);
 }
 
 export async function updateUserAsync(
@@ -410,6 +1025,8 @@ export async function updateUserAsync(
   patch: {
     display_name?: string;
     role?: UserRole;
+    role_id?: number;
+    allowed_device_ids?: unknown;
     is_active?: boolean;
     password?: string;
   },
@@ -419,13 +1036,27 @@ export async function updateUserAsync(
 }
 
 export function deleteUser(id: number): boolean {
-  const result = db.prepare('DELETE FROM users WHERE id = ?').run(id);
-  return result.changes > 0;
+  const sp = 'gowa_delete_user';
+  db.exec(`SAVEPOINT ${sp}`);
+  try {
+    db.prepare(
+      `UPDATE chat_assignments
+       SET status = 'pending', assigned_user_id = NULL, assigned_at = NULL, claimed_at = NULL, updated_at = ?
+       WHERE assigned_user_id = ? AND status = 'open'`,
+    ).run(Date.now(), id);
+    const result = db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+    return result.changes > 0;
+  } catch (err) {
+    db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
+    db.exec(`RELEASE SAVEPOINT ${sp}`);
+    throw err;
+  }
 }
 
 export function authenticateUser(username: string, password: string): PublicUser | null {
-  const row = queryOne<UserRow>(
-    'SELECT id, username, display_name, role, password_hash, is_active, created_at FROM users WHERE username = ?',
+  const row = queryOne<HydratedUserRow>(
+    `${USER_SELECT_BASE} WHERE u.username = ?`,
     username.trim(),
   );
   if (!row || row.is_active !== 1) return null;
@@ -437,8 +1068,8 @@ export async function authenticateUserAsync(
   username: string,
   password: string,
 ): Promise<PublicUser | null> {
-  const row = queryOne<UserRow>(
-    'SELECT id, username, display_name, role, password_hash, is_active, created_at FROM users WHERE username = ?',
+  const row = queryOne<HydratedUserRow>(
+    `${USER_SELECT_BASE} WHERE u.username = ?`,
     username.trim(),
   );
   if (!row || row.is_active !== 1) return null;
@@ -464,13 +1095,17 @@ export function getSessionUser(rawToken: string): PublicUser | null {
   if (!rawToken) return null;
   const tokenHash = hashToken(rawToken);
   const now = Date.now();
-  const row = queryOne<UserWithPrefsRow & {expires_at: number}>(
-    `SELECT u.id, u.username, u.display_name, u.role, u.password_hash, u.is_active, u.created_at,
-            s.expires_at, COALESCE(p.theme, 'system') AS theme,
-            COALESCE(p.language, 'ar') AS language
+  const row = queryOne<HydratedUserRow & {expires_at: number}>(
+    `SELECT u.id, u.username, u.display_name, u.role, u.role_id, u.password_hash, u.is_active, u.created_at,
+            s.expires_at,
+            COALESCE(p.theme, 'system') AS theme,
+            COALESCE(p.language, 'ar') AS language,
+            r.slug AS role_slug,
+            r.name AS role_name
      FROM sessions s
      JOIN users u ON u.id = s.user_id
      LEFT JOIN user_preferences p ON p.user_id = u.id
+     LEFT JOIN roles r ON r.id = u.role_id
      WHERE s.token_hash = ?`,
     tokenHash,
   );
@@ -480,7 +1115,7 @@ export function getSessionUser(rawToken: string): PublicUser | null {
     db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
     return null;
   }
-  return toPublicUser(row, row.theme, row.language);
+  return toPublicUser(row);
 }
 
 export function deleteSession(rawToken: string): void {

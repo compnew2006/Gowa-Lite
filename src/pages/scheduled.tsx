@@ -34,12 +34,16 @@ import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {normalizePhoneQueryForGowa, normalizeSearchInput} from '@/lib/phone';
 import {cn} from '@/lib/utils';
+import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
 const PAGE_SIZE = 25;
 
 export default function ScheduledPage() {
   const {lang, t} = useI18n();
   const queryClient = useQueryClient();
+  const user = useAuthStore((s) => s.user);
+  const canWriteSchedules = hasUserPermission(user, 'schedules:write');
+  const canManageSchedules = hasUserPermission(user, 'schedules:manage');
   const deviceState = useActiveDevice();
   const deviceId = deviceState.selectedDeviceId;
 
@@ -189,7 +193,7 @@ export default function ScheduledPage() {
           <h1 className="text-xl font-bold text-foreground">{t.scheduled.pageTitle}</h1>
           <p className="mt-1 text-sm text-muted-foreground">{t.scheduled.pageSubtitle}</p>
         </div>
-        {deviceId && (
+        {deviceId && canWriteSchedules && (
           <Button
             onClick={() => {
               setScheduledAtLocal(defaultScheduleDateTimeLocal(15));
@@ -310,7 +314,9 @@ export default function ScheduledPage() {
                       <th className="px-4 py-3 font-medium">{t.scheduled.colNextRun}</th>
                       <th className="px-4 py-3 font-medium">{t.scheduled.colProgress}</th>
                       <th className="px-4 py-3 font-medium">{t.scheduled.colStatus}</th>
-                      <th className="px-4 py-3 text-end font-medium">{t.scheduled.colActions}</th>
+                      {canManageSchedules && (
+                        <th className="px-4 py-3 text-end font-medium">{t.scheduled.colActions}</th>
+                      )}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -358,51 +364,53 @@ export default function ScheduledPage() {
                               {statusLabels[item.status] || item.status}
                             </span>
                           </td>
-                          <td className="px-4 py-3 text-end">
-                            <div className="inline-flex items-center justify-end gap-1.5">
-                              {canPause && (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  disabled={actionMutation.isPending}
-                                  onClick={() =>
-                                    actionMutation.mutate({id: item.id, action: 'pause'})
-                                  }
-                                  title={t.scheduled.pause}
-                                >
-                                  <Pause className="size-3.5" />
-                                  <span>{t.scheduled.pause}</span>
-                                </Button>
-                              )}
-                              {canResume && (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  disabled={actionMutation.isPending}
-                                  onClick={() =>
-                                    actionMutation.mutate({id: item.id, action: 'resume'})
-                                  }
-                                  title={t.scheduled.resume}
-                                >
-                                  <Play className="size-3.5" />
-                                  <span>{t.scheduled.resume}</span>
-                                </Button>
-                              )}
-                              {canCancel && (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                                  disabled={actionMutation.isPending}
-                                  onClick={() => setConfirmCancelTarget(item)}
-                                  title={t.scheduled.cancelSchedule}
-                                >
-                                  <Ban className="size-3.5" />
-                                  <span>{t.scheduled.cancelSchedule}</span>
-                                </Button>
-                              )}
-                            </div>
-                          </td>
+                          {canManageSchedules && (
+                            <td className="px-4 py-3 text-end">
+                              <div className="inline-flex items-center justify-end gap-1.5">
+                                {canPause && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={actionMutation.isPending}
+                                    onClick={() =>
+                                      actionMutation.mutate({id: item.id, action: 'pause'})
+                                    }
+                                    title={t.scheduled.pause}
+                                  >
+                                    <Pause className="size-3.5" />
+                                    <span>{t.scheduled.pause}</span>
+                                  </Button>
+                                )}
+                                {canResume && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={actionMutation.isPending}
+                                    onClick={() =>
+                                      actionMutation.mutate({id: item.id, action: 'resume'})
+                                    }
+                                    title={t.scheduled.resume}
+                                  >
+                                    <Play className="size-3.5" />
+                                    <span>{t.scheduled.resume}</span>
+                                  </Button>
+                                )}
+                                {canCancel && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                    disabled={actionMutation.isPending}
+                                    onClick={() => setConfirmCancelTarget(item)}
+                                    title={t.scheduled.cancelSchedule}
+                                  >
+                                    <Ban className="size-3.5" />
+                                    <span>{t.scheduled.cancelSchedule}</span>
+                                  </Button>
+                                )}
+                              </div>
+                            </td>
+                          )}
                         </tr>
                       );
                     })}

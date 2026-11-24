@@ -44,7 +44,7 @@ import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {matchesNormalizedQuery, normalizeSearchInput, toWhatsAppJid} from '@/lib/phone';
 import {cn} from '@/lib/utils';
-import {useAuthStore} from '@/stores/auth';
+import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
 type LookupMode = 'info' | 'check' | 'avatar' | 'business';
 
@@ -55,6 +55,8 @@ export default function AccountPage() {
   const isRtl = lang === 'ar';
   const BackIcon = isRtl ? ArrowRight : ArrowLeft;
   const user = useAuthStore((s) => s.user);
+  const canReadChats = hasUserPermission(user, 'chats:read');
+  const canViewSettings = hasUserAnyPermission(user, ['settings:read', 'settings:write']);
   const [searchParams] = useSearchParams();
   const initialDeviceParam = searchParams.get('device') ?? undefined;
 
@@ -211,7 +213,7 @@ export default function AccountPage() {
     return (
       <GowaSetupNotice
         apiErr={deviceErr}
-        isAdmin={user?.role === 'admin'}
+        isAdmin={canViewSettings}
         onRetry={() => void deviceState.refetch()}
       />
     );
@@ -419,19 +421,21 @@ export default function AccountPage() {
                 </div>
               </div>
 
-              <Link
-                to={
-                  deviceId && toWhatsAppJid(lookupTarget)
-                    ? `/chats?device=${encodeURIComponent(deviceId)}&jid=${encodeURIComponent(toWhatsAppJid(lookupTarget))}`
-                    : deviceId
-                      ? `/chats?device=${encodeURIComponent(deviceId)}`
-                      : '/chats'
-                }
-                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted whitespace-nowrap"
-              >
-                <MessagesSquare className="size-3.5" />
-                <span className="hidden sm:inline">{t.account.openInChats}</span>
-              </Link>
+              {canReadChats && (
+                <Link
+                  to={
+                    deviceId && toWhatsAppJid(lookupTarget)
+                      ? `/chats?device=${encodeURIComponent(deviceId)}&jid=${encodeURIComponent(toWhatsAppJid(lookupTarget))}`
+                      : deviceId
+                        ? `/chats?device=${encodeURIComponent(deviceId)}`
+                        : '/chats'
+                  }
+                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted whitespace-nowrap"
+                >
+                  <MessagesSquare className="size-3.5" />
+                  <span className="hidden sm:inline">{t.account.openInChats}</span>
+                </Link>
+              )}
             </header>
 
             {/* Lookup Modes Toolbar */}

@@ -50,6 +50,7 @@ import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {parseParticipantsList} from '@/lib/participants';
 import {cn} from '@/lib/utils';
+import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
 export function GroupWorkspacePanel({
   item,
@@ -64,6 +65,8 @@ export function GroupWorkspacePanel({
   const isRtl = lang === 'ar';
   const BackIcon = isRtl ? ArrowRight : ArrowLeft;
   const queryClient = useQueryClient();
+  const user = useAuthStore((s) => s.user);
+  const canManageGroups = hasUserPermission(user, 'groups:manage');
   const deviceId = item.device_id;
   const groupId = item.jid;
 
@@ -323,26 +326,28 @@ export function GroupWorkspacePanel({
           </div>
         </div>
 
-        <Button
-          type="button"
-          variant="destructive"
-          size="sm"
-          className="shrink-0 whitespace-nowrap"
-          onClick={() => setLeaveConfirmOpen(true)}
-        >
-          <LogOut className="size-3.5" />
-          <span className="hidden sm:inline">{t.groups.leaveGroup}</span>
-        </Button>
+        {canManageGroups && (
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            className="shrink-0 whitespace-nowrap"
+            onClick={() => setLeaveConfirmOpen(true)}
+          >
+            <LogOut className="size-3.5" />
+            <span className="hidden sm:inline">{t.groups.leaveGroup}</span>
+          </Button>
+        )}
       </header>
 
       {/* Tabs Bar */}
       <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border bg-card/60 px-4 py-2">
         {(
           [
-            {id: 'overview', label: t.groups.tabOverview},
-            {id: 'participants', label: `${t.groups.tabParticipants} (${memberCount})`},
-            {id: 'settings', label: t.groups.tabSettings},
-          ] as const
+            {id: 'overview' as const, label: t.groups.tabOverview},
+            {id: 'participants' as const, label: `${t.groups.tabParticipants} (${memberCount})`},
+            ...(canManageGroups ? [{id: 'settings' as const, label: t.groups.tabSettings}] : []),
+          ]
         ).map((itemTab) => (
           <button
             key={itemTab.id}
@@ -409,15 +414,17 @@ export function GroupWorkspacePanel({
                       <Link2 className="size-3.5" />
                       <span>{t.groups.loadInviteLink}</span>
                     </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={inviteLinkMutation.isPending}
-                      onClick={() => inviteLinkMutation.mutate(true)}
-                    >
-                      <RefreshCw className="size-3.5" />
-                      <span>{t.groups.resetInviteLink}</span>
-                    </Button>
+                    {canManageGroups && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={inviteLinkMutation.isPending}
+                        onClick={() => inviteLinkMutation.mutate(true)}
+                      >
+                        <RefreshCw className="size-3.5" />
+                        <span>{t.groups.resetInviteLink}</span>
+                      </Button>
+                    )}
                   </div>
                 </div>
 
@@ -445,39 +452,41 @@ export function GroupWorkspacePanel({
 
           {tab === 'participants' && (
             <>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const parsed = parseParticipantsList(addParticipantsRaw);
-                  if (parsed.length === 0) return;
-                  participantActionMutation.mutate({action: 'add', participants: parsed});
-                }}
-                className="space-y-2.5 rounded-xl border border-border bg-card p-4"
-              >
-                <Label htmlFor="add-members-input">{t.groups.addParticipantsTitle}</Label>
-                <div className="flex flex-wrap items-start gap-2">
-                  <textarea
-                    id="add-members-input"
-                    rows={2}
-                    dir="ltr"
-                    value={addParticipantsRaw}
-                    onChange={(e) => setAddParticipantsRaw(e.target.value)}
-                    placeholder={t.groups.addParticipantsPlaceholder}
-                    className="min-w-[200px] flex-1 rounded-lg border border-input bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring"
-                  />
-                  <Button
-                    type="submit"
-                    size="sm"
-                    disabled={
-                      participantActionMutation.isPending ||
-                      parseParticipantsList(addParticipantsRaw).length === 0
-                    }
-                  >
-                    <UserPlus className="size-3.5" />
-                    <span>{t.groups.addParticipantsBtn}</span>
-                  </Button>
-                </div>
-              </form>
+              {canManageGroups && (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const parsed = parseParticipantsList(addParticipantsRaw);
+                    if (parsed.length === 0) return;
+                    participantActionMutation.mutate({action: 'add', participants: parsed});
+                  }}
+                  className="space-y-2.5 rounded-xl border border-border bg-card p-4"
+                >
+                  <Label htmlFor="add-members-input">{t.groups.addParticipantsTitle}</Label>
+                  <div className="flex flex-wrap items-start gap-2">
+                    <textarea
+                      id="add-members-input"
+                      rows={2}
+                      dir="ltr"
+                      value={addParticipantsRaw}
+                      onChange={(e) => setAddParticipantsRaw(e.target.value)}
+                      placeholder={t.groups.addParticipantsPlaceholder}
+                      className="min-w-[200px] flex-1 rounded-lg border border-input bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring"
+                    />
+                    <Button
+                      type="submit"
+                      size="sm"
+                      disabled={
+                        participantActionMutation.isPending ||
+                        parseParticipantsList(addParticipantsRaw).length === 0
+                      }
+                    >
+                      <UserPlus className="size-3.5" />
+                      <span>{t.groups.addParticipantsBtn}</span>
+                    </Button>
+                  </div>
+                </form>
+              )}
 
               <div className="space-y-2.5 rounded-xl border border-border bg-card p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -538,7 +547,7 @@ export function GroupWorkspacePanel({
                               </p>
                             </div>
                           </div>
-                          {!member.is_super_admin && (
+                          {canManageGroups && !member.is_super_admin && (
                             <div className="flex items-center gap-1">
                               {member.is_admin ? (
                                 <Button
@@ -622,31 +631,33 @@ export function GroupWorkspacePanel({
                             {req.jid}
                           </p>
                         </div>
-                        <div className="flex items-center gap-1.5">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled={decideRequestMutation.isPending}
-                            onClick={() =>
-                              decideRequestMutation.mutate({decision: 'approve', jid: req.jid})
-                            }
-                          >
-                            <UserCheck className="size-3.5" />
-                            <span>{t.groups.approve}</span>
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            disabled={decideRequestMutation.isPending}
-                            onClick={() =>
-                              decideRequestMutation.mutate({decision: 'reject', jid: req.jid})
-                            }
-                          >
-                            <UserX className="size-3.5" />
-                            <span>{t.groups.reject}</span>
-                          </Button>
-                        </div>
+                        {canManageGroups && (
+                          <div className="flex items-center gap-1.5">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={decideRequestMutation.isPending}
+                              onClick={() =>
+                                decideRequestMutation.mutate({decision: 'approve', jid: req.jid})
+                              }
+                            >
+                              <UserCheck className="size-3.5" />
+                              <span>{t.groups.approve}</span>
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                              disabled={decideRequestMutation.isPending}
+                              onClick={() =>
+                                decideRequestMutation.mutate({decision: 'reject', jid: req.jid})
+                              }
+                            >
+                              <UserX className="size-3.5" />
+                              <span>{t.groups.reject}</span>
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -655,7 +666,7 @@ export function GroupWorkspacePanel({
             </>
           )}
 
-          {tab === 'settings' && (
+          {tab === 'settings' && canManageGroups && (
             <div className="space-y-4 rounded-xl border border-border bg-card p-4">
               <form
                 onSubmit={(e) => {

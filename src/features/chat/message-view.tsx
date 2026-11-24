@@ -18,24 +18,41 @@ import {
 import {History, Loader2, Paperclip, Trash2} from 'lucide-react';
 import {toast} from 'sonner';
 import {
+  claimUnifiedChat,
+  closeUnifiedChat,
+  getChatLifecycle,
+  getInboxPolicy,
   getUnifiedChatMessages,
   listUnifiedChatNotes,
   listUnifiedChatSchedules,
+  releaseUnifiedChat,
+  reopenUnifiedChat,
   requestUnifiedChatHistory,
   revokeUnifiedMessage,
   sendUnifiedMediaMessage,
   sendUnifiedMessageReaction,
   sendUnifiedTextMessage,
 } from '@/api/client';
-import type {ChatInfo, MessageInfo, Pagination, UnifiedChat} from '@/api/types';
+import type {
+  ChatInfo,
+  ChatLifecycleEvent,
+  MessageInfo,
+  Pagination,
+  UnifiedChat,
+} from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
+import {AssignChatDialog} from '@/features/chat/assign-chat-dialog';
 import {ChatContextDrawer, type ContextDrawerTab} from '@/features/chat/chat-context-drawer';
 import {chatDisplayName} from '@/features/chat/display-name';
 import {ForwardMessageDialog} from '@/features/chat/forward-message-dialog';
 import {MediaSelectionBar} from '@/features/chat/media-selection-bar';
 import {MessageBubble} from '@/features/chat/message-bubble';
-import {MessageComposer, validateChatMediaFile} from '@/features/chat/message-composer';
+import {
+  MessageComposer,
+  validateChatMediaFile,
+  type ComposerLockState,
+} from '@/features/chat/message-composer';
 import {
   applyOptimisticReaction,
   dayKey,
@@ -47,11 +64,42 @@ import type {OtherAccountRef} from '@/features/chat/other-accounts';
 import {ScheduleMessageDialog} from '@/features/chat/schedule-dialog';
 import {useChatReadSync} from '@/features/chat/use-chat-read-sync';
 import {useMediaBatch} from '@/features/chat/use-media-batch';
-import {formatDay} from '@/lib/format';
+import {formatDay, formatShortTime} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {isDownloadableMedia} from '@/lib/media-download';
 import {normalizeSearchInput} from '@/lib/phone';
+import {hasUserPermission, useAuthStore} from '@/stores/auth';
+
+type TimelineItem =
+  | {kind: 'message'; key: string; timestamp: string; timestampMs: number; message: MessageInfo}
+  | {kind: 'lifecycle'; key: string; timestamp: string; timestampMs: number; event: ChatLifecycleEvent};
+
+function formatLifecycleEventText(
+  event: ChatLifecycleEvent,
+  t: ReturnType<typeof useI18n>['t'],
+): string {
+  const actor = event.actor_name || '—';
+  const target = event.target_name || '—';
+  switch (event.event_type) {
+    case 'claimed':
+      return t.chats.timelineEvents.claimed(actor);
+    case 'auto_claimed':
+      return t.chats.timelineEvents.auto_claimed(actor);
+    case 'assigned':
+      return t.chats.timelineEvents.assigned(actor, target);
+    case 'transferred':
+      return t.chats.timelineEvents.transferred(actor, target);
+    case 'released':
+      return t.chats.timelineEvents.released(actor);
+    case 'closed':
+      return t.chats.timelineEvents.closed(actor);
+    case 'reopened':
+      return t.chats.timelineEvents.reopened(actor, event.target_name || undefined);
+    case 'reopened_by_customer':
+      return t.chats.timelineEvents.reopened_by_customer;
+  }
+}
 
 const PAGE_SIZE = 40;
 const HISTORY_POLL_MS = 2_000;
@@ -94,6 +142,15 @@ export function MessageView({
 }) {
   const queryClient = useQueryClient();
   const {lang, t} = useI18n();
+  const user = useAuthStore((s) => s.user);
+  const canWriteChats = hasUserPermission(user, 'chats:write');
+  const canRevokeChats = hasUserPermission(user, 'chats:revoke');
+  const canAssignChats = hasUserPermission(user, 'chats:assign');
+  const canCloseChats = hasUserPermission(user, 'chats:close');
+  const canViewAllChats = hasUserPermission(user, 'chats:view_all');
+  const canReadNotes = hasUserPermission(user, 'notes:read');
+  const canReadSchedules = hasUserPermission(user, 'schedules:read');
+  const canWriteSchedules = hasUserPermission(user, 'schedules:write');
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLInputElement>(null);
   const initialScrolledRef = useRef(false);
@@ -113,6 +170,7 @@ export function MessageView({
   const [historyPollUntil, setHistoryPollUntil] = useState(0);
   const [drawerTab, setDrawerTab] = useState<ContextDrawerTab | null>(null);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [revokingMessage, setRevokingMessage] = useState<MessageInfo | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<MessageInfo | null>(null);
 
@@ -130,6 +188,7 @@ export function MessageView({
     setReactionPickerMessageId(null);
     setHistoryPollUntil(0);
     setScheduleDialogOpen(false);
+    setAssignDialogOpen(false);
     setRevokingMessage(null);
     setForwardingMessage(null);
     initialScrolledRef.current = false;
@@ -143,14 +202,31 @@ export function MessageView({
     stickToBottomRef.current = true;
   }, [search, mediaOnly]);
 
+  const isLifecycleSupported =
+    !chat.jid.endsWith('@newsletter') && chat.jid !== 'status@broadcast';
+
+  const lifecycleQuery = useQuery({
+    queryKey: ['chat-lifecycle', chat.device_id, chat.jid],
+    queryFn: () => getChatLifecycle(chat.device_id, chat.jid),
+    enabled: isLifecycleSupported,
+  });
+
+  const policyQuery = useQuery({
+    queryKey: ['inbox-policy'],
+    queryFn: getInboxPolicy,
+    staleTime: 30_000,
+  });
+
   const notesQuery = useQuery({
     queryKey: ['unified-chat-notes', chat.device_id, chat.jid],
     queryFn: () => listUnifiedChatNotes(chat.device_id, chat.jid),
+    enabled: canReadNotes,
   });
 
   const schedulesQuery = useQuery({
     queryKey: ['unified-chat-schedules', chat.device_id, chat.jid],
     queryFn: () => listUnifiedChatSchedules(chat.device_id, chat.jid),
+    enabled: canReadSchedules,
   });
 
   const notesCount = notesQuery.data?.notes?.length ?? 0;
@@ -206,9 +282,102 @@ export function MessageView({
   const isDeviceReady = chat.device_state === 'logged_in';
   const {hasNextPage, isFetchingNextPage, fetchNextPage} = query;
 
+  const effectiveLifecycle = isLifecycleSupported
+    ? (lifecycleQuery.data?.assignment ?? chat.lifecycle)
+    : undefined;
+
+  const lifecycleEvents = useMemo(() => {
+    if (!isLifecycleSupported || normalizedSearch || mediaOnly) return [];
+    return lifecycleQuery.data?.events ?? [];
+  }, [isLifecycleSupported, lifecycleQuery.data?.events, mediaOnly, normalizedSearch]);
+
+  const timelineItems = useMemo<TimelineItem[]>(() => {
+    const items: TimelineItem[] = messages.map((msg) => ({
+      kind: 'message',
+      key: `msg:${msg.id}`,
+      timestamp: msg.timestamp,
+      timestampMs: Date.parse(msg.timestamp) || 0,
+      message: msg,
+    }));
+    for (const event of lifecycleEvents) {
+      items.push({
+        kind: 'lifecycle',
+        key: `life:${event.id}`,
+        timestamp: event.created_at,
+        timestampMs: event.created_at_ms || Date.parse(event.created_at) || 0,
+        event,
+      });
+    }
+    items.sort((a, b) => {
+      if (a.timestampMs !== b.timestampMs) return a.timestampMs - b.timestampMs;
+      if (a.kind !== b.kind) return a.kind === 'message' ? -1 : 1;
+      return a.key.localeCompare(b.key);
+    });
+    return items;
+  }, [lifecycleEvents, messages]);
+
+  const {lockState, autoReopenHint} = useMemo<{
+    lockState: ComposerLockState | undefined;
+    autoReopenHint: boolean;
+  }>(() => {
+    if (!isLifecycleSupported || !effectiveLifecycle) {
+      return {lockState: undefined, autoReopenHint: false};
+    }
+    const policy = policyQuery.data;
+    if (effectiveLifecycle.status === 'closed') {
+      if (
+        policy?.closed_reply_policy === 'reopen_and_claim' &&
+        (canCloseChats || canViewAllChats)
+      ) {
+        return {lockState: undefined, autoReopenHint: true};
+      }
+      return {
+        lockState: {
+          reason: 'closed',
+          closedByName: effectiveLifecycle.closed_by_name,
+        },
+        autoReopenHint: false,
+      };
+    }
+    if (
+      effectiveLifecycle.status === 'open' &&
+      effectiveLifecycle.assigned_user_id !== null &&
+      user?.id !== undefined &&
+      effectiveLifecycle.assigned_user_id !== user.id &&
+      !canViewAllChats
+    ) {
+      return {
+        lockState: {
+          reason: 'assigned_other',
+          ownerName: effectiveLifecycle.assigned_user_name || '',
+        },
+        autoReopenHint: false,
+      };
+    }
+    if (
+      effectiveLifecycle.status === 'pending' &&
+      policy?.unassigned_reply_policy === 'require_claim'
+    ) {
+      return {
+        lockState: {reason: 'claim_required'},
+        autoReopenHint: false,
+      };
+    }
+    return {lockState: undefined, autoReopenHint: false};
+  }, [
+    canCloseChats,
+    canViewAllChats,
+    effectiveLifecycle,
+    isLifecycleSupported,
+    policyQuery.data,
+    user?.id,
+  ]);
+
+  const isSendingBlocked = Boolean(lockState);
+
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (!el || messages.length === 0) return;
+    if (!el || timelineItems.length === 0) return;
 
     if (!initialScrolledRef.current) {
       el.scrollTop = el.scrollHeight;
@@ -225,7 +394,7 @@ export function MessageView({
     }
 
     if (stickToBottomRef.current) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  }, [timelineItems]);
 
   const maybeLoadOlder = useCallback(() => {
     const el = scrollRef.current;
@@ -245,6 +414,14 @@ export function MessageView({
     }
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
+  const invalidateLifecycleScope = useCallback(() => {
+    void queryClient.invalidateQueries({
+      queryKey: ['chat-lifecycle', chat.device_id, chat.jid],
+    });
+    void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+    void queryClient.invalidateQueries({queryKey: ['assignable-agents', chat.device_id]});
+  }, [chat.device_id, chat.jid, queryClient]);
+
   const sendMutation = useMutation({
     mutationFn: ({text, replyMessageId}: {text: string; replyMessageId?: string}) =>
       sendUnifiedTextMessage(chat.device_id, chat.jid, text, replyMessageId),
@@ -255,9 +432,13 @@ export function MessageView({
       void queryClient.invalidateQueries({
         queryKey: ['unified-messages', chat.device_id, chat.jid],
       });
-      void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+      invalidateLifecycleScope();
     },
-    onError: (err) => toast.error(toApiError(err).message),
+    onError: (err) => {
+      toast.error(toApiError(err).message);
+      invalidateLifecycleScope();
+      void queryClient.invalidateQueries({queryKey: ['inbox-policy']});
+    },
   });
 
   const sendMediaMutation = useMutation({
@@ -271,10 +452,72 @@ export function MessageView({
       void queryClient.invalidateQueries({
         queryKey: ['unified-messages', chat.device_id, chat.jid],
       });
-      void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+      invalidateLifecycleScope();
     },
-    onError: (err) => toast.error(toApiError(err).message),
+    onError: (err) => {
+      toast.error(toApiError(err).message);
+      invalidateLifecycleScope();
+      void queryClient.invalidateQueries({queryKey: ['inbox-policy']});
+    },
   });
+
+  const claimMutation = useMutation({
+    mutationFn: () => claimUnifiedChat(chat.device_id, chat.jid, displayName),
+    onSuccess: () => {
+      toast.success(t.chats.claimedToast);
+      invalidateLifecycleScope();
+    },
+    onError: (err) => {
+      toast.error(toApiError(err).message);
+      invalidateLifecycleScope();
+    },
+  });
+
+  const releaseMutation = useMutation({
+    mutationFn: () => releaseUnifiedChat(chat.device_id, chat.jid, {cached_title: displayName}),
+    onSuccess: () => {
+      toast.success(t.chats.unassignedToast);
+      invalidateLifecycleScope();
+    },
+    onError: (err) => {
+      toast.error(toApiError(err).message);
+      invalidateLifecycleScope();
+    },
+  });
+
+  const closeMutation = useMutation({
+    mutationFn: () => closeUnifiedChat(chat.device_id, chat.jid, {cached_title: displayName}),
+    onSuccess: () => {
+      toast.success(t.chats.closedToast);
+      invalidateLifecycleScope();
+    },
+    onError: (err) => {
+      toast.error(toApiError(err).message);
+      invalidateLifecycleScope();
+    },
+  });
+
+  const reopenMutation = useMutation({
+    mutationFn: (assignToSelf?: boolean) =>
+      reopenUnifiedChat(chat.device_id, chat.jid, {
+        assign_to_self: assignToSelf,
+        cached_title: displayName,
+      }),
+    onSuccess: () => {
+      toast.success(t.chats.reopenedToast);
+      invalidateLifecycleScope();
+    },
+    onError: (err) => {
+      toast.error(toApiError(err).message);
+      invalidateLifecycleScope();
+    },
+  });
+
+  const isLifecyclePending =
+    claimMutation.isPending ||
+    releaseMutation.isPending ||
+    closeMutation.isPending ||
+    reopenMutation.isPending;
 
   const reactionMutation = useMutation({
     mutationFn: ({messageId, emoji}: {messageId: string; emoji: string}) =>
@@ -365,7 +608,7 @@ export function MessageView({
 
   const handleSend = (event: FormEvent) => {
     event.preventDefault();
-    if (!isDeviceReady || isAnySending) return;
+    if (!canWriteChats || !isDeviceReady || isAnySending || isSendingBlocked) return;
     const trimmed = draft.trim();
     if (attachment) {
       sendMediaMutation.mutate({file: attachment, caption: trimmed || undefined});
@@ -376,14 +619,28 @@ export function MessageView({
   };
 
   const handleDragEnter = (event: DragEvent<HTMLDivElement>) => {
-    if (!isDeviceReady || !event.dataTransfer.types.includes('Files')) return;
+    if (
+      !canWriteChats ||
+      !isDeviceReady ||
+      isSendingBlocked ||
+      !event.dataTransfer.types.includes('Files')
+    ) {
+      return;
+    }
     event.preventDefault();
     dragCounterRef.current += 1;
     setIsDragOver(true);
   };
 
   const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
-    if (!isDeviceReady || !event.dataTransfer.types.includes('Files')) return;
+    if (
+      !canWriteChats ||
+      !isDeviceReady ||
+      isSendingBlocked ||
+      !event.dataTransfer.types.includes('Files')
+    ) {
+      return;
+    }
     event.preventDefault();
   };
 
@@ -402,7 +659,7 @@ export function MessageView({
     event.preventDefault();
     dragCounterRef.current = 0;
     setIsDragOver(false);
-    if (!isDeviceReady || isAnySending) return;
+    if (!canWriteChats || !isDeviceReady || isAnySending || isSendingBlocked) return;
     const dropped = event.dataTransfer.files?.[0];
     if (!dropped) return;
     const check = validateChatMediaFile(dropped);
@@ -489,11 +746,24 @@ export function MessageView({
             mediaBatch.toggleSelectMode();
           }}
           drawerTab={drawerTab}
+          canReadNotes={canReadNotes}
+          canReadSchedules={canReadSchedules}
           notesCount={notesCount}
           activeScheduledCount={activeScheduledCount}
           onToggleDrawerTab={(tab) => setDrawerTab((prev) => (prev === tab ? null : tab))}
           isHistoryPending={historyMutation.isPending}
           onFetchHistory={() => historyMutation.mutate()}
+          lifecycle={effectiveLifecycle}
+          currentUserId={user?.id}
+          canAssign={canAssignChats}
+          canClose={canCloseChats}
+          canViewAll={canViewAllChats}
+          isLifecyclePending={isLifecyclePending}
+          onClaim={() => claimMutation.mutate()}
+          onOpenAssign={() => setAssignDialogOpen(true)}
+          onRelease={() => releaseMutation.mutate()}
+          onCloseChat={() => closeMutation.mutate()}
+          onReopen={() => reopenMutation.mutate(false)}
         />
 
         <div
@@ -510,7 +780,7 @@ export function MessageView({
             <div className="p-8 text-center text-sm text-destructive">
               {toApiError(query.error).message}
             </div>
-          ) : messages.length === 0 ? (
+          ) : timelineItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-1.5 p-10 text-center text-sm text-muted-foreground">
               <p>{t.chats.noMessagesYet}</p>
               <p className="text-xs">{t.chats.noMessagesHint}</p>
@@ -540,43 +810,68 @@ export function MessageView({
                 ) : null}
               </div>
 
-              {messages.map((message, index) => {
+              {timelineItems.map((item, index) => {
                 const showDate =
-                  index === 0 || dayKey(message.timestamp) !== dayKey(messages[index - 1].timestamp);
+                  index === 0 || dayKey(item.timestamp) !== dayKey(timelineItems[index - 1].timestamp);
                 return (
-                  <div key={message.id} className="flex flex-col gap-2">
+                  <div key={item.key} className="flex flex-col gap-2">
                     {showDate && (
                       <div className="mx-auto my-1.5 flex w-full max-w-4xl justify-center px-4 sm:px-8 lg:px-14">
                         <span className="rounded-lg bg-card/95 px-3 py-1 text-[11px] font-medium text-muted-foreground shadow-2xs">
-                          {formatDay(message.timestamp, lang)}
+                          {formatDay(item.timestamp, lang)}
                         </span>
                       </div>
                     )}
-                    <MessageBubble
-                      message={message}
-                      quoted={replyTarget(message)}
-                      deviceId={chat.device_id}
-                      isDeviceReady={isDeviceReady}
-                      isReactionPickerOpen={reactionPickerMessageId === message.id}
-                      onToggleReactionPicker={(id) =>
-                        setReactionPickerMessageId((prev) => (prev === id ? null : id))
-                      }
-                      onCloseReactionPicker={() => setReactionPickerMessageId(null)}
-                      onReact={handleReact}
-                      onReply={handleReply}
-                      onForward={(msg) => {
-                        setReactionPickerMessageId(null);
-                        setForwardingMessage(msg);
-                      }}
-                      onRevoke={(msg) => {
-                        setReactionPickerMessageId(null);
-                        setRevokingMessage(msg);
-                      }}
-                      onJumpToMessage={handleJumpToMessage}
-                      selectMode={mediaBatch.selectMode}
-                      isSelected={mediaBatch.selectedIds.has(message.id)}
-                      onToggleSelect={mediaBatch.toggleSelectItem}
-                    />
+                    {item.kind === 'lifecycle' ? (
+                      <div className="mx-auto my-0.5 flex w-full max-w-4xl justify-center px-4 sm:px-8 lg:px-14">
+                        <div className="max-w-md rounded-lg border border-border/80 bg-card/90 px-3 py-1 text-center text-[11px] text-muted-foreground shadow-2xs">
+                          <span>{formatLifecycleEventText(item.event, t)}</span>
+                          <span className="ms-1.5 text-[10px] opacity-75 tabular-nums">
+                            {formatShortTime(item.event.created_at, lang)}
+                          </span>
+                          {item.event.note && (
+                            <p className="mt-0.5 text-[10px] text-foreground/80">
+                              {item.event.note}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <MessageBubble
+                        message={item.message}
+                        quoted={replyTarget(item.message)}
+                        deviceId={chat.device_id}
+                        isDeviceReady={isDeviceReady}
+                        canReactAndReply={canWriteChats && !isSendingBlocked}
+                        isReactionPickerOpen={reactionPickerMessageId === item.message.id}
+                        onToggleReactionPicker={(id) =>
+                          setReactionPickerMessageId((prev) => (prev === id ? null : id))
+                        }
+                        onCloseReactionPicker={() => setReactionPickerMessageId(null)}
+                        onReact={handleReact}
+                        onReply={handleReply}
+                        onForward={
+                          canWriteChats
+                            ? (msg) => {
+                                setReactionPickerMessageId(null);
+                                setForwardingMessage(msg);
+                              }
+                            : undefined
+                        }
+                        onRevoke={
+                          canRevokeChats
+                            ? (msg) => {
+                                setReactionPickerMessageId(null);
+                                setRevokingMessage(msg);
+                              }
+                            : undefined
+                        }
+                        onJumpToMessage={handleJumpToMessage}
+                        selectMode={mediaBatch.selectMode}
+                        isSelected={mediaBatch.selectedIds.has(item.message.id)}
+                        onToggleSelect={mediaBatch.toggleSelectItem}
+                      />
+                    )}
                   </div>
                 );
               })}
@@ -604,6 +899,15 @@ export function MessageView({
           inputRef={composerInputRef}
           deviceDisplayName={chat.device_display_name}
           isDeviceReady={isDeviceReady}
+          canWrite={canWriteChats}
+          canSchedule={canWriteSchedules}
+          lockState={lockState}
+          autoReopenHint={autoReopenHint}
+          canClaimFromComposer={canAssignChats}
+          canReopenFromComposer={canCloseChats}
+          isLifecyclePending={isLifecyclePending}
+          onClaimFromComposer={() => claimMutation.mutate()}
+          onReopenFromComposer={() => reopenMutation.mutate(canAssignChats)}
           draft={draft}
           attachment={attachment}
           replyingTo={replyingTo}
@@ -616,17 +920,21 @@ export function MessageView({
         />
       </div>
 
-      {drawerTab && (
-        <ChatContextDrawer
-          chat={chat}
-          activeTab={drawerTab}
-          notesCount={notesCount}
-          scheduledCount={activeScheduledCount}
-          onTabChange={setDrawerTab}
-          onClose={() => setDrawerTab(null)}
-          onOpenCreateSchedule={() => setScheduleDialogOpen(true)}
-        />
-      )}
+      {drawerTab &&
+        ((drawerTab === 'notes' && canReadNotes) ||
+          (drawerTab === 'scheduled' && canReadSchedules)) && (
+          <ChatContextDrawer
+            chat={chat}
+            activeTab={drawerTab}
+            canReadNotes={canReadNotes}
+            canReadSchedules={canReadSchedules}
+            notesCount={notesCount}
+            scheduledCount={activeScheduledCount}
+            onTabChange={setDrawerTab}
+            onClose={() => setDrawerTab(null)}
+            onOpenCreateSchedule={() => setScheduleDialogOpen(true)}
+          />
+        )}
 
       <ScheduleMessageDialog
         open={scheduleDialogOpen}
@@ -650,6 +958,19 @@ export function MessageView({
         sourceDeviceId={chat.device_id}
         sourceChatJid={chat.jid}
       />
+
+      {isLifecycleSupported && (
+        <AssignChatDialog
+          open={assignDialogOpen}
+          onOpenChange={setAssignDialogOpen}
+          deviceId={chat.device_id}
+          chatJid={chat.jid}
+          chatTitle={displayName}
+          currentAssigneeId={effectiveLifecycle?.assigned_user_id ?? null}
+          currentUserId={user?.id}
+          canViewAll={canViewAllChats}
+        />
+      )}
 
       <Dialog
         open={Boolean(revokingMessage)}
