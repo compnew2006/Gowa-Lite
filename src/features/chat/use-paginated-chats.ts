@@ -21,6 +21,12 @@ export function mergePaginatedChats(
   }
   const merged = Array.from(byKey.values());
   merged.sort((a, b) => {
+    const pinDiff = (b.is_pinned ? 1 : 0) - (a.is_pinned ? 1 : 0);
+    if (pinDiff !== 0) return pinDiff;
+    if (a.is_pinned && b.is_pinned) {
+      const pinTimeDiff = (b.pinned_at_ms ?? 0) - (a.pinned_at_ms ?? 0);
+      if (pinTimeDiff !== 0) return pinTimeDiff;
+    }
     const ta = new Date(a.last_message_time).getTime();
     const tb = new Date(b.last_message_time).getTime();
     const validA = Number.isNaN(ta) || ta <= 0 ? 0 : ta;
@@ -169,6 +175,7 @@ export function usePaginatedChats({
     deviceErrors: query.data?.device_errors ?? [],
     tabCounts: query.data?.tab_counts,
     totalUnread: query.data?.total_unread,
+    chatLists: query.data?.chat_lists ?? [],
     totalCount,
     hasMore,
     isLoadingMore,

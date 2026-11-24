@@ -178,6 +178,8 @@ export function decryptSettingSecret(storedValue: string): {value: string; wasPl
 
 db.exec(`
   PRAGMA journal_mode = WAL;
+  PRAGMA synchronous = NORMAL;
+  PRAGMA temp_store = MEMORY;
   PRAGMA foreign_keys = ON;
   PRAGMA busy_timeout = 5000;
 
@@ -255,6 +257,8 @@ db.exec(`
     ON cached_messages(device_id, chat_jid, timestamp_ms DESC);
   CREATE INDEX IF NOT EXISTS idx_cached_messages_device_id
     ON cached_messages(device_id, id);
+  CREATE INDEX IF NOT EXISTS idx_cached_messages_seq
+    ON cached_messages(seq DESC);
   CREATE INDEX IF NOT EXISTS idx_cached_messages_unread_active
     ON cached_messages(device_id, chat_jid, seq, cached_at)
     WHERE is_from_me = 0 AND is_revoked = 0 AND is_unread_candidate = 1;
@@ -361,6 +365,59 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_chat_lifecycle_events_chat
     ON chat_lifecycle_events(device_id, chat_jid, id ASC);
+
+  CREATE TABLE IF NOT EXISTS chat_device_states (
+    device_id TEXT NOT NULL,
+    chat_jid TEXT NOT NULL,
+    is_pinned INTEGER NOT NULL DEFAULT 0,
+    pinned_at_ms INTEGER NOT NULL DEFAULT 0,
+    archived_override INTEGER,
+    is_blocked INTEGER NOT NULL DEFAULT 0,
+    blocked_at_ms INTEGER NOT NULL DEFAULT 0,
+    cleared_before_ms INTEGER NOT NULL DEFAULT 0,
+    deleted_before_ms INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (device_id, chat_jid)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_chat_device_states_pinned
+    ON chat_device_states(device_id, is_pinned DESC, pinned_at_ms DESC);
+
+  CREATE TABLE IF NOT EXISTS user_chat_preferences (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    chat_jid TEXT NOT NULL,
+    is_favourite INTEGER NOT NULL DEFAULT 0,
+    muted_until_ms INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, device_id, chat_jid)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_user_chat_prefs_user
+    ON user_chat_preferences(user_id, is_favourite, muted_until_ms);
+
+  CREATE TABLE IF NOT EXISTS chat_lists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (user_id, name COLLATE NOCASE)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_chat_lists_user
+    ON chat_lists(user_id, id ASC);
+
+  CREATE TABLE IF NOT EXISTS chat_list_items (
+    list_id INTEGER NOT NULL REFERENCES chat_lists(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    chat_jid TEXT NOT NULL,
+    added_at INTEGER NOT NULL,
+    PRIMARY KEY (list_id, device_id, chat_jid)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_chat_list_items_chat
+    ON chat_list_items(device_id, chat_jid);
 `);
 
 {
@@ -386,6 +443,13 @@ db.exec(`
   const userCols = queryAll<{name: string}>('PRAGMA table_info(users)');
   if (!userCols.some((c) => c.name === 'role_id')) {
     db.exec('ALTER TABLE users ADD COLUMN role_id INTEGER REFERENCES roles(id)');
+  }
+}
+
+{
+  const readCols = queryAll<{name: string}>('PRAGMA table_info(user_chat_read_states)');
+  if (!readCols.some((c) => c.name === 'manual_unread')) {
+    db.exec('ALTER TABLE user_chat_read_states ADD COLUMN manual_unread INTEGER NOT NULL DEFAULT 0');
   }
 }
 
@@ -1426,7 +1490,7 @@ export function parseTimestampMs(iso: string | null | undefined): number {
 }
 
 function nextMessageSeq(): number {
-  const row = queryOne<{max_seq: number}>('SELECT COALESCE(MAX(seq), 0) AS max_seq FROM cached_messages');
+  const row = queryOne<{max_seq: number | null}>('SELECT MAX(seq) AS max_seq FROM cached_messages');
   return (row?.max_seq ?? 0) + 1;
 }
 
@@ -1642,13 +1706,18 @@ export function markCachedMessageRevoked(
   const revokedAt = opts?.revokedAt || new Date(nowMs).toISOString();
   const revokedBy = opts?.revokedBy || null;
 
-  const affected = opts?.chatJid
+  const exactAffected = opts?.chatJid
     ? queryAll<{chat_jid: string}>(
         'SELECT chat_jid FROM cached_messages WHERE device_id = ? AND chat_jid = ? AND id = ?',
         deviceId,
         opts.chatJid,
         messageId,
       )
+    : [];
+
+  const useExactChat = exactAffected.length > 0 && Boolean(opts?.chatJid);
+  const affected = useExactChat
+    ? exactAffected
     : queryAll<{chat_jid: string}>(
         'SELECT chat_jid FROM cached_messages WHERE device_id = ? AND id = ?',
         deviceId,
@@ -1656,7 +1725,7 @@ export function markCachedMessageRevoked(
       );
 
   if (affected.length > 0) {
-    const info = opts?.chatJid
+    const info = useExactChat
       ? db
           .prepare(
             `UPDATE cached_messages
@@ -1666,7 +1735,7 @@ export function markCachedMessageRevoked(
                  updated_at = ?
              WHERE device_id = ? AND chat_jid = ? AND id = ?`,
           )
-          .run(revokedAt, revokedBy, nowMs, deviceId, opts.chatJid, messageId)
+          .run(revokedAt, revokedBy, nowMs, deviceId, opts!.chatJid!, messageId)
       : db
           .prepare(
             `UPDATE cached_messages
@@ -1713,12 +1782,19 @@ export function syncAndMergeChatMessages(
   liveMessages: CachedMessagePayload[],
   opts: {offset: number; limit?: number; search?: string; mediaOnly?: boolean},
 ): {messages: CachedMessagePayload[]; injectedCount: number; rawCount: number} {
-  upsertCachedMessages(deviceId, chatJid, liveMessages);
+  const deviceState = getChatDeviceState(deviceId, chatJid);
+  const clearedBeforeMs = deviceState?.cleared_before_ms ?? 0;
+  const effectiveLiveMessages =
+    clearedBeforeMs > 0
+      ? liveMessages.filter((m) => parseTimestampMs(m.timestamp) > clearedBeforeMs)
+      : liveMessages;
+
+  upsertCachedMessages(deviceId, chatJid, effectiveLiveMessages);
 
   const pageLimit = opts.limit ?? 40;
   const hasMoreOlderLivePages = liveMessages.length >= pageLimit;
-  const liveIds = new Set(liveMessages.map((m) => m.id));
-  const timestamps = liveMessages
+  const liveIds = new Set(effectiveLiveMessages.map((m) => m.id));
+  const timestamps = effectiveLiveMessages
     .map((m) => parseTimestampMs(m.timestamp))
     .filter((t) => t > 0);
   const minLiveTs = timestamps.length > 0 ? Math.min(...timestamps) : 0;
@@ -1727,21 +1803,28 @@ export function syncAndMergeChatMessages(
   // On the top page (offset === 0, unfiltered), any previously cached message that should
   // have appeared in this window (or anywhere when all live messages fit on page 0)
   // that disappeared from GOWA's response was deleted/revoked on WhatsApp.
-  if (opts.offset === 0 && !opts.search && !opts.mediaOnly && (minLiveTs > 0 || !hasMoreOlderLivePages)) {
+  if (
+    opts.offset === 0 &&
+    !opts.search &&
+    !opts.mediaOnly &&
+    (minLiveTs > 0 || !hasMoreOlderLivePages)
+  ) {
     const recentCached =
       hasMoreOlderLivePages && minLiveTs > 0
         ? queryAll<{id: string; is_revoked: number}>(
             `SELECT id, is_revoked FROM cached_messages
-             WHERE device_id = ? AND chat_jid = ? AND timestamp_ms >= ?`,
+             WHERE device_id = ? AND chat_jid = ? AND timestamp_ms >= ? AND timestamp_ms > ?`,
             deviceId,
             chatJid,
             minLiveTs,
+            clearedBeforeMs,
           )
         : queryAll<{id: string; is_revoked: number}>(
             `SELECT id, is_revoked FROM cached_messages
-             WHERE device_id = ? AND chat_jid = ?`,
+             WHERE device_id = ? AND chat_jid = ? AND timestamp_ms > ?`,
             deviceId,
             chatJid,
+            clearedBeforeMs,
           );
 
     const nowIso = new Date().toISOString();
@@ -1762,18 +1845,20 @@ export function syncAndMergeChatMessages(
 
   // Enrich live messages with preserved cached data & is_revoked flag
   const cachedById = new Map<string, CachedMessageRow>();
-  if (liveMessages.length > 0) {
+  if (effectiveLiveMessages.length > 0) {
     const allForChat = queryAll<CachedMessageRow>(
-      `SELECT ${CACHED_MESSAGE_COLUMNS} FROM cached_messages WHERE device_id = ? AND chat_jid = ?`,
+      `SELECT ${CACHED_MESSAGE_COLUMNS} FROM cached_messages
+       WHERE device_id = ? AND chat_jid = ? AND timestamp_ms > ?`,
       deviceId,
       chatJid,
+      clearedBeforeMs,
     );
     for (const row of allForChat) {
       cachedById.set(row.id, row);
     }
   }
 
-  const merged: CachedMessagePayload[] = liveMessages.map((msg) => {
+  const merged: CachedMessagePayload[] = effectiveLiveMessages.map((msg) => {
     const cached = cachedById.get(msg.id);
     if (!cached) return msg;
     const payload = rowToMessagePayload(cached);
@@ -1801,27 +1886,30 @@ export function syncAndMergeChatMessages(
       hasMoreOlderLivePages && minLiveTs > 0
         ? queryAll<CachedMessageRow>(
             `SELECT ${CACHED_MESSAGE_COLUMNS} FROM cached_messages
-             WHERE device_id = ? AND chat_jid = ? AND is_revoked = 1 AND timestamp_ms >= ?`,
+             WHERE device_id = ? AND chat_jid = ? AND is_revoked = 1 AND timestamp_ms >= ? AND timestamp_ms > ?`,
             deviceId,
             chatJid,
             minLiveTs,
+            clearedBeforeMs,
           )
         : queryAll<CachedMessageRow>(
             `SELECT ${CACHED_MESSAGE_COLUMNS} FROM cached_messages
-             WHERE device_id = ? AND chat_jid = ? AND is_revoked = 1
+             WHERE device_id = ? AND chat_jid = ? AND is_revoked = 1 AND timestamp_ms > ?
              ORDER BY timestamp_ms DESC LIMIT 50`,
             deviceId,
             chatJid,
+            clearedBeforeMs,
           );
   } else if (minLiveTs > 0 && maxLiveTs > 0) {
     missingRevokedRows = queryAll<CachedMessageRow>(
       `SELECT ${CACHED_MESSAGE_COLUMNS} FROM cached_messages
        WHERE device_id = ? AND chat_jid = ? AND is_revoked = 1
-         AND timestamp_ms >= ? AND timestamp_ms <= ?`,
+         AND timestamp_ms >= ? AND timestamp_ms <= ? AND timestamp_ms > ?`,
       deviceId,
       chatJid,
       minLiveTs,
       maxLiveTs,
+      clearedBeforeMs,
     );
   }
 
@@ -1858,8 +1946,10 @@ export function syncChatWatermarks(
   if (chats.length === 0) return [];
   const nowMs = Date.now();
   const newChatWindowMs = options?.newChatCatchupWindowMs ?? 10 * 60_000;
-  const baselineRow = queryOne<{total: number}>('SELECT COUNT(*) AS total FROM chat_sync_state');
-  const hasBaselineSync = (baselineRow?.total ?? 0) > 0;
+  const baselineRow = queryOne<{has_rows: number}>(
+    'SELECT EXISTS (SELECT 1 FROM chat_sync_state LIMIT 1) AS has_rows',
+  );
+  const hasBaselineSync = (baselineRow?.has_rows ?? 0) > 0;
 
   const selectSync = db.prepare(
     'SELECT last_message_ms, needs_catchup, catchup_prev_ms FROM chat_sync_state WHERE device_id = ? AND chat_jid = ?',
@@ -1971,7 +2061,24 @@ export function getUnreadCountsForUser(
   const result = new Map<string, number>();
   if (chats.length === 0) return result;
 
+  const uniqueDeviceIds = Array.from(new Set(chats.map((c) => c.device_id).filter(Boolean)));
+  const uniqueChatJids = Array.from(new Set(chats.map((c) => c.chat_jid).filter(Boolean)));
+  if (uniqueDeviceIds.length === 0 || uniqueChatJids.length === 0) return result;
+
   const userCreatedAtMs = parseTimestampMs(user.created_at);
+  const devicePlaceholders = uniqueDeviceIds.map(() => '?').join(', ');
+  const useJidFilter = uniqueChatJids.length <= 500;
+  const jidClause = useJidFilter
+    ? `AND m.chat_jid IN (${uniqueChatJids.map(() => '?').join(', ')})`
+    : '';
+  const queryParams: SQLInputValue[] = [
+    user.id,
+    ...uniqueDeviceIds,
+    ...(useJidFilter ? uniqueChatJids : []),
+    userCreatedAtMs,
+    userCreatedAtMs,
+  ];
+
   const rows = queryAll<{
     device_id: string;
     chat_jid: string;
@@ -1988,6 +2095,8 @@ export function getUnreadCountsForUser(
      WHERE m.is_from_me = 0
        AND m.is_revoked = 0
        AND m.is_unread_candidate = 1
+       AND m.device_id IN (${devicePlaceholders})
+       ${jidClause}
        AND m.seq > COALESCE(r.last_read_seq, 0)
        AND (
          r.last_read_seq IS NOT NULL
@@ -1995,9 +2104,7 @@ export function getUnreadCountsForUser(
          OR m.cached_at >= ?
        )
      GROUP BY m.device_id, m.chat_jid`,
-    user.id,
-    userCreatedAtMs,
-    userCreatedAtMs,
+    ...queryParams,
   );
 
   const requestedKeys = new Set(chats.map((c) => `${c.device_id}::${c.chat_jid}`));
@@ -2008,32 +2115,119 @@ export function getUnreadCountsForUser(
     }
   }
 
+  const manualUnreadRows = queryAll<{device_id: string; chat_jid: string}>(
+    `SELECT device_id, chat_jid
+     FROM user_chat_read_states
+     WHERE user_id = ?
+       AND manual_unread = 1
+       AND device_id IN (${devicePlaceholders})`,
+    user.id,
+    ...uniqueDeviceIds,
+  );
+  for (const row of manualUnreadRows) {
+    const key = `${row.device_id}::${row.chat_jid}`;
+    if (requestedKeys.has(key)) {
+      result.set(key, Math.max(1, result.get(key) ?? 0));
+    }
+  }
+
   return result;
 }
 
+export function getGroupUnreadSummaryForUser(
+  user: Pick<PublicUser, 'id' | 'created_at'>,
+  deviceIds?: string[],
+): {totalUnread: number; byKey: Map<string, number>} {
+  const byKey = new Map<string, number>();
+  const cleanDeviceIds = deviceIds
+    ? Array.from(new Set(deviceIds.map((id) => id.trim()).filter(Boolean)))
+    : null;
+  if (cleanDeviceIds !== null && cleanDeviceIds.length === 0) {
+    return {totalUnread: 0, byKey};
+  }
+
+  const userCreatedAtMs = parseTimestampMs(user.created_at);
+  const deviceClause =
+    cleanDeviceIds !== null
+      ? `AND m.device_id IN (${cleanDeviceIds.map(() => '?').join(', ')})`
+      : '';
+  const queryParams: SQLInputValue[] = [
+    user.id,
+    ...(cleanDeviceIds ?? []),
+    userCreatedAtMs,
+    userCreatedAtMs,
+  ];
+
+  const rows = queryAll<{
+    device_id: string;
+    chat_jid: string;
+    unread_count: number;
+  }>(
+    `SELECT m.device_id,
+            m.chat_jid,
+            COUNT(*) AS unread_count
+     FROM cached_messages m
+     LEFT JOIN user_chat_read_states r
+       ON r.user_id = ?
+      AND r.device_id = m.device_id
+      AND r.chat_jid = m.chat_jid
+     WHERE m.is_from_me = 0
+       AND m.is_revoked = 0
+       AND m.is_unread_candidate = 1
+       AND LOWER(m.chat_jid) LIKE '%@g.us'
+       ${deviceClause}
+       AND m.seq > COALESCE(r.last_read_seq, 0)
+       AND (
+         r.last_read_seq IS NOT NULL
+         OR ? <= 0
+         OR m.cached_at >= ?
+       )
+     GROUP BY m.device_id, m.chat_jid`,
+    ...queryParams,
+  );
+
+  let totalUnread = 0;
+  for (const row of rows) {
+    const count = Number(row.unread_count) || 0;
+    if (count > 0) {
+      byKey.set(`${row.device_id}::${row.chat_jid}`, count);
+      totalUnread += count;
+    }
+  }
+
+  return {totalUnread, byKey};
+}
+
 export function markChatReadForUser(userId: number, deviceId: string, chatJid: string): number {
-  const maxRow = queryOne<{max_seq: number}>(
-    'SELECT COALESCE(MAX(seq), 0) AS max_seq FROM cached_messages WHERE device_id = ? AND chat_jid = ?',
-    deviceId,
-    chatJid,
+  const globalMaxRow = queryOne<{max_seq: number | null}>(
+    'SELECT MAX(seq) AS max_seq FROM cached_messages',
   );
-  const globalMaxRow = queryOne<{max_seq: number}>(
-    'SELECT COALESCE(MAX(seq), 0) AS max_seq FROM cached_messages',
-  );
-  const targetSeq = Math.max(maxRow?.max_seq ?? 0, globalMaxRow?.max_seq ?? 0);
+  const targetSeq = Math.max(0, globalMaxRow?.max_seq ?? 0);
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
 
   db.prepare(`
-    INSERT INTO user_chat_read_states (user_id, device_id, chat_jid, last_read_seq, last_read_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO user_chat_read_states (user_id, device_id, chat_jid, last_read_seq, last_read_at, manual_unread, updated_at)
+    VALUES (?, ?, ?, ?, ?, 0, ?)
     ON CONFLICT(user_id, device_id, chat_jid) DO UPDATE SET
       last_read_seq = MAX(user_chat_read_states.last_read_seq, excluded.last_read_seq),
       last_read_at = excluded.last_read_at,
+      manual_unread = 0,
       updated_at = excluded.updated_at
   `).run(userId, deviceId, chatJid, targetSeq, nowIso, nowMs);
 
   return targetSeq;
+}
+
+export function markChatUnreadForUser(userId: number, deviceId: string, chatJid: string): void {
+  const nowMs = Date.now();
+  db.prepare(`
+    INSERT INTO user_chat_read_states (user_id, device_id, chat_jid, last_read_seq, last_read_at, manual_unread, updated_at)
+    VALUES (?, ?, ?, 0, '', 1, ?)
+    ON CONFLICT(user_id, device_id, chat_jid) DO UPDATE SET
+      manual_unread = 1,
+      updated_at = excluded.updated_at
+  `).run(userId, deviceId, chatJid, nowMs);
 }
 
 // =========================================================================
@@ -2202,5 +2396,486 @@ export function closeDatabaseSafely(): void {
     // Already closed
   }
 }
+
+// =========================================================================
+// Chat Row Menu: Device States, User Preferences (Mute/Favourites) & Lists
+// =========================================================================
+
+export interface ChatDeviceState {
+  device_id: string;
+  chat_jid: string;
+  is_pinned: boolean;
+  pinned_at_ms: number;
+  archived_override: boolean | null;
+  is_blocked: boolean;
+  blocked_at_ms: number;
+  cleared_before_ms: number;
+  deleted_before_ms: number;
+  updated_at: number;
+}
+
+interface ChatDeviceStateRow {
+  device_id: string;
+  chat_jid: string;
+  is_pinned: number;
+  pinned_at_ms: number;
+  archived_override: number | null;
+  is_blocked: number;
+  blocked_at_ms: number;
+  cleared_before_ms: number;
+  deleted_before_ms: number;
+  updated_at: number;
+}
+
+function hydrateChatDeviceState(row: ChatDeviceStateRow): ChatDeviceState {
+  return {
+    device_id: row.device_id,
+    chat_jid: row.chat_jid,
+    is_pinned: row.is_pinned === 1,
+    pinned_at_ms: Number(row.pinned_at_ms) || 0,
+    archived_override:
+      row.archived_override === null || row.archived_override === undefined
+        ? null
+        : row.archived_override === 1,
+    is_blocked: row.is_blocked === 1,
+    blocked_at_ms: Number(row.blocked_at_ms) || 0,
+    cleared_before_ms: Number(row.cleared_before_ms) || 0,
+    deleted_before_ms: Number(row.deleted_before_ms) || 0,
+    updated_at: Number(row.updated_at) || 0,
+  };
+}
+
+export function getChatDeviceState(deviceId: string, chatJid: string): ChatDeviceState | null {
+  const row = queryOne<ChatDeviceStateRow>(
+    `SELECT device_id, chat_jid, is_pinned, pinned_at_ms, archived_override,
+            is_blocked, blocked_at_ms, cleared_before_ms, deleted_before_ms, updated_at
+     FROM chat_device_states
+     WHERE device_id = ? AND chat_jid = ?`,
+    deviceId,
+    chatJid,
+  );
+  return row ? hydrateChatDeviceState(row) : null;
+}
+
+export function getChatDeviceStatesMap(deviceIds: string[]): Map<string, ChatDeviceState> {
+  const out = new Map<string, ChatDeviceState>();
+  const cleanIds = Array.from(new Set(deviceIds.map((d) => d.trim()).filter(Boolean)));
+  if (cleanIds.length === 0) return out;
+
+  const placeholders = cleanIds.map(() => '?').join(', ');
+  const rows = queryAll<ChatDeviceStateRow>(
+    `SELECT device_id, chat_jid, is_pinned, pinned_at_ms, archived_override,
+            is_blocked, blocked_at_ms, cleared_before_ms, deleted_before_ms, updated_at
+     FROM chat_device_states
+     WHERE device_id IN (${placeholders})`,
+    ...cleanIds,
+  );
+  for (const row of rows) {
+    out.set(`${row.device_id}::${row.chat_jid}`, hydrateChatDeviceState(row));
+  }
+  return out;
+}
+
+export function isChatBlocked(deviceId: string, chatJid: string): boolean {
+  const row = queryOne<{is_blocked: number}>(
+    'SELECT is_blocked FROM chat_device_states WHERE device_id = ? AND chat_jid = ?',
+    deviceId,
+    chatJid,
+  );
+  return row?.is_blocked === 1;
+}
+
+export function setChatPinState(
+  deviceId: string,
+  chatJid: string,
+  pinned: boolean,
+  nowMs = Date.now(),
+): ChatDeviceState {
+  db.prepare(`
+    INSERT INTO chat_device_states (device_id, chat_jid, is_pinned, pinned_at_ms, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(device_id, chat_jid) DO UPDATE SET
+      is_pinned = excluded.is_pinned,
+      pinned_at_ms = CASE WHEN excluded.is_pinned = 1 THEN excluded.pinned_at_ms ELSE 0 END,
+      updated_at = excluded.updated_at
+  `).run(deviceId, chatJid, pinned ? 1 : 0, pinned ? nowMs : 0, nowMs);
+  return getChatDeviceState(deviceId, chatJid)!;
+}
+
+export function setChatArchiveOverride(
+  deviceId: string,
+  chatJid: string,
+  archived: boolean,
+  nowMs = Date.now(),
+): ChatDeviceState {
+  db.prepare(`
+    INSERT INTO chat_device_states (device_id, chat_jid, archived_override, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(device_id, chat_jid) DO UPDATE SET
+      archived_override = excluded.archived_override,
+      updated_at = excluded.updated_at
+  `).run(deviceId, chatJid, archived ? 1 : 0, nowMs);
+  return getChatDeviceState(deviceId, chatJid)!;
+}
+
+export function setChatBlockedState(
+  deviceId: string,
+  chatJid: string,
+  blocked: boolean,
+  nowMs = Date.now(),
+): ChatDeviceState {
+  db.prepare(`
+    INSERT INTO chat_device_states (device_id, chat_jid, is_blocked, blocked_at_ms, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(device_id, chat_jid) DO UPDATE SET
+      is_blocked = excluded.is_blocked,
+      blocked_at_ms = CASE WHEN excluded.is_blocked = 1 THEN excluded.blocked_at_ms ELSE 0 END,
+      updated_at = excluded.updated_at
+  `).run(deviceId, chatJid, blocked ? 1 : 0, blocked ? nowMs : 0, nowMs);
+  return getChatDeviceState(deviceId, chatJid)!;
+}
+
+export function clearChatHistoryInDb(
+  deviceId: string,
+  chatJid: string,
+  nowMs = Date.now(),
+): {clearedBeforeMs: number; deletedMessages: number} {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare(`
+      INSERT INTO chat_device_states (device_id, chat_jid, cleared_before_ms, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(device_id, chat_jid) DO UPDATE SET
+        cleared_before_ms = MAX(chat_device_states.cleared_before_ms, excluded.cleared_before_ms),
+        updated_at = excluded.updated_at
+    `).run(deviceId, chatJid, nowMs, nowMs);
+
+    const deleted = db
+      .prepare('DELETE FROM cached_messages WHERE device_id = ? AND chat_jid = ?')
+      .run(deviceId, chatJid);
+
+    db.prepare(
+      `UPDATE user_chat_read_states
+       SET manual_unread = 0, updated_at = ?
+       WHERE device_id = ? AND chat_jid = ?`,
+    ).run(nowMs, deviceId, chatJid);
+
+    db.exec('COMMIT');
+    return {
+      clearedBeforeMs: nowMs,
+      deletedMessages: Number(deleted.changes),
+    };
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // ignore rollback errors
+    }
+    throw err;
+  }
+}
+
+export function deleteChatInDb(
+  deviceId: string,
+  chatJid: string,
+  nowMs = Date.now(),
+): {deletedBeforeMs: number} {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare(`
+      INSERT INTO chat_device_states (
+        device_id, chat_jid, is_pinned, pinned_at_ms, archived_override,
+        cleared_before_ms, deleted_before_ms, updated_at
+      )
+      VALUES (?, ?, 0, 0, NULL, ?, ?, ?)
+      ON CONFLICT(device_id, chat_jid) DO UPDATE SET
+        is_pinned = 0,
+        pinned_at_ms = 0,
+        archived_override = NULL,
+        cleared_before_ms = MAX(chat_device_states.cleared_before_ms, excluded.cleared_before_ms),
+        deleted_before_ms = MAX(chat_device_states.deleted_before_ms, excluded.deleted_before_ms),
+        updated_at = excluded.updated_at
+    `).run(deviceId, chatJid, nowMs, nowMs, nowMs);
+
+    db.prepare('DELETE FROM cached_messages WHERE device_id = ? AND chat_jid = ?').run(
+      deviceId,
+      chatJid,
+    );
+    db.prepare('DELETE FROM chat_assignments WHERE device_id = ? AND chat_jid = ?').run(
+      deviceId,
+      chatJid,
+    );
+    db.prepare('DELETE FROM chat_lifecycle_events WHERE device_id = ? AND chat_jid = ?').run(
+      deviceId,
+      chatJid,
+    );
+    db.prepare('DELETE FROM chat_sync_state WHERE device_id = ? AND chat_jid = ?').run(
+      deviceId,
+      chatJid,
+    );
+    db.prepare('DELETE FROM user_chat_read_states WHERE device_id = ? AND chat_jid = ?').run(
+      deviceId,
+      chatJid,
+    );
+    db.prepare('DELETE FROM user_chat_preferences WHERE device_id = ? AND chat_jid = ?').run(
+      deviceId,
+      chatJid,
+    );
+    db.prepare('DELETE FROM chat_list_items WHERE device_id = ? AND chat_jid = ?').run(
+      deviceId,
+      chatJid,
+    );
+
+    db.exec('COMMIT');
+    return {deletedBeforeMs: nowMs};
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // ignore rollback errors
+    }
+    throw err;
+  }
+}
+
+export interface UserChatPreference {
+  is_favourite: boolean;
+  muted_until_ms: number;
+}
+
+export type MuteDuration = '8h' | '1w' | 'always' | 'unmute';
+
+export function computeMutedUntilMs(duration: MuteDuration, nowMs = Date.now()): number {
+  if (duration === 'unmute') return 0;
+  if (duration === 'always') return -1;
+  if (duration === '8h') return nowMs + 8 * 60 * 60 * 1000;
+  return nowMs + 7 * 24 * 60 * 60 * 1000;
+}
+
+export function normalizeActiveMutedUntil(rawMutedUntilMs: number, nowMs = Date.now()): number {
+  if (rawMutedUntilMs === -1) return -1;
+  if (rawMutedUntilMs > nowMs) return rawMutedUntilMs;
+  return 0;
+}
+
+export function getUserChatPreferencesMap(
+  userId: number,
+  deviceIds: string[],
+  nowMs = Date.now(),
+): Map<string, UserChatPreference> {
+  const out = new Map<string, UserChatPreference>();
+  const cleanIds = Array.from(new Set(deviceIds.map((d) => d.trim()).filter(Boolean)));
+  if (cleanIds.length === 0) return out;
+
+  const placeholders = cleanIds.map(() => '?').join(', ');
+  const rows = queryAll<{
+    device_id: string;
+    chat_jid: string;
+    is_favourite: number;
+    muted_until_ms: number;
+  }>(
+    `SELECT device_id, chat_jid, is_favourite, muted_until_ms
+     FROM user_chat_preferences
+     WHERE user_id = ? AND device_id IN (${placeholders})`,
+    userId,
+    ...cleanIds,
+  );
+  for (const row of rows) {
+    out.set(`${row.device_id}::${row.chat_jid}`, {
+      is_favourite: row.is_favourite === 1,
+      muted_until_ms: normalizeActiveMutedUntil(Number(row.muted_until_ms) || 0, nowMs),
+    });
+  }
+  return out;
+}
+
+export function getUserMutedChatKeys(userId: number, nowMs = Date.now()): string[] {
+  const rows = queryAll<{device_id: string; chat_jid: string}>(
+    `SELECT device_id, chat_jid
+     FROM user_chat_preferences
+     WHERE user_id = ? AND (muted_until_ms = -1 OR muted_until_ms > ?)`,
+    userId,
+    nowMs,
+  );
+  return rows.map((r) => `${r.device_id}::${r.chat_jid}`);
+}
+
+export function setUserChatMute(
+  userId: number,
+  deviceId: string,
+  chatJid: string,
+  duration: MuteDuration,
+  nowMs = Date.now(),
+): number {
+  const mutedUntilMs = computeMutedUntilMs(duration, nowMs);
+  db.prepare(`
+    INSERT INTO user_chat_preferences (user_id, device_id, chat_jid, muted_until_ms, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, device_id, chat_jid) DO UPDATE SET
+      muted_until_ms = excluded.muted_until_ms,
+      updated_at = excluded.updated_at
+  `).run(userId, deviceId, chatJid, mutedUntilMs, nowMs);
+  return mutedUntilMs;
+}
+
+export function setUserChatFavourite(
+  userId: number,
+  deviceId: string,
+  chatJid: string,
+  favourite: boolean,
+  nowMs = Date.now(),
+): boolean {
+  db.prepare(`
+    INSERT INTO user_chat_preferences (user_id, device_id, chat_jid, is_favourite, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, device_id, chat_jid) DO UPDATE SET
+      is_favourite = excluded.is_favourite,
+      updated_at = excluded.updated_at
+  `).run(userId, deviceId, chatJid, favourite ? 1 : 0, nowMs);
+  return favourite;
+}
+
+export interface ChatListSummary {
+  id: number;
+  name: string;
+  chat_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export function listChatListsForUser(userId: number): ChatListSummary[] {
+  return queryAll<ChatListSummary>(
+    `SELECT l.id,
+            l.name,
+            COUNT(i.chat_jid) AS chat_count,
+            l.created_at,
+            l.updated_at
+     FROM chat_lists l
+     LEFT JOIN chat_list_items i ON i.list_id = l.id
+     WHERE l.user_id = ?
+     GROUP BY l.id
+     ORDER BY l.id ASC`,
+    userId,
+  ).map((r) => ({
+    ...r,
+    chat_count: Number(r.chat_count) || 0,
+  }));
+}
+
+export function createChatListForUser(userId: number, rawName: string): ChatListSummary {
+  const name = rawName.trim();
+  if (!name) {
+    throw new GowaError(400, 'VALIDATION_ERROR', 'اسم القائمة مطلوب');
+  }
+  const existing = queryOne<{id: number}>(
+    'SELECT id FROM chat_lists WHERE user_id = ? AND name = ? COLLATE NOCASE',
+    userId,
+    name,
+  );
+  if (existing) {
+    throw new GowaError(409, 'DUPLICATE_LIST_NAME', 'توجد قائمة بهذا الاسم بالفعل');
+  }
+  const countRow = queryOne<{total: number}>(
+    'SELECT COUNT(*) AS total FROM chat_lists WHERE user_id = ?',
+    userId,
+  );
+  if ((countRow?.total ?? 0) >= 50) {
+    throw new GowaError(400, 'LIST_LIMIT_REACHED', 'تم الوصول للحد الأقصى لعدد القوائم (50)');
+  }
+
+  const nowIso = new Date().toISOString();
+  const info = db
+    .prepare(
+      `INSERT INTO chat_lists (user_id, name, created_at, updated_at)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .run(userId, name, nowIso, nowIso);
+  return {
+    id: Number(info.lastInsertRowid),
+    name,
+    chat_count: 0,
+    created_at: nowIso,
+    updated_at: nowIso,
+  };
+}
+
+export function deleteChatListForUser(userId: number, listId: number): boolean {
+  const info = db
+    .prepare('DELETE FROM chat_lists WHERE id = ? AND user_id = ?')
+    .run(listId, userId);
+  return info.changes > 0;
+}
+
+export function getUserChatListMemberships(
+  userId: number,
+  deviceIds: string[],
+): Map<string, number[]> {
+  const out = new Map<string, number[]>();
+  const cleanIds = Array.from(new Set(deviceIds.map((d) => d.trim()).filter(Boolean)));
+  if (cleanIds.length === 0) return out;
+
+  const placeholders = cleanIds.map(() => '?').join(', ');
+  const rows = queryAll<{list_id: number; device_id: string; chat_jid: string}>(
+    `SELECT i.list_id, i.device_id, i.chat_jid
+     FROM chat_list_items i
+     INNER JOIN chat_lists l ON l.id = i.list_id
+     WHERE l.user_id = ? AND i.device_id IN (${placeholders})
+     ORDER BY i.list_id ASC`,
+    userId,
+    ...cleanIds,
+  );
+  for (const row of rows) {
+    const key = `${row.device_id}::${row.chat_jid}`;
+    const existing = out.get(key);
+    if (existing) existing.push(row.list_id);
+    else out.set(key, [row.list_id]);
+  }
+  return out;
+}
+
+export function setChatListMembership(
+  userId: number,
+  deviceId: string,
+  chatJid: string,
+  listIds: number[],
+): number[] {
+  const uniqueIds = Array.from(new Set(listIds.filter((id) => Number.isInteger(id) && id > 0)));
+  const ownedRows = queryAll<{id: number}>('SELECT id FROM chat_lists WHERE user_id = ?', userId);
+  const ownedSet = new Set(ownedRows.map((r) => r.id));
+
+  for (const id of uniqueIds) {
+    if (!ownedSet.has(id)) {
+      throw new GowaError(404, 'LIST_NOT_FOUND', 'إحدى القوائم المحددة غير موجودة');
+    }
+  }
+
+  const nowMs = Date.now();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare(
+      `DELETE FROM chat_list_items
+       WHERE device_id = ? AND chat_jid = ?
+         AND list_id IN (SELECT id FROM chat_lists WHERE user_id = ?)`,
+    ).run(deviceId, chatJid, userId);
+
+    const insertStmt = db.prepare(
+      `INSERT INTO chat_list_items (list_id, device_id, chat_jid, added_at)
+       VALUES (?, ?, ?, ?)`,
+    );
+    for (const id of uniqueIds) {
+      insertStmt.run(id, deviceId, chatJid, nowMs);
+    }
+    db.exec('COMMIT');
+    return uniqueIds;
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // ignore rollback errors
+    }
+    throw err;
+  }
+}
+
 
 

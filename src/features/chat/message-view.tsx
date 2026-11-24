@@ -1,4 +1,6 @@
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -15,9 +17,10 @@ import {
   useQueryClient,
   type InfiniteData,
 } from '@tanstack/react-query';
-import {History, Loader2, Paperclip, Trash2} from 'lucide-react';
+import {Hand, History, Loader2, Lock, Paperclip, RotateCcw, Trash2} from 'lucide-react';
 import {toast} from 'sonner';
 import {
+  blockUnifiedChat,
   claimUnifiedChat,
   closeUnifiedChat,
   getChatLifecycle,
@@ -34,18 +37,19 @@ import {
   sendUnifiedTextMessage,
 } from '@/api/client';
 import type {
+  ChatAssignmentInfo,
   ChatInfo,
   ChatLifecycleEvent,
+  ChatLifecycleResponse,
+  ChatRedactionReason,
   MessageInfo,
   Pagination,
   UnifiedChat,
 } from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
-import {AssignChatDialog} from '@/features/chat/assign-chat-dialog';
-import {ChatContextDrawer, type ContextDrawerTab} from '@/features/chat/chat-context-drawer';
+import type {ContextDrawerTab} from '@/features/chat/chat-context-drawer';
 import {chatDisplayName} from '@/features/chat/display-name';
-import {ForwardMessageDialog} from '@/features/chat/forward-message-dialog';
 import {MediaSelectionBar} from '@/features/chat/media-selection-bar';
 import {MessageBubble} from '@/features/chat/message-bubble';
 import {
@@ -61,7 +65,24 @@ import {
 } from '@/features/chat/message-reactions';
 import {MessageViewHeader} from '@/features/chat/message-view-header';
 import type {OtherAccountRef} from '@/features/chat/other-accounts';
-import {ScheduleMessageDialog} from '@/features/chat/schedule-dialog';
+import {
+  computeTimelineScrollAction,
+  isNearBottom,
+  scrollContainerToBottom,
+} from '@/features/chat/scroll-behavior';
+
+const AssignChatDialog = lazy(() =>
+  import('@/features/chat/assign-chat-dialog').then((m) => ({default: m.AssignChatDialog})),
+);
+const ChatContextDrawer = lazy(() =>
+  import('@/features/chat/chat-context-drawer').then((m) => ({default: m.ChatContextDrawer})),
+);
+const ForwardMessageDialog = lazy(() =>
+  import('@/features/chat/forward-message-dialog').then((m) => ({default: m.ForwardMessageDialog})),
+);
+const ScheduleMessageDialog = lazy(() =>
+  import('@/features/chat/schedule-dialog').then((m) => ({default: m.ScheduleMessageDialog})),
+);
 import {useChatReadSync} from '@/features/chat/use-chat-read-sync';
 import {useMediaBatch} from '@/features/chat/use-media-batch';
 import {formatDay, formatShortTime} from '@/lib/format';
@@ -106,7 +127,13 @@ const HISTORY_POLL_MS = 2_000;
 const HISTORY_POLL_WINDOW_MS = 30_000;
 const SCROLL_TOP_THRESHOLD_PX = 140;
 
-type MessagesPage = {data: MessageInfo[]; pagination: Pagination; chat_info: ChatInfo};
+type MessagesPage = {
+  data: MessageInfo[];
+  pagination: Pagination;
+  chat_info: ChatInfo;
+  content_redacted?: boolean;
+  redaction_reason?: ChatRedactionReason;
+};
 
 function computeNextMessagePageParam(
   lastPage: MessagesPage,
@@ -131,12 +158,14 @@ export function MessageView({
   chat,
   onBack,
   alwaysShowBack = false,
+  embeddedInGroup = false,
   otherAccounts = [],
   onSwitchAccount,
 }: {
   chat: UnifiedChat;
   onBack?: () => void;
   alwaysShowBack?: boolean;
+  embeddedInGroup?: boolean;
   otherAccounts?: OtherAccountRef[];
   onSwitchAccount?: (deviceId: string, jid: string) => void;
 }) {
@@ -152,6 +181,7 @@ export function MessageView({
   const canReadSchedules = hasUserPermission(user, 'schedules:read');
   const canWriteSchedules = hasUserPermission(user, 'schedules:write');
   const scrollRef = useRef<HTMLDivElement>(null);
+  const timelineContentRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLInputElement>(null);
   const initialScrolledRef = useRef(false);
   const prevScrollAnchorRef = useRef<{scrollHeight: number; scrollTop: number} | null>(null);
@@ -173,8 +203,6 @@ export function MessageView({
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [revokingMessage, setRevokingMessage] = useState<MessageInfo | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<MessageInfo | null>(null);
-
-  useChatReadSync(chat);
 
   useEffect(() => {
     setSearchOpen(false);
@@ -202,8 +230,11 @@ export function MessageView({
     stickToBottomRef.current = true;
   }, [search, mediaOnly]);
 
+  const lowerJid = chat.jid.toLowerCase();
   const isLifecycleSupported =
-    !chat.jid.endsWith('@newsletter') && chat.jid !== 'status@broadcast';
+    !lowerJid.endsWith('@newsletter') &&
+    !lowerJid.endsWith('@g.us') &&
+    lowerJid !== 'status@broadcast';
 
   const lifecycleQuery = useQuery({
     queryKey: ['chat-lifecycle', chat.device_id, chat.jid],
@@ -214,29 +245,26 @@ export function MessageView({
   const policyQuery = useQuery({
     queryKey: ['inbox-policy'],
     queryFn: getInboxPolicy,
+    enabled: isLifecycleSupported,
     staleTime: 30_000,
   });
 
-  const notesQuery = useQuery({
-    queryKey: ['unified-chat-notes', chat.device_id, chat.jid],
-    queryFn: () => listUnifiedChatNotes(chat.device_id, chat.jid),
-    enabled: canReadNotes,
-  });
+  const effectiveLifecycle = isLifecycleSupported
+    ? (lifecycleQuery.data?.assignment ?? chat.lifecycle)
+    : undefined;
 
-  const schedulesQuery = useQuery({
-    queryKey: ['unified-chat-schedules', chat.device_id, chat.jid],
-    queryFn: () => listUnifiedChatSchedules(chat.device_id, chat.jid),
-    enabled: canReadSchedules,
-  });
-
-  const notesCount = notesQuery.data?.notes?.length ?? 0;
-  const activeScheduledCount = useMemo(
-    () =>
-      (schedulesQuery.data?.data ?? []).filter(
-        (item) => item.status === 'active' || item.status === 'running' || item.status === 'paused',
-      ).length,
-    [schedulesQuery.data?.data],
-  );
+  const redactionReasonFromLifecycle: ChatRedactionReason | undefined =
+    isLifecycleSupported && effectiveLifecycle && !canViewAllChats
+      ? effectiveLifecycle.status === 'closed'
+        ? 'closed'
+        : effectiveLifecycle.status === 'open'
+          ? effectiveLifecycle.assigned_user_id !== null &&
+            user?.id !== undefined &&
+            effectiveLifecycle.assigned_user_id !== user.id
+            ? 'assigned_other'
+            : undefined
+          : 'pending'
+      : undefined;
 
   const normalizedSearch = normalizeSearchInput(search);
 
@@ -254,18 +282,58 @@ export function MessageView({
     refetchInterval: () => (Date.now() < historyPollUntil ? HISTORY_POLL_MS : false),
   });
 
+  const firstPage = query.data?.pages[0];
+  const redactionReason = firstPage?.redaction_reason ?? redactionReasonFromLifecycle;
+  const isContentRedacted = Boolean(firstPage?.content_redacted || redactionReasonFromLifecycle);
+
+  useChatReadSync(chat, isContentRedacted);
+
+  useEffect(() => {
+    initialScrolledRef.current = false;
+    prevScrollAnchorRef.current = null;
+    stickToBottomRef.current = true;
+    if (isContentRedacted) {
+      setSearchOpen(false);
+      setSearch('');
+      setMediaOnly(false);
+      setDrawerTab(null);
+    }
+  }, [isContentRedacted]);
+
+  const notesQuery = useQuery({
+    queryKey: ['unified-chat-notes', chat.device_id, chat.jid],
+    queryFn: () => listUnifiedChatNotes(chat.device_id, chat.jid),
+    enabled: canReadNotes && !isContentRedacted,
+  });
+
+  const schedulesQuery = useQuery({
+    queryKey: ['unified-chat-schedules', chat.device_id, chat.jid],
+    queryFn: () => listUnifiedChatSchedules(chat.device_id, chat.jid),
+    enabled: canReadSchedules && !isContentRedacted,
+  });
+
+  const notesCount = notesQuery.data?.notes?.length ?? 0;
+  const activeScheduledCount = useMemo(
+    () =>
+      (schedulesQuery.data?.data ?? []).filter(
+        (item) => item.status === 'active' || item.status === 'running' || item.status === 'paused',
+      ).length,
+    [schedulesQuery.data?.data],
+  );
+
   const messages = useMemo(() => {
+    if (isContentRedacted) return [];
     const pages = query.data?.pages ?? [];
     const byId = new Map<string, MessageInfo>();
     for (const page of pages) {
       for (const msg of page.data) byId.set(msg.id, msg);
     }
     return sortMessagesChronologically(Array.from(byId.values()));
-  }, [query.data?.pages]);
+  }, [isContentRedacted, query.data?.pages]);
 
   const downloadableMessages = useMemo(
-    () => messages.filter(isDownloadableMedia),
-    [messages],
+    () => (isContentRedacted ? [] : messages.filter(isDownloadableMedia)),
+    [isContentRedacted, messages],
   );
 
   const mediaBatch = useMediaBatch({
@@ -275,21 +343,16 @@ export function MessageView({
   });
 
   const messagesById = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
-  const firstPage = query.data?.pages[0];
   const total = firstPage?.pagination.total ?? 0;
   const resolvedChat = firstPage?.chat_info?.jid === chat.jid ? firstPage.chat_info : chat;
   const displayName = chatDisplayName(resolvedChat);
   const isDeviceReady = chat.device_state === 'logged_in';
   const {hasNextPage, isFetchingNextPage, fetchNextPage} = query;
 
-  const effectiveLifecycle = isLifecycleSupported
-    ? (lifecycleQuery.data?.assignment ?? chat.lifecycle)
-    : undefined;
-
   const lifecycleEvents = useMemo(() => {
-    if (!isLifecycleSupported || normalizedSearch || mediaOnly) return [];
+    if (!isLifecycleSupported || isContentRedacted || normalizedSearch || mediaOnly) return [];
     return lifecycleQuery.data?.events ?? [];
-  }, [isLifecycleSupported, lifecycleQuery.data?.events, mediaOnly, normalizedSearch]);
+  }, [isContentRedacted, isLifecycleSupported, lifecycleQuery.data?.events, mediaOnly, normalizedSearch]);
 
   const timelineItems = useMemo<TimelineItem[]>(() => {
     const items: TimelineItem[] = messages.map((msg) => ({
@@ -320,6 +383,9 @@ export function MessageView({
     lockState: ComposerLockState | undefined;
     autoReopenHint: boolean;
   }>(() => {
+    if (chat.is_blocked) {
+      return {lockState: {reason: 'blocked'}, autoReopenHint: false};
+    }
     if (!isLifecycleSupported || !effectiveLifecycle) {
       return {lockState: undefined, autoReopenHint: false};
     }
@@ -367,6 +433,7 @@ export function MessageView({
   }, [
     canCloseChats,
     canViewAllChats,
+    chat.is_blocked,
     effectiveLifecycle,
     isLifecycleSupported,
     policyQuery.data,
@@ -377,15 +444,17 @@ export function MessageView({
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (!el || timelineItems.length === 0) return;
+    const action = computeTimelineScrollAction({
+      hasElement: Boolean(el),
+      itemCount: timelineItems.length,
+      isContentRedacted,
+      initialScrolled: initialScrolledRef.current,
+      prevAnchor: prevScrollAnchorRef.current,
+      stickToBottom: stickToBottomRef.current,
+    });
+    if (!el || action === 'none') return;
 
-    if (!initialScrolledRef.current) {
-      el.scrollTop = el.scrollHeight;
-      initialScrolledRef.current = true;
-      return;
-    }
-
-    if (prevScrollAnchorRef.current) {
+    if (action === 'preserve_anchor' && prevScrollAnchorRef.current) {
       const {scrollHeight: prevHeight, scrollTop: prevTop} = prevScrollAnchorRef.current;
       const heightDelta = el.scrollHeight - prevHeight;
       if (heightDelta > 0) el.scrollTop = prevTop + heightDelta;
@@ -393,13 +462,41 @@ export function MessageView({
       return;
     }
 
-    if (stickToBottomRef.current) el.scrollTop = el.scrollHeight;
-  }, [timelineItems]);
+    if (action === 'scroll_bottom') {
+      const wasInitial = !initialScrolledRef.current;
+      scrollContainerToBottom(el);
+      initialScrolledRef.current = true;
+      if (wasInitial) {
+        stickToBottomRef.current = true;
+        window.requestAnimationFrame(() => {
+          if (scrollRef.current && stickToBottomRef.current && !prevScrollAnchorRef.current) {
+            scrollContainerToBottom(scrollRef.current);
+          }
+        });
+      }
+    }
+  }, [isContentRedacted, timelineItems]);
+
+  useEffect(() => {
+    if (isContentRedacted || timelineItems.length === 0 || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const contentEl = timelineContentRef.current;
+    if (!contentEl) return;
+
+    const observer = new ResizeObserver(() => {
+      const scrollEl = scrollRef.current;
+      if (!scrollEl || !stickToBottomRef.current || prevScrollAnchorRef.current) return;
+      scrollContainerToBottom(scrollEl);
+    });
+    observer.observe(contentEl);
+    return () => observer.disconnect();
+  }, [isContentRedacted, timelineItems.length]);
 
   const maybeLoadOlder = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    stickToBottomRef.current = isNearBottom(el);
 
     if (
       initialScrolledRef.current &&
@@ -417,6 +514,15 @@ export function MessageView({
   const invalidateLifecycleScope = useCallback(() => {
     void queryClient.invalidateQueries({
       queryKey: ['chat-lifecycle', chat.device_id, chat.jid],
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ['unified-messages', chat.device_id, chat.jid],
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ['unified-chat-notes', chat.device_id, chat.jid],
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ['unified-chat-schedules', chat.device_id, chat.jid],
     });
     void queryClient.invalidateQueries({queryKey: ['unified-chats']});
     void queryClient.invalidateQueries({queryKey: ['assignable-agents', chat.device_id]});
@@ -461,11 +567,44 @@ export function MessageView({
     },
   });
 
+  const applyLifecycleMutationResult = useCallback(
+    (data: {assignment: ChatAssignmentInfo; event?: ChatLifecycleEvent}) => {
+      if (data.assignment.status === 'open') {
+        initialScrolledRef.current = false;
+        prevScrollAnchorRef.current = null;
+        stickToBottomRef.current = true;
+      }
+      queryClient.setQueryData<ChatLifecycleResponse>(
+        ['chat-lifecycle', chat.device_id, chat.jid],
+        (prev) => {
+          const prevEvents = prev?.events ?? [];
+          const nextEvents =
+            data.event && !prevEvents.some((ev) => ev.id === data.event!.id)
+              ? [...prevEvents, data.event]
+              : prevEvents;
+          return {
+            assignment: data.assignment,
+            events: nextEvents,
+          };
+        },
+      );
+      invalidateLifecycleScope();
+      if (data.assignment.status === 'open') {
+        window.requestAnimationFrame(() => {
+          if (scrollRef.current && stickToBottomRef.current && !prevScrollAnchorRef.current) {
+            scrollContainerToBottom(scrollRef.current);
+          }
+        });
+      }
+    },
+    [chat.device_id, chat.jid, invalidateLifecycleScope, queryClient],
+  );
+
   const claimMutation = useMutation({
     mutationFn: () => claimUnifiedChat(chat.device_id, chat.jid, displayName),
-    onSuccess: () => {
+    onSuccess: (data) => {
       toast.success(t.chats.claimedToast);
-      invalidateLifecycleScope();
+      applyLifecycleMutationResult(data);
     },
     onError: (err) => {
       toast.error(toApiError(err).message);
@@ -475,9 +614,9 @@ export function MessageView({
 
   const releaseMutation = useMutation({
     mutationFn: () => releaseUnifiedChat(chat.device_id, chat.jid, {cached_title: displayName}),
-    onSuccess: () => {
+    onSuccess: (data) => {
       toast.success(t.chats.unassignedToast);
-      invalidateLifecycleScope();
+      applyLifecycleMutationResult(data);
     },
     onError: (err) => {
       toast.error(toApiError(err).message);
@@ -487,9 +626,9 @@ export function MessageView({
 
   const closeMutation = useMutation({
     mutationFn: () => closeUnifiedChat(chat.device_id, chat.jid, {cached_title: displayName}),
-    onSuccess: () => {
+    onSuccess: (data) => {
       toast.success(t.chats.closedToast);
-      invalidateLifecycleScope();
+      applyLifecycleMutationResult(data);
     },
     onError: (err) => {
       toast.error(toApiError(err).message);
@@ -503,9 +642,9 @@ export function MessageView({
         assign_to_self: assignToSelf,
         cached_title: displayName,
       }),
-    onSuccess: () => {
+    onSuccess: (data) => {
       toast.success(t.chats.reopenedToast);
-      invalidateLifecycleScope();
+      applyLifecycleMutationResult(data);
     },
     onError: (err) => {
       toast.error(toApiError(err).message);
@@ -513,11 +652,23 @@ export function MessageView({
     },
   });
 
+  const unblockMutation = useMutation({
+    mutationFn: () => blockUnifiedChat(chat.device_id, chat.jid, false),
+    onSuccess: () => {
+      toast.success(t.chats.unblockedToast);
+      invalidateLifecycleScope();
+    },
+    onError: (err) => {
+      toast.error(toApiError(err).message);
+    },
+  });
+
   const isLifecyclePending =
     claimMutation.isPending ||
     releaseMutation.isPending ||
     closeMutation.isPending ||
-    reopenMutation.isPending;
+    reopenMutation.isPending ||
+    unblockMutation.isPending;
 
   const reactionMutation = useMutation({
     mutationFn: ({messageId, emoji}: {messageId: string; emoji: string}) =>
@@ -726,6 +877,7 @@ export function MessageView({
           total={total}
           isDeviceReady={isDeviceReady}
           alwaysShowBack={alwaysShowBack}
+          embeddedInGroup={embeddedInGroup}
           otherAccounts={otherAccounts}
           onSwitchAccount={onSwitchAccount}
           onBack={onBack}
@@ -758,23 +910,102 @@ export function MessageView({
           canAssign={canAssignChats}
           canClose={canCloseChats}
           canViewAll={canViewAllChats}
+          isContentRedacted={isContentRedacted}
           isLifecyclePending={isLifecyclePending}
           onClaim={() => claimMutation.mutate()}
           onOpenAssign={() => setAssignDialogOpen(true)}
           onRelease={() => releaseMutation.mutate()}
           onCloseChat={() => closeMutation.mutate()}
-          onReopen={() => reopenMutation.mutate(false)}
+          onReopen={() => reopenMutation.mutate(!canViewAllChats && canAssignChats)}
         />
 
         <div
           ref={scrollRef}
           onScroll={maybeLoadOlder}
-          className="wa-wallpaper min-h-0 flex-1 overflow-y-auto py-4"
+          className="wa-wallpaper relative min-h-0 flex-1 overflow-y-auto py-4"
         >
           {query.isLoading ? (
             <div className="flex items-center justify-center gap-2 p-10 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />
               <span>{t.chats.loadingMessages}</span>
+            </div>
+          ) : isContentRedacted ? (
+            <div className="relative flex min-h-full items-center justify-center overflow-hidden px-4 py-8">
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 mx-auto flex max-w-4xl flex-col justify-center gap-3 px-6 py-6 opacity-70 blur-md select-none"
+              >
+                <div className="flex justify-start">
+                  <div className="h-12 w-56 rounded-2xl rounded-ts-xs border border-border/50 bg-bubble-in shadow-2xs" />
+                </div>
+                <div className="flex justify-end">
+                  <div className="h-10 w-44 rounded-2xl rounded-te-xs border border-border/50 bg-bubble-out shadow-2xs" />
+                </div>
+                <div className="flex justify-start">
+                  <div className="h-16 w-72 rounded-2xl rounded-ts-xs border border-border/50 bg-bubble-in shadow-2xs" />
+                </div>
+                <div className="flex justify-end">
+                  <div className="h-11 w-60 rounded-2xl rounded-te-xs border border-border/50 bg-bubble-out shadow-2xs" />
+                </div>
+              </div>
+
+              <div className="relative z-10 w-full max-w-md rounded-2xl border border-border bg-card/95 p-6 text-center shadow-lg">
+                <div className="mx-auto mb-3.5 flex size-11 items-center justify-center rounded-full bg-secondary text-foreground">
+                  <Lock className="size-5" />
+                </div>
+                <h3 className="text-sm font-semibold text-foreground">
+                  {redactionReason === 'closed'
+                    ? t.chats.redactedClosedTitle
+                    : redactionReason === 'assigned_other'
+                      ? t.chats.redactedOtherTitle
+                      : t.chats.redactedPendingTitle}
+                </h3>
+                <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+                  {redactionReason === 'closed'
+                    ? t.chats.redactedClosedDesc
+                    : redactionReason === 'assigned_other'
+                      ? t.chats.redactedOtherDesc(effectiveLifecycle?.assigned_user_name || '')
+                      : t.chats.redactedPendingDesc}
+                </p>
+
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                  {redactionReason === 'pending' && canAssignChats ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={isLifecyclePending}
+                      onClick={() => claimMutation.mutate()}
+                      className="whitespace-nowrap shrink-0"
+                    >
+                      {claimMutation.isPending ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <Hand className="size-4" />
+                      )}
+                      <span>{t.chats.claimAction}</span>
+                    </Button>
+                  ) : redactionReason === 'closed' && canCloseChats ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={isLifecyclePending}
+                      onClick={() => reopenMutation.mutate(canAssignChats)}
+                      className="whitespace-nowrap shrink-0"
+                    >
+                      {reopenMutation.isPending ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <RotateCcw className="size-4" />
+                      )}
+                      <span>{t.chats.reopenAction}</span>
+                    </Button>
+                  ) : (
+                    <p className="text-[11px] font-medium text-muted-foreground">
+                      {t.chats.redactedPermissionNeeded}
+                    </p>
+                  )}
+                </div>
+              </div>
             </div>
           ) : query.isError ? (
             <div className="p-8 text-center text-sm text-destructive">
@@ -786,7 +1017,7 @@ export function MessageView({
               <p className="text-xs">{t.chats.noMessagesHint}</p>
             </div>
           ) : (
-            <div className="flex flex-col gap-2">
+            <div ref={timelineContentRef} className="flex flex-col gap-2">
               <div className="mx-auto flex w-full max-w-4xl justify-center px-4 pb-1 sm:px-8 lg:px-14">
                 {isFetchingNextPage ? (
                   <div className="flex items-center gap-2 rounded-lg bg-card/90 px-3 py-1 text-xs text-muted-foreground shadow-2xs">
@@ -905,9 +1136,11 @@ export function MessageView({
           autoReopenHint={autoReopenHint}
           canClaimFromComposer={canAssignChats}
           canReopenFromComposer={canCloseChats}
+          canUnblockFromComposer={canWriteChats}
           isLifecyclePending={isLifecyclePending}
           onClaimFromComposer={() => claimMutation.mutate()}
           onReopenFromComposer={() => reopenMutation.mutate(canAssignChats)}
+          onUnblockFromComposer={() => unblockMutation.mutate()}
           draft={draft}
           attachment={attachment}
           replyingTo={replyingTo}
@@ -921,56 +1154,66 @@ export function MessageView({
       </div>
 
       {drawerTab &&
+        !isContentRedacted &&
         ((drawerTab === 'notes' && canReadNotes) ||
           (drawerTab === 'scheduled' && canReadSchedules)) && (
-          <ChatContextDrawer
+          <Suspense fallback={null}>
+            <ChatContextDrawer
+              chat={chat}
+              activeTab={drawerTab}
+              isContentRedacted={isContentRedacted}
+              canReadNotes={canReadNotes}
+              canReadSchedules={canReadSchedules}
+              notesCount={notesCount}
+              scheduledCount={activeScheduledCount}
+              onTabChange={setDrawerTab}
+              onClose={() => setDrawerTab(null)}
+              onOpenCreateSchedule={() => setScheduleDialogOpen(true)}
+            />
+          </Suspense>
+        )}
+
+      <Suspense fallback={null}>
+        {scheduleDialogOpen && (
+          <ScheduleMessageDialog
+            open={scheduleDialogOpen}
+            onOpenChange={setScheduleDialogOpen}
             chat={chat}
-            activeTab={drawerTab}
-            canReadNotes={canReadNotes}
-            canReadSchedules={canReadSchedules}
-            notesCount={notesCount}
-            scheduledCount={activeScheduledCount}
-            onTabChange={setDrawerTab}
-            onClose={() => setDrawerTab(null)}
-            onOpenCreateSchedule={() => setScheduleDialogOpen(true)}
+            initialMessage={draft}
+            onScheduled={(submittedMessage) => {
+              if (draft.trim() === submittedMessage) {
+                setDraft('');
+                setReplyingTo(null);
+              }
+            }}
           />
         )}
 
-      <ScheduleMessageDialog
-        open={scheduleDialogOpen}
-        onOpenChange={setScheduleDialogOpen}
-        chat={chat}
-        initialMessage={draft}
-        onScheduled={(submittedMessage) => {
-          if (draft.trim() === submittedMessage) {
-            setDraft('');
-            setReplyingTo(null);
-          }
-        }}
-      />
+        {Boolean(forwardingMessage) && (
+          <ForwardMessageDialog
+            open={Boolean(forwardingMessage)}
+            onOpenChange={(nextOpen) => {
+              if (!nextOpen) setForwardingMessage(null);
+            }}
+            message={forwardingMessage}
+            sourceDeviceId={chat.device_id}
+            sourceChatJid={chat.jid}
+          />
+        )}
 
-      <ForwardMessageDialog
-        open={Boolean(forwardingMessage)}
-        onOpenChange={(nextOpen) => {
-          if (!nextOpen) setForwardingMessage(null);
-        }}
-        message={forwardingMessage}
-        sourceDeviceId={chat.device_id}
-        sourceChatJid={chat.jid}
-      />
-
-      {isLifecycleSupported && (
-        <AssignChatDialog
-          open={assignDialogOpen}
-          onOpenChange={setAssignDialogOpen}
-          deviceId={chat.device_id}
-          chatJid={chat.jid}
-          chatTitle={displayName}
-          currentAssigneeId={effectiveLifecycle?.assigned_user_id ?? null}
-          currentUserId={user?.id}
-          canViewAll={canViewAllChats}
-        />
-      )}
+        {isLifecycleSupported && assignDialogOpen && (
+          <AssignChatDialog
+            open={assignDialogOpen}
+            onOpenChange={setAssignDialogOpen}
+            deviceId={chat.device_id}
+            chatJid={chat.jid}
+            chatTitle={displayName}
+            currentAssigneeId={effectiveLifecycle?.assigned_user_id ?? null}
+            currentUserId={user?.id}
+            canViewAll={canViewAllChats}
+          />
+        )}
+      </Suspense>
 
       <Dialog
         open={Boolean(revokingMessage)}

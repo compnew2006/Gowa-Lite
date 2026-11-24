@@ -28,7 +28,19 @@ const MIME_EXTENSIONS: Array<[string, string]> = [
   ['audio/aac', '.aac'],
   ['audio/amr', '.amr'],
   ['application/pdf', '.pdf'],
+  ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.docx'],
+  ['application/msword', '.doc'],
+  ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xlsx'],
+  ['application/vnd.ms-excel', '.xls'],
+  ['application/vnd.openxmlformats-officedocument.presentationml.presentation', '.pptx'],
+  ['application/vnd.ms-powerpoint', '.ppt'],
   ['application/zip', '.zip'],
+  ['application/vnd.rar', '.rar'],
+  ['application/x-rar-compressed', '.rar'],
+  ['application/x-7z-compressed', '.7z'],
+  ['application/json', '.json'],
+  ['application/xml', '.xml'],
+  ['text/xml', '.xml'],
   ['text/plain', '.txt'],
   ['text/csv', '.csv'],
 ];
@@ -118,6 +130,49 @@ export function resolveMediaExtension(
   }
 
   return MEDIA_TYPE_FALLBACK_EXT[(message.media_type || '').toLowerCase()] || '.bin';
+}
+
+export function normalizeDownloadedMime(contentType?: string): string {
+  const normalized = (contentType || '').split(';')[0].trim().toLowerCase();
+  if (normalized === 'video/x-f4v') return 'video/mp4';
+  if (normalized === 'image/pjpeg') return 'image/jpeg';
+  return normalized || 'application/octet-stream';
+}
+
+export function extractContactIdentifierForFilename(
+  message: Pick<MessageInfo, 'chat_jid' | 'sender_jid'>,
+): string {
+  const rawChat = (message.chat_jid || '').trim();
+  const sourceJid =
+    rawChat && rawChat.toLowerCase() !== 'status@broadcast'
+      ? rawChat
+      : (message.sender_jid || '').trim();
+  if (!sourceJid) return 'contact';
+  const at = sourceJid.indexOf('@');
+  const local = at === -1 ? sourceJid : sourceJid.slice(0, at);
+  const colon = local.indexOf(':');
+  const bare = (colon === -1 ? local : local.slice(0, colon)).replace(/^\+/, '');
+  const safe = sanitizeFilenameSegment(bare).replace(/[^a-zA-Z0-9_-]/g, '');
+  return safe || 'contact';
+}
+
+export function formatTimestampForFilename(timestamp?: string): string {
+  const parsed = timestamp ? new Date(timestamp) : null;
+  const date =
+    parsed && !Number.isNaN(parsed.getTime()) && parsed.getTime() > 0 ? parsed : new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+}
+
+export function resolveChatMediaFilename(
+  message: Pick<MessageInfo, 'id' | 'chat_jid' | 'sender_jid' | 'timestamp' | 'media_type' | 'filename'>,
+  contentType?: string,
+  resolvedFilename?: string,
+): string {
+  const contact = extractContactIdentifierForFilename(message);
+  const stamp = formatTimestampForFilename(message.timestamp);
+  const ext = resolveMediaExtension(message, contentType, resolvedFilename);
+  return `${contact}_${stamp}${ext}`;
 }
 
 export function resolveMediaFilename(

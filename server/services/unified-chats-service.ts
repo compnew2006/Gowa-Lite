@@ -1,9 +1,13 @@
 import {
   clearChatCatchup,
+  getChatDeviceStatesMap,
   getUnreadCountsForUser,
+  getUserChatListMemberships,
+  getUserChatPreferencesMap,
   parseTimestampMs,
   syncChatWatermarks,
   upsertCachedMessages,
+  type ChatDeviceState,
   type PublicUser,
 } from '../db.ts';
 import {
@@ -27,8 +31,7 @@ import {
   type UnifiedTabCounts,
 } from './chat-lifecycle.ts';
 import {
-  isNewsletterJid,
-  isStatusBroadcastJid,
+  isExcludedFromUnifiedChats,
   matchesUnifiedChatSearch,
   normalizePhoneQueryForGowa,
   resolveAccountDisplayName,
@@ -41,6 +44,9 @@ export type RemoteUnifiedChat = GowaChatInfo & {
   device_id: string;
   device_display_name: string;
   device_state: GowaDevice['state'];
+  is_pinned?: boolean;
+  pinned_at_ms?: number;
+  is_blocked?: boolean;
 };
 
 export interface ParsedUnifiedChatsQuery {
@@ -99,8 +105,8 @@ export function parseUnifiedChatsQuery(
   }
 
   const isSupervisor = isAdminSubject(user) || hasPermission(user, 'chats', 'view_all');
-  if (!isSupervisor && (requestedTab === 'all' || requestedTab === 'closed')) {
-    throw new GowaError(403, 'FORBIDDEN', 'غير مصرح لك بعرض تبويب الكل أو المحادثات المغلقة');
+  if (!isSupervisor && requestedTab === 'all') {
+    throw new GowaError(403, 'FORBIDDEN', 'غير مصرح لك بعرض تبويب الكل');
   }
   if (!isSupervisor && assignedFilterUserId !== undefined && assignedFilterUserId !== user.id) {
     throw new GowaError(403, 'FORBIDDEN', 'غير مصرح لك بعرض محادثات وكيل آخر');
@@ -134,13 +140,43 @@ export function parseUnifiedChatsQuery(
   };
 }
 
+function applyChatDeviceStateToRemote(
+  chat: GowaChatInfo,
+  deviceId: string,
+  displayName: string,
+  deviceState: GowaDevice['state'],
+  state: ChatDeviceState | undefined,
+): RemoteUnifiedChat | null {
+  if (state && state.deleted_before_ms > 0) {
+    const lastMs = parseTimestampMs(chat.last_message_time);
+    if (lastMs <= state.deleted_before_ms) {
+      return null;
+    }
+  }
+  const effectiveArchived =
+    state?.archived_override !== null && state?.archived_override !== undefined
+      ? state.archived_override
+      : Boolean(chat.archived);
+  return {
+    ...chat,
+    archived: effectiveArchived,
+    device_id: deviceId,
+    device_display_name: displayName,
+    device_state: deviceState,
+    is_pinned: Boolean(state?.is_pinned),
+    pinned_at_ms: state?.pinned_at_ms ?? 0,
+    is_blocked: Boolean(state?.is_blocked),
+  };
+}
+
 async function fetchSingleDeviceChats(params: {
   dev: GowaDevice;
   displayName: string;
   query: ParsedUnifiedChatsQuery;
   remoteFetchOffset: number;
+  deviceStatesMap: Map<string, ChatDeviceState>;
 }): Promise<{chats: RemoteUnifiedChat[]; totalRemote: number; hasMore: boolean}> {
-  const {dev, displayName, query, remoteFetchOffset} = params;
+  const {dev, displayName, query, remoteFetchOffset, deviceStatesMap} = params;
   const chats: RemoteUnifiedChat[] = [];
 
   if (!query.isSearchMode) {
@@ -151,11 +187,22 @@ async function fetchSingleDeviceChats(params: {
     const items = response?.data ?? [];
     let excludedSkipped = 0;
     for (const chat of items) {
-      if (isNewsletterJid(chat.jid) || isStatusBroadcastJid(chat.jid)) {
+      if (isExcludedFromUnifiedChats(chat.jid)) {
         excludedSkipped += 1;
         continue;
       }
-      chats.push({...chat, device_id: dev.id, device_display_name: displayName, device_state: dev.state});
+      const mapped = applyChatDeviceStateToRemote(
+        chat,
+        dev.id,
+        displayName,
+        dev.state,
+        deviceStatesMap.get(`${dev.id}::${chat.jid}`),
+      );
+      if (!mapped) {
+        excludedSkipped += 1;
+        continue;
+      }
+      chats.push(mapped);
     }
     const rawTotal = response?.pagination?.total ?? 0;
     const totalRemote = rawTotal > 0 ? Math.max(chats.length, rawTotal - excludedSkipped) : chats.length;
@@ -205,19 +252,23 @@ async function fetchSingleDeviceChats(params: {
   }
 
   for (const chat of byJid.values()) {
-    if (isNewsletterJid(chat.jid) || isStatusBroadcastJid(chat.jid)) continue;
+    if (isExcludedFromUnifiedChats(chat.jid)) continue;
     const contactName = contactNameByJid.get(chat.jid);
     if (
       directHitJids.has(chat.jid) ||
       matchesUnifiedChatSearch(chat, displayName, query.rawSearch, contactName)
     ) {
-      chats.push({
-        ...chat,
-        name: chat.name?.trim() || contactName || chat.name,
-        device_id: dev.id,
-        device_display_name: displayName,
-        device_state: dev.state,
-      });
+      const mapped = applyChatDeviceStateToRemote(
+        {
+          ...chat,
+          name: chat.name?.trim() || contactName || chat.name,
+        },
+        dev.id,
+        displayName,
+        dev.state,
+        deviceStatesMap.get(`${dev.id}::${chat.jid}`),
+      );
+      if (mapped) chats.push(mapped);
     }
   }
   return {chats, totalRemote: chats.length, hasMore: false};
@@ -227,6 +278,7 @@ export async function fetchRemoteChatsForDevices(params: {
   targetDevices: GowaDevice[];
   aliases: Record<string, string>;
   query: ParsedUnifiedChatsQuery;
+  deviceStatesMap?: Map<string, ChatDeviceState>;
 }): Promise<{
   allChats: RemoteUnifiedChat[];
   totalRemoteChats: number;
@@ -234,6 +286,8 @@ export async function fetchRemoteChatsForDevices(params: {
   deviceErrors: Array<{device_id: string; display_name: string; message: string}>;
 }> {
   const {targetDevices, aliases, query} = params;
+  const deviceStatesMap =
+    params.deviceStatesMap ?? getChatDeviceStatesMap(targetDevices.map((d) => d.id));
   const allChats: RemoteUnifiedChat[] = [];
   const deviceErrors: Array<{device_id: string; display_name: string; message: string}> = [];
   let totalRemoteChats = 0;
@@ -248,7 +302,13 @@ export async function fetchRemoteChatsForDevices(params: {
       const displayName = resolveAccountDisplayName(dev, aliases);
       if (dev.state !== 'logged_in' && dev.state !== 'connected') return;
       try {
-        const res = await fetchSingleDeviceChats({dev, displayName, query, remoteFetchOffset});
+        const res = await fetchSingleDeviceChats({
+          dev,
+          displayName,
+          query,
+          remoteFetchOffset,
+          deviceStatesMap,
+        });
         allChats.push(...res.chats);
         totalRemoteChats += res.totalRemote;
         if (res.hasMore) anyDeviceHasMore = true;
@@ -266,6 +326,12 @@ export async function fetchRemoteChatsForDevices(params: {
 
 export function sortChatsDesc(list: RemoteUnifiedChat[]): void {
   list.sort((a, b) => {
+    const pinDiff = (b.is_pinned ? 1 : 0) - (a.is_pinned ? 1 : 0);
+    if (pinDiff !== 0) return pinDiff;
+    if (a.is_pinned && b.is_pinned) {
+      const pinTimeDiff = (b.pinned_at_ms ?? 0) - (a.pinned_at_ms ?? 0);
+      if (pinTimeDiff !== 0) return pinTimeDiff;
+    }
     const ta = new Date(a.last_message_time).getTime();
     const tb = new Date(b.last_message_time).getTime();
     const validA = Number.isNaN(ta) || ta <= 0 ? 0 : ta;
@@ -305,7 +371,7 @@ export function computeUnifiedTabCounts(params: {
     dbMeOpenCount = stats.meOpen;
   } else {
     for (const row of assignmentsMap.values()) {
-      if (isNewsletterJid(row.chat_jid) || isStatusBroadcastJid(row.chat_jid)) continue;
+      if (isExcludedFromUnifiedChats(row.chat_jid)) continue;
       if (row.status === 'closed') {
         dbClosedCount += 1;
       } else if (row.status === 'open') {
@@ -348,7 +414,7 @@ export function computeUnifiedTabCounts(params: {
   let dbOpenExtraNotInRemote = 0;
   if (remoteScannedCompletely) {
     for (const [key, row] of assignmentsMap.entries()) {
-      if (isNewsletterJid(row.chat_jid) || isStatusBroadcastJid(row.chat_jid)) continue;
+      if (isExcludedFromUnifiedChats(row.chat_jid)) continue;
       if (remoteByKey.has(key)) continue;
       if (row.status === 'closed') dbClosedExtraNotInRemote += 1;
       else if (row.status === 'open') dbOpenExtraNotInRemote += 1;
@@ -363,7 +429,7 @@ export function computeUnifiedTabCounts(params: {
       : 0,
     me: dbMeOpenCount,
     pending: pendingCount,
-    closed: query.isSupervisor ? dbClosedCount : 0,
+    closed: dbClosedCount,
   };
 }
 
@@ -394,6 +460,8 @@ export function paginateUnifiedChats(params: {
     effectiveMeOwnerId,
   } = params;
 
+  const deviceStatesMap = getChatDeviceStatesMap(targetDeviceIds);
+
   const buildFromDbEntries = (
     status: 'closed' | 'open',
     ownerUserId?: number | null,
@@ -410,16 +478,31 @@ export function paginateUnifiedChats(params: {
     const merged: RemoteUnifiedChat[] = [];
     for (const entry of entries) {
       const key = `${entry.device_id}::${entry.jid}`;
+      const devState = deviceStatesMap.get(key);
+      if (devState && devState.deleted_before_ms > 0) {
+        const entryMs = parseTimestampMs(entry.last_message_time);
+        if (entryMs <= devState.deleted_before_ms) continue;
+      }
       const remote = remoteByKey.get(key);
       if (query.hasMedia && !remote) continue;
 
       const info = deviceInfoMap.get(entry.device_id);
       const displayName = info?.displayName ?? entry.device_id;
+      const baseArchived =
+        devState?.archived_override !== null && devState?.archived_override !== undefined
+          ? devState.archived_override
+          : remote
+            ? Boolean(remote.archived)
+            : false;
       const candidate: RemoteUnifiedChat = remote
         ? {
             ...remote,
+            archived: baseArchived,
             name: remote.name?.trim() || entry.name,
             last_message_time: remote.last_message_time || entry.last_message_time,
+            is_pinned: Boolean(devState?.is_pinned ?? remote.is_pinned),
+            pinned_at_ms: devState?.pinned_at_ms ?? remote.pinned_at_ms ?? 0,
+            is_blocked: Boolean(devState?.is_blocked ?? remote.is_blocked),
           }
         : {
             jid: entry.jid,
@@ -428,10 +511,13 @@ export function paginateUnifiedChats(params: {
             ephemeral_expiration: 0,
             created_at: entry.assignment.assigned_at ?? entry.assignment.closed_at ?? '',
             updated_at: entry.last_message_time,
-            archived: false,
+            archived: baseArchived,
             device_id: entry.device_id,
             device_display_name: displayName,
             device_state: info?.device.state ?? 'disconnected',
+            is_pinned: Boolean(devState?.is_pinned),
+            pinned_at_ms: devState?.pinned_at_ms ?? 0,
+            is_blocked: Boolean(devState?.is_blocked),
           };
 
       if (query.isSearchMode && !matchesUnifiedChatSearch(candidate, displayName, query.rawSearch)) {
@@ -579,7 +665,12 @@ export function enrichUnifiedChatsWithUnreadAndLifecycle(params: {
 }) {
   const {user, pagedChats, assignmentsMap} = params;
   const chatKeys = pagedChats.map((c) => ({device_id: c.device_id, chat_jid: c.jid}));
+  const uniqueDeviceIds = Array.from(new Set(pagedChats.map((c) => c.device_id).filter(Boolean)));
   const unreadByChat = getUnreadCountsForUser(user, chatKeys);
+  const deviceStatesMap = getChatDeviceStatesMap(uniqueDeviceIds);
+  const userPrefsMap = getUserChatPreferencesMap(user.id, uniqueDeviceIds);
+  const listMembershipsMap = getUserChatListMemberships(user.id, uniqueDeviceIds);
+
   const missingLifecycleKeys = chatKeys.filter(
     (k) => !assignmentsMap.has(`${k.device_id}::${k.chat_jid}`),
   );
@@ -591,9 +682,23 @@ export function enrichUnifiedChatsWithUnreadAndLifecycle(params: {
     const key = `${chat.device_id}::${chat.jid}`;
     const unreadCount = unreadByChat.get(key) ?? 0;
     const assignment = lifecycleByChat.get(key) ?? assignmentsMap.get(key);
+    const devState = deviceStatesMap.get(key);
+    const userPref = userPrefsMap.get(key);
+    const listIds = listMembershipsMap.get(key) ?? [];
+    const effectiveArchived =
+      devState?.archived_override !== null && devState?.archived_override !== undefined
+        ? devState.archived_override
+        : Boolean(chat.archived);
     totalUnread += unreadCount;
     return {
       ...chat,
+      archived: effectiveArchived,
+      is_pinned: Boolean(devState?.is_pinned ?? chat.is_pinned),
+      pinned_at_ms: devState?.pinned_at_ms ?? chat.pinned_at_ms ?? 0,
+      is_blocked: Boolean(devState?.is_blocked ?? chat.is_blocked),
+      is_favourite: Boolean(userPref?.is_favourite),
+      muted_until_ms: userPref?.muted_until_ms ?? 0,
+      list_ids: listIds,
       unread_count: unreadCount,
       lifecycle: {
         status: assignment?.status ?? 'pending',
@@ -616,7 +721,7 @@ export function refreshAssignmentsAfterRemoteFetch(
   targetDeviceIds: string[],
 ): Map<string, ChatAssignmentInfo> {
   if (allChats.length === 0) return assignmentsMap;
-  syncAssignmentMetadataFromChats(
+  const changed = syncAssignmentMetadataFromChats(
     allChats.map((c) => ({
       device_id: c.device_id,
       chat_jid: c.jid,
@@ -625,5 +730,5 @@ export function refreshAssignmentsAfterRemoteFetch(
     })),
     assignmentsMap,
   );
-  return listAssignmentsForDevices(targetDeviceIds);
+  return changed ? listAssignmentsForDevices(targetDeviceIds) : assignmentsMap;
 }

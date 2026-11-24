@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {
   ArrowLeft,
@@ -36,7 +36,7 @@ import {
   setGroupPhoto,
   setGroupTopic,
 } from '@/api/client';
-import type {UnifiedGroupItem} from '@/api/types';
+import type {UnifiedChat, UnifiedGroupItem} from '@/api/types';
 import {ContactAvatar} from '@/components/contact-avatar';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
@@ -45,6 +45,7 @@ import {Label} from '@/components/ui/label';
 import {Skeleton} from '@/components/ui/skeleton';
 import {Switch} from '@/components/ui/switch';
 import {accountDotTone, shortAccountWidgetLabel} from '@/features/chat/chat-list';
+import {MessageView} from '@/features/chat/message-view';
 import {copyTextWithFallback} from '@/lib/clipboard';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -70,7 +71,7 @@ export function GroupWorkspacePanel({
   const deviceId = item.device_id;
   const groupId = item.jid;
 
-  const [tab, setTab] = useState<'overview' | 'participants' | 'settings'>('overview');
+  const [tab, setTab] = useState<'messages' | 'overview' | 'participants' | 'settings'>('messages');
   const [inviteLink, setInviteLink] = useState<string>('');
   const [copiedLink, setCopiedLink] = useState(false);
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
@@ -88,8 +89,35 @@ export function GroupWorkspacePanel({
 
   const activeGroup = infoQuery.data ?? item.group;
 
+  const groupAsChat = useMemo<UnifiedChat>(
+    () => ({
+      jid: groupId,
+      name: activeGroup.Name || item.name || groupId,
+      last_message_time: activeGroup.GroupCreated || '',
+      ephemeral_expiration: activeGroup.IsEphemeral ? 1 : 0,
+      created_at: activeGroup.GroupCreated || '',
+      updated_at: activeGroup.GroupCreated || '',
+      archived: false,
+      device_id: deviceId,
+      device_display_name: item.device_display_name,
+      device_state: item.device_state,
+      unread_count: item.unread_count,
+    }),
+    [
+      activeGroup.GroupCreated,
+      activeGroup.IsEphemeral,
+      activeGroup.Name,
+      deviceId,
+      groupId,
+      item.device_display_name,
+      item.device_state,
+      item.name,
+      item.unread_count,
+    ],
+  );
+
   useEffect(() => {
-    setTab('overview');
+    setTab('messages');
     setInviteLink('');
     setCopiedLink(false);
     setAddParticipantsRaw('');
@@ -344,6 +372,7 @@ export function GroupWorkspacePanel({
       <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border bg-card/60 px-4 py-2">
         {(
           [
+            {id: 'messages' as const, label: t.groups.tabMessages},
             {id: 'overview' as const, label: t.groups.tabOverview},
             {id: 'participants' as const, label: `${t.groups.tabParticipants} (${memberCount})`},
             ...(canManageGroups ? [{id: 'settings' as const, label: t.groups.tabSettings}] : []),
@@ -365,7 +394,16 @@ export function GroupWorkspacePanel({
         ))}
       </div>
 
-      {/* Scrollable Workspace Content */}
+      {/* Workspace Content */}
+      {tab === 'messages' ? (
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <MessageView
+            key={`${deviceId}::${groupId}`}
+            chat={groupAsChat}
+            embeddedInGroup
+          />
+        </div>
+      ) : (
       <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
         <div className="mx-auto max-w-3xl space-y-5">
           {tab === 'overview' && (
@@ -775,6 +813,7 @@ export function GroupWorkspacePanel({
           )}
         </div>
       </div>
+      )}
 
       <Dialog
         open={leaveConfirmOpen}

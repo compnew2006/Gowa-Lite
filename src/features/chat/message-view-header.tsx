@@ -21,6 +21,7 @@ import {ContactAvatar} from '@/components/contact-avatar';
 import {Button} from '@/components/ui/button';
 import type {ContextDrawerTab} from '@/features/chat/chat-context-drawer';
 import {shortAccountWidgetLabel} from '@/features/chat/chat-list';
+import {formatSecondaryChatPhone} from '@/features/chat/chat-ui-helpers';
 import {formatJidPhone} from '@/features/chat/display-name';
 import type {OtherAccountRef} from '@/features/chat/other-accounts';
 import {useI18n} from '@/lib/i18n';
@@ -32,6 +33,7 @@ export function MessageViewHeader({
   total,
   isDeviceReady,
   alwaysShowBack,
+  embeddedInGroup = false,
   otherAccounts = [],
   onSwitchAccount,
   onBack,
@@ -58,6 +60,7 @@ export function MessageViewHeader({
   canAssign = false,
   canClose = false,
   canViewAll = false,
+  isContentRedacted = false,
   isLifecyclePending = false,
   onClaim,
   onOpenAssign,
@@ -70,6 +73,7 @@ export function MessageViewHeader({
   total: number;
   isDeviceReady: boolean;
   alwaysShowBack: boolean;
+  embeddedInGroup?: boolean;
   otherAccounts?: OtherAccountRef[];
   onSwitchAccount?: (deviceId: string, jid: string) => void;
   onBack?: () => void;
@@ -96,6 +100,7 @@ export function MessageViewHeader({
   canAssign?: boolean;
   canClose?: boolean;
   canViewAll?: boolean;
+  isContentRedacted?: boolean;
   isLifecyclePending?: boolean;
   onClaim?: () => void;
   onOpenAssign?: () => void;
@@ -124,12 +129,7 @@ export function MessageViewHeader({
             : t.chats.lifecyclePending
         : t.chats.lifecyclePending;
 
-  const statusDotClass =
-    status === 'closed'
-      ? 'bg-muted-foreground'
-      : status === 'open'
-        ? 'bg-emerald-500'
-        : 'bg-amber-500';
+  const secondaryPhone = formatSecondaryChatPhone(displayName, formatJidPhone(chat.jid));
 
   const statusTextClass =
     status === 'closed'
@@ -150,86 +150,104 @@ export function MessageViewHeader({
     showReopenButton;
 
   return (
-    <div className="flex min-h-[58px] shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-4 py-1.5">
-      <div className="flex min-w-0 items-center gap-3">
-        {onBack && (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onBack}
-            className={
-              alwaysShowBack ? 'size-8 shrink-0 rounded-full' : 'size-8 shrink-0 rounded-full lg:hidden'
-            }
-            aria-label={t.chats.backToChatsAria}
-            title={t.chats.backToChatsAria}
-          >
-            {isRtl ? <ArrowRight className="size-4" /> : <ArrowLeft className="size-4" />}
-          </Button>
-        )}
-        <ContactAvatar
-          deviceId={chat.device_id}
-          jid={chat.jid}
-          name={displayName}
-          sizeClass="size-10"
-          eager
-        />
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
-            <h2 className="truncate text-[15px] font-semibold text-foreground">{displayName}</h2>
-            <span className="hidden text-xs text-muted-foreground sm:inline">·</span>
-            <span
-              dir="ltr"
-              className="hidden truncate font-mono text-xs text-muted-foreground tabular-nums sm:inline"
-            >
-              {formatJidPhone(chat.jid)}
-            </span>
-          </div>
-          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 truncate text-xs text-muted-foreground">
-            <span>
-              {t.chats.autoReplyVia}{' '}
-              <span className="font-medium text-primary">{chat.device_display_name}</span>
-            </span>
-            {total > 0 && <span className="tabular-nums">{t.chats.messagesCount(total)}</span>}
-            {lifecycle && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className={cn('inline-flex items-center gap-1.5 font-medium', statusTextClass)}>
-                  <span className={cn('size-2 shrink-0 rounded-full', statusDotClass)} />
-                  <span>{lifecycleLabel}</span>
-                </span>
-              </>
-            )}
-            {!isDeviceReady && (
-              <span className="text-destructive">{t.chats.accountOfflineInline}</span>
-            )}
-          </p>
-          {otherAccounts.length > 0 && (
-            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-amber-700 dark:text-amber-400">
-              <ArrowLeftRight className="size-3 shrink-0" />
-              <span className="font-medium">{t.chats.alsoOnOtherAccountPrefix}</span>
-              {otherAccounts.map((acc, index) => (
-                <span key={acc.device_id} className="inline-flex items-center gap-1">
-                  {index > 0 && <span aria-hidden="true">·</span>}
-                  {onSwitchAccount ? (
-                    <button
-                      type="button"
-                      onClick={() => onSwitchAccount(acc.device_id, chat.jid)}
-                      title={t.chats.switchToAccountChatTitle(acc.device_display_name)}
-                      className="cursor-pointer font-semibold underline decoration-dotted underline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
-                    >
-                      {shortAccountWidgetLabel(acc.device_display_name)}
-                    </button>
-                  ) : (
-                    <span className="font-semibold">
-                      {shortAccountWidgetLabel(acc.device_display_name)}
-                    </span>
-                  )}
-                </span>
-              ))}
-            </div>
+    <div
+      className={cn(
+        'flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-4',
+        embeddedInGroup ? 'min-h-[44px] bg-card/60 py-1' : 'min-h-[58px] bg-card py-1.5',
+      )}
+    >
+      {embeddedInGroup ? (
+        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          {total > 0 && (
+            <span className="font-medium tabular-nums">{t.chats.messagesCount(total)}</span>
+          )}
+          {!isDeviceReady && (
+            <span className="text-destructive">{t.chats.accountOfflineInline}</span>
           )}
         </div>
-      </div>
+      ) : (
+        <div className="flex min-w-0 items-center gap-3">
+          {onBack && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onBack}
+              className={
+                alwaysShowBack ? 'size-8 shrink-0 rounded-full' : 'size-8 shrink-0 rounded-full lg:hidden'
+              }
+              aria-label={t.chats.backToChatsAria}
+              title={t.chats.backToChatsAria}
+            >
+              {isRtl ? <ArrowRight className="size-4" /> : <ArrowLeft className="size-4" />}
+            </Button>
+          )}
+          <ContactAvatar
+            deviceId={chat.device_id}
+            jid={chat.jid}
+            name={displayName}
+            sizeClass="size-10"
+            eager
+          />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <h2 className="truncate text-[15px] font-semibold text-foreground">{displayName}</h2>
+              {secondaryPhone && (
+                <>
+                  <span className="hidden text-xs text-muted-foreground sm:inline">·</span>
+                  <span
+                    dir="ltr"
+                    className="hidden truncate font-mono text-xs text-muted-foreground tabular-nums sm:inline"
+                  >
+                    {secondaryPhone}
+                  </span>
+                </>
+              )}
+            </div>
+            <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 truncate text-xs text-muted-foreground">
+              <span className="font-medium text-primary">{chat.device_display_name}</span>
+              {!isContentRedacted && total > 0 && (
+                <span className="tabular-nums">{t.chats.messagesCount(total)}</span>
+              )}
+              {lifecycle && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className={cn('font-medium', statusTextClass)}>
+                    {lifecycleLabel}
+                  </span>
+                </>
+              )}
+              {!isDeviceReady && (
+                <span className="text-destructive">{t.chats.accountOfflineInline}</span>
+              )}
+            </p>
+            {otherAccounts.length > 0 && (
+              <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-amber-700 dark:text-amber-400">
+                <ArrowLeftRight className="size-3 shrink-0" />
+                <span className="font-medium">{t.chats.alsoOnOtherAccountPrefix}</span>
+                {otherAccounts.map((acc, index) => (
+                  <span key={acc.device_id} className="inline-flex items-center gap-1">
+                    {index > 0 && <span aria-hidden="true">·</span>}
+                    {onSwitchAccount ? (
+                      <button
+                        type="button"
+                        onClick={() => onSwitchAccount(acc.device_id, chat.jid)}
+                        title={t.chats.switchToAccountChatTitle(acc.device_display_name)}
+                        className="cursor-pointer font-semibold underline decoration-dotted underline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+                      >
+                        {shortAccountWidgetLabel(acc.device_display_name)}
+                      </button>
+                    ) : (
+                      <span className="font-semibold">
+                        {shortAccountWidgetLabel(acc.device_display_name)}
+                      </span>
+                    )}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-1.5">
         {hasLifecycleButtons && (
@@ -341,7 +359,7 @@ export function MessageViewHeader({
           </div>
         )}
 
-        {searchOpen && (
+        {!isContentRedacted && searchOpen && (
           <div className="flex items-center gap-1 rounded-full bg-secondary px-3 py-1">
             <input
               type="search"
@@ -362,7 +380,7 @@ export function MessageViewHeader({
           </div>
         )}
 
-        {canReadNotes && (
+        {canReadNotes && !isContentRedacted && (
           <button
             type="button"
             onClick={() => onToggleDrawerTab('notes')}
@@ -383,7 +401,7 @@ export function MessageViewHeader({
           </button>
         )}
 
-        {canReadSchedules && (
+        {canReadSchedules && !isContentRedacted && (
           <button
             type="button"
             onClick={() => onToggleDrawerTab('scheduled')}
@@ -404,71 +422,75 @@ export function MessageViewHeader({
           </button>
         )}
 
-        <button
-          type="button"
-          onClick={onToggleMediaOnly}
-          title={t.chats.mediaOnly}
-          aria-label={t.chats.mediaOnly}
-          aria-pressed={mediaOnly}
-          className={cn(
-            'flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-ring',
-            mediaOnly
-              ? 'bg-accent text-accent-foreground'
-              : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-          )}
-        >
-          <ImageIcon className="size-4" />
-        </button>
+        {!isContentRedacted && (
+          <>
+            <button
+              type="button"
+              onClick={onToggleMediaOnly}
+              title={t.chats.mediaOnly}
+              aria-label={t.chats.mediaOnly}
+              aria-pressed={mediaOnly}
+              className={cn(
+                'flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+                mediaOnly
+                  ? 'bg-accent text-accent-foreground'
+                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+              )}
+            >
+              <ImageIcon className="size-4" />
+            </button>
 
-        <button
-          type="button"
-          onClick={onToggleSelectMode}
-          title={t.chats.selectMediaTitle}
-          aria-label={t.chats.selectMediaTitle}
-          aria-pressed={selectMode}
-          className={cn(
-            'flex h-9 cursor-pointer items-center justify-center gap-1 rounded-full px-2.5 transition-colors focus-visible:outline-2 focus-visible:outline-ring',
-            selectMode
-              ? 'bg-accent text-accent-foreground'
-              : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-          )}
-        >
-          <ListChecks className="size-4" />
-          {selectMode && selectedMediaCount > 0 && (
-            <span className="text-[11px] font-semibold tabular-nums">{selectedMediaCount}</span>
-          )}
-        </button>
+            <button
+              type="button"
+              onClick={onToggleSelectMode}
+              title={t.chats.selectMediaTitle}
+              aria-label={t.chats.selectMediaTitle}
+              aria-pressed={selectMode}
+              className={cn(
+                'flex h-9 cursor-pointer items-center justify-center gap-1 rounded-full px-2.5 transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+                selectMode
+                  ? 'bg-accent text-accent-foreground'
+                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+              )}
+            >
+              <ListChecks className="size-4" />
+              {selectMode && selectedMediaCount > 0 && (
+                <span className="text-[11px] font-semibold tabular-nums">{selectedMediaCount}</span>
+              )}
+            </button>
 
-        <button
-          type="button"
-          onClick={onToggleSearch}
-          title={t.chats.searchMessagesPlaceholder}
-          aria-label={t.chats.searchMessagesPlaceholder}
-          aria-pressed={searchOpen}
-          className={cn(
-            'flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-ring',
-            searchOpen
-              ? 'bg-secondary text-foreground'
-              : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-          )}
-        >
-          <Search className="size-4" />
-        </button>
+            <button
+              type="button"
+              onClick={onToggleSearch}
+              title={t.chats.searchMessagesPlaceholder}
+              aria-label={t.chats.searchMessagesPlaceholder}
+              aria-pressed={searchOpen}
+              className={cn(
+                'flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+                searchOpen
+                  ? 'bg-secondary text-foreground'
+                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+              )}
+            >
+              <Search className="size-4" />
+            </button>
 
-        <button
-          type="button"
-          disabled={isHistoryPending}
-          onClick={onFetchHistory}
-          title={t.chats.fetchOlderFromPhone}
-          aria-label={t.chats.fetchOlderFromPhone}
-          className="flex size-9 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
-        >
-          {isHistoryPending ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <History className="size-4" />
-          )}
-        </button>
+            <button
+              type="button"
+              disabled={isHistoryPending}
+              onClick={onFetchHistory}
+              title={t.chats.fetchOlderFromPhone}
+              aria-label={t.chats.fetchOlderFromPhone}
+              className="flex size-9 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
+            >
+              {isHistoryPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <History className="size-4" />
+              )}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

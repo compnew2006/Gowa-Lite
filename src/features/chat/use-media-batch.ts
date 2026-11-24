@@ -9,7 +9,8 @@ import {
   computeRangeSelection,
   estimateTotalMediaBytes,
   formatZipArchiveName,
-  resolveMediaFilename,
+  normalizeDownloadedMime,
+  resolveChatMediaFilename,
   saveBlobSafely,
 } from '@/lib/media-download';
 
@@ -170,9 +171,9 @@ export function useMediaBatch({
       }
 
       const targetPath = resolved.file_path || resolved.file_url || '';
-      const fileUrl = `/api/unified/media/file?deviceId=${encodeURIComponent(deviceId)}&path=${encodeURIComponent(targetPath)}`;
+      const fileUrl = `/api/unified/media/file?deviceId=${encodeURIComponent(deviceId)}&chatJid=${encodeURIComponent(message.chat_jid)}&path=${encodeURIComponent(targetPath)}`;
       const {bytes, contentType} = await fetchAuthorizedMediaBytes(fileUrl, signal);
-      const filename = resolveMediaFilename(message, contentType, resolved.filename);
+      const filename = resolveChatMediaFilename(message, contentType, resolved.filename);
       return {bytes, contentType, filename};
     },
     [deviceId, queryClient, t.chats.mediaUnavailable],
@@ -275,14 +276,8 @@ export function useMediaBatch({
           try {
             const payload = await fetchMediaPayload(msg, signal);
             if (signal.aborted) break;
-            const normalizedType =
-              payload.contentType === 'video/x-f4v'
-                ? 'video/mp4'
-                : payload.contentType === 'image/pjpeg'
-                  ? 'image/jpeg'
-                  : payload.contentType || 'application/octet-stream';
             const blob = new Blob([payload.bytes], {
-              type: normalizedType,
+              type: normalizeDownloadedMime(payload.contentType),
             });
             saveBlobSafely(blob, payload.filename);
             succeededCount += 1;

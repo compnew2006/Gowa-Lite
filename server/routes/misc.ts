@@ -19,6 +19,17 @@ import {decodeRouteParam} from '../security.ts';
 import {normalizeWhatsAppJid, resolveAccountDisplayName} from '../services/chat-sync.ts';
 import type {AuthedRequest} from '../types.ts';
 
+export function extractArrayResult(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) return raw;
+  if (raw && typeof raw === 'object') {
+    const obj = raw as {data?: unknown; messages?: unknown; items?: unknown};
+    if (Array.isArray(obj.data)) return obj.data;
+    if (Array.isArray(obj.messages)) return obj.messages;
+    if (Array.isArray(obj.items)) return obj.items;
+  }
+  return [];
+}
+
 export function registerMiscRoutes(): Router {
   const router = createApiRouter();
 
@@ -314,7 +325,7 @@ export function registerMiscRoutes(): Router {
             before: Number.isFinite(before) ? before : undefined,
           },
         });
-        res.json({code: 'SUCCESS', message: 'ok', results: result});
+        res.json({code: 'SUCCESS', message: 'ok', results: extractArrayResult(result)});
       } catch (err) {
         handleRouteError(res, err);
       }
@@ -345,7 +356,7 @@ export function registerMiscRoutes(): Router {
             count: Number.isFinite(count) ? count : 100,
           },
         });
-        res.json({code: 'SUCCESS', message: 'ok', results: result});
+        res.json({code: 'SUCCESS', message: 'ok', results: extractArrayResult(result)});
       } catch (err) {
         handleRouteError(res, err);
       }

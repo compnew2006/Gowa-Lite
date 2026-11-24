@@ -77,7 +77,7 @@ export function NewsletterMessagesPanel({
     void getNewsletterMessages(deviceId, newsletterId, 20)
       .then((res) => {
         if (!active) return;
-        setMessages(res);
+        setMessages(Array.isArray(res) ? res : []);
       })
       .catch((err) => {
         if (!active) return;
@@ -92,16 +92,19 @@ export function NewsletterMessagesPanel({
   }, [canManageChannels, deviceId, newsletterId]);
 
   const loadOlder = async () => {
-    const serverIds = messages.map((m) => m.message_server_id).filter(Number.isFinite);
+    const safeMessages = Array.isArray(messages) ? messages : [];
+    const serverIds = safeMessages.map((m) => m.message_server_id).filter(Number.isFinite);
     if (!newsletterId || serverIds.length === 0 || loadingOlder) return;
     const minServerId = Math.min(...serverIds);
     setLoadingOlder(true);
     try {
       const older = await getNewsletterMessages(deviceId, newsletterId, 20, minServerId);
+      const safeOlder = Array.isArray(older) ? older : [];
       setMessages((prev) => {
-        const seen = new Set(prev.map((m) => m.message_server_id));
-        const merged = [...prev];
-        for (const item of older) {
+        const safePrev = Array.isArray(prev) ? prev : [];
+        const seen = new Set(safePrev.map((m) => m.message_server_id));
+        const merged = [...safePrev];
+        for (const item of safeOlder) {
           if (!seen.has(item.message_server_id)) merged.push(item);
         }
         return merged;
@@ -116,9 +119,11 @@ export function NewsletterMessagesPanel({
   const refreshCountsMutation = useMutation({
     mutationFn: () => getNewsletterMessageUpdates(deviceId, newsletterId, 1, 100),
     onSuccess: (updates) => {
+      const safeUpdates = Array.isArray(updates) ? updates : [];
       setMessages((prev) => {
-        const map = new Map(updates.map((u) => [u.message_server_id, u]));
-        return prev.map((m) => map.get(m.message_server_id) ?? m);
+        const safePrev = Array.isArray(prev) ? prev : [];
+        const map = new Map(safeUpdates.map((u) => [u.message_server_id, u]));
+        return safePrev.map((m) => map.get(m.message_server_id) ?? m);
       });
     },
     onError: (err) => toast.error(toApiError(err).message),
@@ -218,13 +223,16 @@ export function NewsletterMessagesPanel({
         </div>
       ) : errorMsg ? (
         <p className="text-xs text-destructive">{errorMsg}</p>
-      ) : messages.length === 0 ? (
+      ) : !Array.isArray(messages) || messages.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">{t.misc.noPosts}</p>
       ) : (
         <div className="space-y-3">
           {messages.map((msg) => {
             const body = extractNewsletterBody(msg);
-            const reactions = Object.entries(msg.reaction_counts ?? {});
+            const reactions =
+              msg.reaction_counts && typeof msg.reaction_counts === 'object'
+                ? Object.entries(msg.reaction_counts)
+                : [];
             const hasDownloadableMedia =
               msg.type && msg.type !== 'text' && msg.type !== 'unknown';
 

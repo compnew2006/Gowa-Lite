@@ -204,6 +204,7 @@ export function GroupsSidebar({
               const key = directoryItemKey(item);
               const isSelected = selectedKey === key;
               const isNewsletter = item.kind === 'newsletter';
+              const unreadCount = !isNewsletter ? (item.unread_count ?? 0) : 0;
               const countLabel = isNewsletter
                 ? t.misc.subscribersCount(item.subscribers_count)
                 : t.groups.membersCount(item.participant_count);
@@ -238,7 +239,12 @@ export function GroupsSidebar({
 
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline justify-between gap-2">
-                        <span className="truncate text-[14.5px] font-medium text-foreground">
+                        <span
+                          className={cn(
+                            'truncate text-[14.5px] text-foreground',
+                            unreadCount > 0 ? 'font-semibold' : 'font-medium',
+                          )}
+                        >
                           {item.name}
                         </span>
                         <span className="shrink-0 text-[11px] font-medium tabular-nums text-muted-foreground">
@@ -285,6 +291,15 @@ export function GroupsSidebar({
                             >
                               {item.jid}
                             </span>
+                            {unreadCount > 0 && (
+                              <span
+                                aria-label={t.chats.unreadLabel(unreadCount)}
+                                title={t.chats.unreadLabel(unreadCount)}
+                                className="ms-auto inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-live px-1.5 text-[11px] font-semibold text-white tabular-nums"
+                              >
+                                {String(unreadCount)}
+                              </span>
+                            )}
                           </>
                         )}
                       </div>

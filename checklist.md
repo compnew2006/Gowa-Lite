@@ -3,7 +3,7 @@
 > المرجع الهندسي المعتمد: `affaan-m/ECC` (`skills/coding-standards/SKILL.md` — commit `4adeee6732a12d1540f49a4d50a38ce8c97f9a53`)
 > المرجع الوظيفي: `compnew2006/gowa-ui` | مرجع التصميم: `pbakaus/impeccable` (`v4.10.0`)
 > تاريخ الإنشاء: `2026-11-23` | تاريخ التحديث: `2026-11-24`
-> الحالة الحالية: **54/55 بندًا مكتملًا** — المتبقي هو التحقق الحي أمام خادم GOWA (`PROD-03`) فقط.
+> الحالة الحالية: **67/68 بندًا مكتملًا** — تم إنجاز المرحلة العاشرة لقائمة إجراءات المحادثة الجانبية (`5/5` بنود) ويتبقى فقط التحقق الحي أمام خادم GOWA (`PROD-03`).
 
 ---
 
@@ -18,7 +18,7 @@
 ## سجل الأعمال المكتملة
 
 <details>
-<summary>عرض تفاصيل المراحل المكتملة (`54/54`)</summary>
+<summary>عرض تفاصيل المراحل المكتملة (`67/67`)</summary>
 
 ### المرحلة الأساسية 1: الاحتواء الأمني، تثبيت الجلسة، إصلاح محرك المزامنة/غير المقروء/المجدولة، وتحديث شريط المحادثات (`12/12`)
 
@@ -120,5 +120,24 @@
 - [x] **ARCH-03 (`P1`)**: إزالة آخر استعلامَي `SELECT *` وتقليص التحويلات القسرية في `chat-lifecycle.ts` و`db.ts`، وتفكيك `GET /api/unified/chats` إلى دوال مركّزة في `server/services/unified-chats-service.ts`، وتغطية مدخلات المسارات الحساسة بـ `Zod` في `server/validation/schemas.ts` (`auth.ts`, `roles.ts`, `chat-lifecycle.ts`, `unified-inbox.ts`).
 - [x] **OPS-01 (`P1`)**: ضبط `engines.node >= 22.18.0` وتنظيم `devDependencies` وحذف `vite-plugin-singlefile` وتوليد `package-lock.json`، وتحديث `README.md` بالمتطلبات والمتغيرات وأمن المفتاح، وإضافة `scripts/verify-live-gowa.ts` (`npm run verify:live`) واختبارات `tests/phase8-hardening.test.ts` (`package.json`, `README.md`, `tests/phase8-hardening.test.ts`, `scripts/verify-live-gowa.ts`).
 - [x] **USER-ACCOUNTS-01 (`P1`)**: إصلاح وترقية تخصيص حسابات واتساب المسموح بمشاهدة رسائلها في `/#/settings/users` بمنهجية TDD: تتبّع صريح لوضع التقييد (`all` / `specific`) لمنع التراجع الصامت لكل الحسابات، كتالوج حسابات مرن (`GET /api/users/assignable-accounts`) يدمج أجهزة GOWA الحية مع المعرّفات المحفوظة محليًا عند انقطاع الاتصال، حوار تخصيص مباشر من صف المستخدم مع بحث وإضافة يدوية، وبث `USER_ACCESS_UPDATED` فوري لتحديث الجلسات المفتوحة (`server/db.ts`, `server/ws-bridge.ts`, `server/routes/devices.ts`, `server/routes/auth.ts`, `src/features/users/*`, `src/pages/users.tsx`, `src/components/layout/app-shell.tsx`, `tests/phase9-user-accounts.test.ts`).
+
+### المرحلة التاسعة: عزل المجموعات، حماية المحتوى، صقل تجربة الدردشة، والتنزيل المباشر (`8/8`)
+
+- [x] **CHAT-BLUR-01 (`P0`)**: حجب محتوى المحادثات والملاحظات والجدولة والوسائط وبث WebSocket على الخادم (`content_redacted`, `redaction_reason`) لأي محادثة في حالة انتظار (`pending`) أو مغلقة (`closed`) أو مسندة لوكيل آخر بحيث يظهر للوكيل الاسم والرقم والصورة فقط حتى الاستلام أو إعادة الفتح (`server/services/chat-lifecycle.ts`, `server/routes/unified-inbox.ts`, `server/ws-bridge.ts`, `src/features/chat/message-view.tsx`, `tests/chat-content-blur.test.ts`).
+- [x] **CHAT-CLOSED-VIS-01 (`P1`)**: إتاحة تبويب المحادثات المغلقة (`Closed`) لجميع الوكلاء لإعادة فتح أي محادثة مغلقة، ومعالجة اختفاء المحادثة المختارة فور استلامها أو إعادة فتحها عبر `resolveSelectedUnifiedChat` والاحتفاظ بسياق المحادثة (`src/features/chat/selected-chat.ts`, `src/pages/chats.tsx`, `server/services/unified-chats-service.ts`).
+- [x] **CHAT-SCROLL-01 (`P1`)**: التمرير التلقائي الفوري لأسفل محادثة الدردشة لعرض أحدث رسالة مباشرة بعد فتح المحادثة أو استلامها دون الحاجة للتمرير اليدوي (`src/features/chat/scroll-behavior.ts`, `src/features/chat/message-view.tsx`).
+- [x] **CHAT-CLEAN-01 (`P1`)**: تنظيف شاشة `/#/chats` من العناصر والمؤشرات المكررة وإزالة سقف `+99`: إخفاء تكرار الرقم عند تطابقه مع الاسم، إخفاء فلتر/اسم الحساب عند وجود حساب واحد، حذف ويدجت غير المقروء الإضافي المكرر، وإخفاء الحالة المكررة داخل تبويبها (`src/features/chat/chat-ui-helpers.ts`, `src/features/chat/chat-list.tsx`, `src/components/layout/app-shell.tsx`, `tests/chat-ui-cleanliness.test.ts`).
+- [x] **CHAT-REACT-01 (`P1`)**: إعادة بناء منتقي التفاعلات (`Emoji Picker`) عبر `React Portal` ليطفو فوق/تحت فقاعات الرسائل خارج صفوف الاختيار المتعدد مع حساب دقيق للموضع يمنع قصّ نصف الرموز في الرسائل القصيرة وبأسلوب الوضع النهاري لواتساب (`src/features/chat/reaction-picker-position.ts`, `src/features/chat/message-bubble.tsx`, `tests/reaction-picker-portal.test.ts`).
+- [x] **GROUPS-ISOLATION-01 (`P0`)**: عزل المجموعات (`@g.us`) عن `/#/chats` ودورة الحياة وإشعاراتها وعرضها حصريًا في `/#/groups` مع عداد غير المقروء الفعلي على أيقونتي `/#/chats` و`/#/groups` بدون سقف `+99`، وتفعيل التحديث اللحظي لحذف الرسائل (`MESSAGE_REVOKED`) عبر WebSocket (`server/services/chat-sync.ts`, `server/routes/groups.ts`, `src/components/layout/app-shell.tsx`, `tests/groups-isolation-and-realtime-revoke.test.ts`).
+- [x] **GROUPS-MESSAGES-01 (`P0`)**: إصلاح خطأ `messages.map is not a function` في منشورات القنوات (`NewsletterMessagesPanel`)، وإضافة تبويب «الرسائل» المباشر داخل `/#/groups` لعرض وإرسال رسائل المجموعات ووسائطها وتفاعلاتها (`src/features/groups/newsletter-messages-panel.tsx`, `src/features/groups/group-workspace-panel.tsx`, `src/features/chat/message-view.tsx`).
+- [x] **MEDIA-DOWNLOAD-01 (`P1`)**: تحويل فقاعة الملفات إلى تنزيل مباشر على الجهاز بضغطة واحدة بدل مرحلتين، وتسمية الملفات والوسائط المنزلة بصيغة رقم جهة اتصال المحادثة متبوعًا بالتاريخ والساعة ثم الامتداد (`src/lib/media-download.ts`, `src/features/chat/message-media.tsx`, `src/features/chat/use-media-batch.ts`, `tests/media-download.test.ts`).
+
+### المرحلة العاشرة: قائمة إجراءات المحادثة الجانبية (`Chat Row Context Menu`) (`5/5`)
+
+- [x] **CHAT-MENU-01 (`P1`)**: إضافة زر القائمة المنسدلة (`⌄`) عند التمرير/التركيز مع دعم النقر بزر الفأرة الأيمن (`Context Menu`) على صفوف المحادثات في `ChatList` عبر `React Portal` منضبط التموضع في RTL/LTR والوضعين النهاري والليلي (`src/features/chat/chat-row-menu.tsx`, `src/features/chat/chat-menu-positioning.ts`, `src/features/chat/chat-list.tsx`).
+- [x] **CHAT-MENU-02 (`P0`)**: دعم أرشفة/إلغاء أرشفة المحادثة وتثبيت/إلغاء تثبيت المحادثة عبر مزامنة الخادم مع GOWA (`POST /chat/:jid/archive` و`POST /chat/:jid/pin`) وحفظ حالة التثبيت والترتيب العلوي والأرشفة في `SQLite` وعرض صف «المؤرشفة» أعلى قائمة المحادثات (`server/db.ts`, `server/routes/unified-inbox.ts`, `server/services/unified-chats-service.ts`).
+- [x] **CHAT-MENU-03 (`P1`)**: إضافة قائمة فرعية لكتم إشعارات المحادثة (`8 ساعات` / `أسبوع واحد` / `دائمًا` / `إلغاء الكتم`) وربطها بمحرك التنبيهات الصوتي والمتصفح في `AppShell` و`notifications.ts`، مع خيار تحديد كغير مقروء / مقروء (`user_chat_read_states.manual_unread`) وإضافة/إزالة من المفضلة (`user_chat_preferences`) وتصفية المفضلة (`server/db.ts`, `src/lib/notifications.ts`, `src/components/layout/app-shell.tsx`).
+- [x] **CHAT-MENU-04 (`P1`)**: بناء قوائم التصنيف المخصصة (`Add to list` — `chat_lists` و`chat_list_items`) مع إنشاء القوائم وتبديل عضوية المحادثة والتصفية بها، بالإضافة إلى حظر/إلغاء حظر المحادثة محليًا داخل Gowa-Lite (`is_blocked` لمنع الإرسال بـ `403 CHAT_BLOCKED`)، ومسح المحادثة (`cleared_before_ms`)، وحذف المحادثة (`deleted_before_ms`) مع محاورات التأكيد وضوابط الصلاحيات (`chats:write`, `chats:revoke`).
+- [x] **TEST-CHAT-MENU-01 (`P1`)**: اختبارات وحدة وتكامل في `tests/chat-row-menu.test.ts` تغطي التموضع، الأرشفة والتثبيت، الكتم وإسكات التنبيهات، التحديد كغير مقروء، المفضلة والقوائم، الحظر ومنع الإرسال، والمسح/الحذف وضوابط الصلاحيات.
 
 </details>

@@ -18,12 +18,19 @@ import {
 } from 'lucide-react';
 import {NavLink, Outlet, useLocation, useNavigate} from 'react-router-dom';
 import {toast} from 'sonner';
-import {getAuthStatus, listUnifiedChats, logoutUser, updateMyTheme} from '@/api/client';
+import {
+  getAuthStatus,
+  getUnifiedGroupsUnread,
+  listUnifiedChats,
+  logoutUser,
+  updateMyTheme,
+} from '@/api/client';
 import type {ChatAssignmentSummary, User} from '@/api/types';
 import {LanguageToggle} from '@/components/language-toggle';
 import {Button} from '@/components/ui/button';
 import {NotificationControls} from '@/features/notifications/notification-controls';
-import {onWsEvent} from '@/lib/events';
+import {formatNavUnreadCount, shouldShowNavUnreadBadge} from '@/features/chat/chat-ui-helpers';
+import {extractWsEventTarget, onWsEvent} from '@/lib/events';
 import {useI18n} from '@/lib/i18n';
 import {
   extractIncomingAlertData,
@@ -34,7 +41,7 @@ import {
   useNotificationPrefsStore,
 } from '@/lib/notifications';
 import {cn} from '@/lib/utils';
-import {wsClient, useWsStore} from '@/lib/ws';
+import {wsClient} from '@/lib/ws';
 import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
 export function AppShell() {
@@ -46,7 +53,6 @@ export function AppShell() {
   const theme = useAuthStore((s) => s.theme);
   const setThemeLocal = useAuthStore((s) => s.setThemeLocal);
   const clearSession = useAuthStore((s) => s.clearSession);
-  const wsStatus = useWsStore((s) => s.status);
   const soundEnabled = useNotificationPrefsStore((s) => s.soundEnabled);
   const browserEnabled = useNotificationPrefsStore((s) => s.browserEnabled);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -54,8 +60,10 @@ export function AppShell() {
   const lifecycleMapRef = useRef<Map<string, Pick<ChatAssignmentSummary, 'status' | 'assigned_user_id'>>>(
     new Map(),
   );
+  const mutedKeysRef = useRef<Set<string>>(new Set());
 
   const canReadChats = hasUserPermission(user, 'chats:read');
+  const canReadGroups = hasUserPermission(user, 'groups:read');
 
   const unreadQuery = useQuery({
     queryKey: ['unified-chats', [], '', false],
@@ -66,6 +74,15 @@ export function AppShell() {
   });
   const totalUnread = unreadQuery.data?.total_unread ?? 0;
   const accounts = unreadQuery.data?.accounts ?? [];
+
+  const groupsUnreadQuery = useQuery({
+    queryKey: ['unified-groups-unread'],
+    queryFn: getUnifiedGroupsUnread,
+    enabled: Boolean(user) && canReadGroups,
+    refetchInterval: 30_000,
+    staleTime: 25_000,
+  });
+  const totalGroupsUnread = groupsUnreadQuery.data?.total_unread ?? 0;
 
   useEffect(() => {
     const rows = unreadQuery.data?.data;
@@ -80,6 +97,12 @@ export function AppShell() {
       }
     }
     lifecycleMapRef.current = next;
+    const nextMuted = new Set<string>();
+    for (const k of unreadQuery.data?.muted_keys ?? []) {
+      nextMuted.add(k);
+      nextMuted.add(k.toLowerCase());
+    }
+    mutedKeysRef.current = nextMuted;
   }, [unreadQuery.data]);
 
   useEffect(() => {
@@ -115,6 +138,8 @@ export function AppShell() {
         void queryClient.invalidateQueries({queryKey: ['devices']});
         void queryClient.invalidateQueries({queryKey: ['misc-statuses']});
         void queryClient.invalidateQueries({queryKey: ['groups']});
+        void queryClient.invalidateQueries({queryKey: ['unified-groups']});
+        void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
         void queryClient.invalidateQueries({queryKey: ['schedules']});
         return;
       }
@@ -133,18 +158,41 @@ export function AppShell() {
         }
       }
 
-      if (
-        !location.pathname.startsWith('/chats') &&
-        (code === 'MESSAGE_RECEIVED' ||
-          code === 'MESSAGE' ||
-          code === 'CHAT_UPDATED' ||
-          code === 'CHAT_LIFECYCLE_UPDATED' ||
-          code === 'MESSAGE_REVOKED' ||
-          code === 'MESSAGE.REVOKED' ||
-          code === 'MESSAGE_DELETED' ||
-          code === 'MESSAGE.DELETED')
+      const target = extractWsEventTarget(event);
+      const isGroupTarget = Boolean(target.chatJid?.toLowerCase().endsWith('@g.us'));
+      const isMessageOrRevokeEvent =
+        code === 'MESSAGE_RECEIVED' ||
+        code === 'MESSAGE' ||
+        code === 'CHAT_UPDATED' ||
+        code === 'CHAT_LIFECYCLE_UPDATED' ||
+        code === 'MESSAGE_REVOKED' ||
+        code === 'MESSAGE.REVOKED' ||
+        code === 'MESSAGE_DELETED' ||
+        code === 'MESSAGE.DELETED' ||
+        code === 'MESSAGE_REVOKE' ||
+        code === 'MESSAGE.REVOKE';
+
+      if (isMessageOrRevokeEvent) {
+        if (!isGroupTarget && !location.pathname.startsWith('/chats')) {
+          void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+        }
+        if (canReadGroups && (isGroupTarget || !target.chatJid)) {
+          void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
+          if (!location.pathname.startsWith('/groups')) {
+            void queryClient.invalidateQueries({queryKey: ['unified-groups']});
+          }
+        }
+      } else if (
+        canReadGroups &&
+        (code === 'LOGIN_SUCCESS' ||
+          code === 'DEVICE_LOGGED_OUT' ||
+          code === 'DEVICE_REMOVED' ||
+          code === 'LIST_DEVICES')
       ) {
-        void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+        void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
+        if (!location.pathname.startsWith('/groups')) {
+          void queryClient.invalidateQueries({queryKey: ['unified-groups']});
+        }
       }
 
       const alert = extractIncomingAlertData(event);
@@ -158,6 +206,7 @@ export function AppShell() {
           deviceId: alert.deviceId,
           chatJid: alert.chatJid,
           lifecycle,
+          mutedKeys: mutedKeysRef.current,
         })
       ) {
         return;
@@ -184,9 +233,12 @@ export function AppShell() {
       ) {
         const accountName =
           accounts.find((a) => a.id === alert.deviceId)?.display_name ?? alert.deviceId;
-        const bodyText =
-          alert.body ||
-          (alert.mediaType ? t.chats.mediaLabels[alert.mediaType] || t.messageFallback : t.messageFallback);
+        const bodyText = alert.contentRedacted
+          ? t.chats.redactedNotificationBody
+          : alert.body ||
+            (alert.mediaType
+              ? t.chats.mediaLabels[alert.mediaType] || t.messageFallback
+              : t.messageFallback);
         try {
           const notif = new Notification(
             t.nav.newMessageFromAccount(alert.senderName, accountName),
@@ -210,6 +262,7 @@ export function AppShell() {
   }, [
     accounts,
     browserEnabled,
+    canReadGroups,
     location.pathname,
     navigate,
     queryClient,
@@ -295,13 +348,6 @@ export function AppShell() {
     location.pathname.startsWith('/account') ||
     location.pathname.startsWith('/misc');
 
-  const wsTitle =
-    wsStatus === 'connected'
-      ? t.nav.wsConnected
-      : wsStatus === 'connecting'
-        ? t.nav.wsConnecting
-        : t.nav.wsDisconnected;
-
   const handleToggleTheme = async () => {
     const nextTheme = isDark ? 'light' : 'dark';
     setThemeLocal(nextTheme);
@@ -336,13 +382,20 @@ export function AppShell() {
         <div className="flex flex-col items-center gap-1.5">
           {visiblePrimary.map(({to, label, icon: Icon}) => {
             const isChats = to === '/chats';
+            const isGroups = to === '/groups';
+            const badgeCount = isChats ? totalUnread : isGroups ? totalGroupsUnread : 0;
+            const isRouteActive =
+              (isChats && location.pathname.startsWith('/chats')) ||
+              (isGroups && location.pathname.startsWith('/groups'));
+            const showUnreadBadge =
+              (isChats || isGroups) && shouldShowNavUnreadBadge(isRouteActive, badgeCount);
             return (
               <NavLink
                 key={to}
                 to={to}
                 title={
-                  isChats
-                    ? `${label}${totalUnread > 0 ? ` (${t.chats.unreadLabel(totalUnread)})` : ''} — ${wsTitle}`
+                  (isChats || isGroups) && !isRouteActive && badgeCount > 0
+                    ? `${label} (${t.chats.unreadLabel(badgeCount)})`
                     : label
                 }
                 aria-label={label}
@@ -350,32 +403,19 @@ export function AppShell() {
                   cn(
                     'relative flex size-10 items-center justify-center rounded-full transition-colors',
                     isActive
-                      ? 'bg-secondary text-foreground shadow-2xs'
-                      : 'text-muted-foreground hover:bg-secondary/70 hover:text-foreground',
+                      ? 'bg-black/[0.07] text-foreground dark:bg-secondary'
+                      : 'text-muted-foreground hover:bg-black/[0.04] hover:text-foreground dark:hover:bg-secondary/70',
                   )
                 }
               >
                 <Icon className="size-5" />
-                {isChats && totalUnread > 0 && (
+                {showUnreadBadge && (
                   <span
-                    aria-label={t.chats.unreadLabel(totalUnread)}
-                    className="absolute -end-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground tabular-nums ring-2 ring-rail"
+                    aria-label={t.chats.unreadLabel(badgeCount)}
+                    className="absolute -end-1.5 -top-1 inline-flex h-4 min-w-4 max-w-[44px] items-center justify-center rounded-full bg-live px-1 text-[10px] font-bold leading-none text-white tabular-nums ring-2 ring-rail"
                   >
-                    {totalUnread > 99 ? '99+' : totalUnread}
+                    {formatNavUnreadCount(badgeCount)}
                   </span>
-                )}
-                {isChats && (
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      'absolute end-1.5 bottom-1.5 size-2 rounded-full ring-2 ring-rail',
-                      wsStatus === 'connected'
-                        ? 'bg-live'
-                        : wsStatus === 'connecting'
-                          ? 'bg-amber-500'
-                          : 'bg-muted-foreground/50',
-                    )}
-                  />
                 )}
               </NavLink>
             );
@@ -479,11 +519,19 @@ export function AppShell() {
                 >
                   <Icon className="size-4 shrink-0" />
                   <span className="flex-1">{label}</span>
-                  {to === '/chats' && totalUnread > 0 && (
-                    <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground tabular-nums">
-                      {totalUnread > 99 ? '99+' : totalUnread}
-                    </span>
-                  )}
+                  {(to === '/chats' || to === '/groups') && (() => {
+                    const isChats = to === '/chats';
+                    const badgeCount = isChats ? totalUnread : totalGroupsUnread;
+                    const isRouteActive = isChats
+                      ? location.pathname.startsWith('/chats')
+                      : location.pathname.startsWith('/groups');
+                    if (!shouldShowNavUnreadBadge(isRouteActive, badgeCount)) return null;
+                    return (
+                      <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-live px-1.5 text-[11px] font-semibold text-white tabular-nums">
+                        {formatNavUnreadCount(badgeCount)}
+                      </span>
+                    );
+                  })()}
                 </NavLink>
               ))}
             </nav>

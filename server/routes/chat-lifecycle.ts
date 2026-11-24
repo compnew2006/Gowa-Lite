@@ -15,6 +15,7 @@ import {
   bulkChatLifecycle,
   claimChat,
   closeChat,
+  getChatContentAccessState,
   getChatLifecycleState,
   getInboxPolicy,
   listAssignableAgents,
@@ -152,12 +153,14 @@ export function registerChatLifecycleRoutes(wsBridge: GowaWsBridge): Router {
     requireAuth,
     requirePermission('chats', 'read'),
     requireDeviceParamAccess,
-    (req, res) => {
+    (req: AuthedRequest, res) => {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
         const assignment = getChatLifecycleState(deviceId, chatJid);
-        const events = listChatLifecycleEvents(deviceId, chatJid);
+        const access = getChatContentAccessState(req.user!, deviceId, chatJid);
+        const rawEvents = listChatLifecycleEvents(deviceId, chatJid);
+        const events = access.allowed ? rawEvents : rawEvents.map((ev) => ({...ev, note: ''}));
         res.json({
           code: 'SUCCESS',
           message: 'ok',

@@ -1,14 +1,27 @@
 import {useEffect, useRef, useState} from 'react';
-import {useQuery} from '@tanstack/react-query';
-import {Download, ExternalLink, FileText, Image as ImageIcon, Loader2, RefreshCw} from 'lucide-react';
-import {downloadUnifiedMedia, fetchAuthorizedBlobUrl} from '@/api/client';
+import {useQuery, useQueryClient} from '@tanstack/react-query';
+import {
+  Check,
+  Download,
+  ExternalLink,
+  FileText,
+  Image as ImageIcon,
+  Loader2,
+  RefreshCw,
+} from 'lucide-react';
+import {toast} from 'sonner';
+import {downloadUnifiedMedia, fetchAuthorizedMediaBytes} from '@/api/client';
 import type {MessageInfo} from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import {formatBytes} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
-import {resolveMediaFilename} from '@/lib/media-download';
+import {
+  normalizeDownloadedMime,
+  resolveChatMediaFilename,
+  saveBlobSafely,
+} from '@/lib/media-download';
 
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|webp|gif|bmp|avif)$/i;
 const AUTO_MEDIA_MAX_BYTES = 20 * 1024 * 1024;
@@ -45,15 +58,36 @@ function shouldAutoFetch(message: MessageInfo): boolean {
 
 export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceId: string}) {
   const {lang, t} = useI18n();
+  const queryClient = useQueryClient();
   const containerRef = useRef<HTMLDivElement>(null);
   const isLink = isLinkMessage(message);
   const linkHref = isLink ? normalizeHref(message.url || message.content) : null;
   const autoFetch = shouldAutoFetch(message);
   const [inView, setInView] = useState(!autoFetch);
-  const [requested, setRequested] = useState(autoFetch);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [blobContentType, setBlobContentType] = useState<string | undefined>(undefined);
   const [blobError, setBlobError] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+
+  const [directDownloading, setDirectDownloading] = useState(false);
+  const [directDownloaded, setDirectDownloaded] = useState(false);
+  const [directError, setDirectError] = useState<string | null>(null);
+  const [resolvedFileSize, setResolvedFileSize] = useState<number | null>(null);
+  const cachedDirectFileRef = useRef<{blob: Blob; filename: string} | null>(null);
+  const messageKey = `${deviceId}::${message.chat_jid}::${message.id}`;
+  const activeMessageKeyRef = useRef(messageKey);
+  activeMessageKeyRef.current = messageKey;
+
+  useEffect(() => {
+    cachedDirectFileRef.current = null;
+    setBlobUrl(null);
+    setBlobContentType(undefined);
+    setBlobError(null);
+    setDirectDownloading(false);
+    setDirectDownloaded(false);
+    setDirectError(null);
+    setResolvedFileSize(null);
+  }, [messageKey]);
 
   useEffect(() => {
     if (!autoFetch || inView) return;
@@ -89,7 +123,7 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
       }
       return data;
     },
-    enabled: requested && inView,
+    enabled: autoFetch && inView,
     staleTime: Infinity,
     retry: false,
   });
@@ -97,30 +131,93 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
   const resolvedPath = query.data?.file_path || query.data?.file_url || '';
 
   useEffect(() => {
-    if (!resolvedPath) return;
+    if (!autoFetch || !resolvedPath) return;
     let active = true;
     let createdUrl = '';
+    const controller = new AbortController();
     setBlobError(null);
 
-    const url = `/api/unified/media/file?deviceId=${encodeURIComponent(deviceId)}&path=${encodeURIComponent(resolvedPath)}`;
-    void fetchAuthorizedBlobUrl(url)
-      .then((objectUrl) => {
+    const url = `/api/unified/media/file?deviceId=${encodeURIComponent(deviceId)}&chatJid=${encodeURIComponent(message.chat_jid)}&path=${encodeURIComponent(resolvedPath)}`;
+    void fetchAuthorizedMediaBytes(url, controller.signal)
+      .then(({bytes, contentType}) => {
+        const blob = new Blob([bytes], {type: normalizeDownloadedMime(contentType)});
+        const objectUrl = URL.createObjectURL(blob);
         if (!active) {
           URL.revokeObjectURL(objectUrl);
           return;
         }
         createdUrl = objectUrl;
+        setBlobContentType(contentType);
         setBlobUrl(objectUrl);
       })
       .catch((err) => {
-        if (active) setBlobError(toApiError(err).message);
+        if (active && !controller.signal.aborted) {
+          setBlobError(toApiError(err).message);
+        }
       });
 
     return () => {
       active = false;
+      controller.abort();
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [resolvedPath, deviceId]);
+  }, [autoFetch, resolvedPath, deviceId, message.chat_jid]);
+
+  const handleDirectDownload = async () => {
+    if (directDownloading) return;
+    setDirectError(null);
+
+    if (cachedDirectFileRef.current) {
+      saveBlobSafely(cachedDirectFileRef.current.blob, cachedDirectFileRef.current.filename);
+      setDirectDownloaded(true);
+      return;
+    }
+
+    const expectedKey = messageKey;
+    setDirectDownloading(true);
+    try {
+      const cacheKey = ['unified-media', deviceId, message.chat_jid, message.id] as const;
+      const resolved = await queryClient.fetchQuery({
+        queryKey: cacheKey,
+        queryFn: async () => {
+          const data = await downloadUnifiedMedia(
+            deviceId,
+            message.id,
+            message.chat_jid,
+            message.url,
+          );
+          if (!data || (!data.file_path && !data.file_url)) {
+            throw new Error(t.chats.mediaUnavailable);
+          }
+          return data;
+        },
+        staleTime: Infinity,
+      });
+
+      const targetPath = resolved.file_path || resolved.file_url || '';
+      const fileUrl = `/api/unified/media/file?deviceId=${encodeURIComponent(deviceId)}&chatJid=${encodeURIComponent(message.chat_jid)}&path=${encodeURIComponent(targetPath)}`;
+      const {bytes, contentType} = await fetchAuthorizedMediaBytes(fileUrl);
+      const blob = new Blob([bytes], {type: normalizeDownloadedMime(contentType)});
+      const downloadName = resolveChatMediaFilename(message, contentType, resolved.filename);
+
+      saveBlobSafely(blob, downloadName);
+      if (activeMessageKeyRef.current === expectedKey) {
+        cachedDirectFileRef.current = {blob, filename: downloadName};
+        setResolvedFileSize(resolved.file_size || bytes.byteLength);
+        setDirectDownloaded(true);
+      }
+    } catch (err) {
+      const msg = toApiError(err).message;
+      if (activeMessageKeyRef.current === expectedKey) {
+        setDirectError(msg);
+      }
+      toast.error(msg);
+    } finally {
+      if (activeMessageKeyRef.current === expectedKey) {
+        setDirectDownloading(false);
+      }
+    }
+  };
 
   const isImage = isImageAttachment(message, query.data?.filename);
   const label =
@@ -151,16 +248,16 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     );
   }
 
-  if (!requested) {
+  if (!autoFetch) {
+    const displayedSize = resolvedFileSize || message.file_length;
     return (
-      <div ref={containerRef}>
+      <div ref={containerRef} className="mt-2 w-full max-w-xs">
         <button
           type="button"
-          onClick={() => {
-            setInView(true);
-            setRequested(true);
-          }}
-          className="mt-2 flex w-full max-w-xs cursor-pointer items-center gap-3 rounded-lg border border-black/10 bg-black/10 px-3 py-2.5 text-start transition-colors hover:bg-black/15 dark:border-white/10 dark:bg-black/25 dark:hover:bg-black/35"
+          disabled={directDownloading}
+          onClick={() => void handleDirectDownload()}
+          aria-busy={directDownloading}
+          className="flex w-full cursor-pointer items-center gap-3 rounded-lg border border-black/10 bg-black/10 px-3 py-2.5 text-start transition-colors hover:bg-black/15 disabled:cursor-wait disabled:opacity-80 dark:border-white/10 dark:bg-black/25 dark:hover:bg-black/35"
         >
           <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <FileText className="size-4" />
@@ -170,12 +267,37 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
               {message.filename || label}
             </p>
             <p className="mt-0.5 text-[11px] text-muted-foreground tabular-nums">
-              {label}
-              {message.file_length ? ` · ${formatBytes(message.file_length, lang)}` : ''}
+              {directDownloading ? (
+                t.chats.loadingMedia(label)
+              ) : (
+                <>
+                  {label}
+                  {displayedSize ? ` · ${formatBytes(displayedSize, lang)}` : ''}
+                </>
+              )}
             </p>
           </div>
-          <Download className="size-4 shrink-0 text-muted-foreground" />
+          {directDownloading ? (
+            <Loader2 className="size-4 shrink-0 animate-spin text-primary" />
+          ) : directDownloaded ? (
+            <Check className="size-4 shrink-0 text-primary" />
+          ) : (
+            <Download className="size-4 shrink-0 text-muted-foreground" />
+          )}
         </button>
+        {directError && (
+          <div className="mt-1.5 flex items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-2.5 py-1 text-[11px] text-destructive">
+            <span className="min-w-0 truncate">{directError}</span>
+            <button
+              type="button"
+              onClick={() => void handleDirectDownload()}
+              className="inline-flex shrink-0 cursor-pointer items-center gap-1 font-medium underline hover:opacity-80"
+            >
+              <RefreshCw className="size-3" />
+              <span>{t.retry}</span>
+            </button>
+          </div>
+        )}
       </div>
     );
   }
@@ -227,7 +349,7 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     );
   }
 
-  const filename = resolveMediaFilename(message, undefined, query.data.filename);
+  const filename = resolveChatMediaFilename(message, blobContentType, query.data.filename);
 
   if (isImage) {
     return (
@@ -293,25 +415,5 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     );
   }
 
-  return (
-    <div ref={containerRef}>
-      <a
-        href={blobUrl}
-        download={filename}
-        className="mt-2 flex w-full max-w-xs items-center gap-3 rounded-lg border border-black/10 bg-black/10 px-3 py-2.5 text-start transition-colors hover:bg-black/15 dark:border-white/10 dark:bg-black/25 dark:hover:bg-black/35"
-      >
-        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-          <FileText className="size-4" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-xs font-medium text-foreground">{filename}</p>
-          <p className="mt-0.5 text-[11px] text-muted-foreground tabular-nums">
-            {label}
-            {query.data.file_size ? ` · ${formatBytes(query.data.file_size, lang)}` : ''}
-          </p>
-        </div>
-        <Download className="size-4 shrink-0 text-muted-foreground" />
-      </a>
-    </div>
-  );
+  return null;
 }

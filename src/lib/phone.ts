@@ -33,7 +33,15 @@ export function toWhatsAppJid(raw: string): string {
     const compact = ascii.replace(/\s+/g, '');
     const match = /^([^@\s]+)@([a-z0-9.-]+)$/i.exec(compact);
     if (!match) return '';
-    return `${match[1]}@${match[2].toLowerCase()}`;
+    let local = match[1];
+    let domain = match[2].toLowerCase();
+    if (domain === 'c.us') {
+      domain = 's.whatsapp.net';
+    }
+    if (domain === 's.whatsapp.net' || domain === 'lid') {
+      local = local.split(':')[0] || local;
+    }
+    return `${local}@${domain}`;
   }
 
   const digits = ascii.replace(/[\s+().-]/g, '');

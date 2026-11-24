@@ -1,14 +1,25 @@
 import {useEffect, useMemo, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {UsersRound} from 'lucide-react';
+import {useSearchParams} from 'react-router-dom';
 import {toast} from 'sonner';
 import {
   createGroup,
   getGroupInfoFromLink,
   joinGroupWithLink,
   listUnifiedGroups,
+  markUnifiedGroupRead,
 } from '@/api/client';
-import type {AccountSummary, GroupInfoFromLink, UnifiedDirectoryItem} from '@/api/types';
+import type {
+  AccountSummary,
+  ChatInfo,
+  ChatRedactionReason,
+  GroupInfoFromLink,
+  MessageInfo,
+  Pagination,
+  UnifiedDirectoryItem,
+  UnifiedGroupsResponse,
+} from '@/api/types';
 import {
   GowaSetupNotice,
   isGowaConnectionError,
@@ -19,6 +30,10 @@ import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
+import {
+  applyRevokeToMessagePages,
+  type InfiniteMessagePagesShape,
+} from '@/features/chat/message-reactions';
 import {GroupWorkspacePanel} from '@/features/groups/group-workspace-panel';
 import {
   directoryItemKey,
@@ -26,10 +41,11 @@ import {
   type DirectoryKindFilter,
 } from '@/features/groups/groups-sidebar';
 import {NewsletterWorkspacePanel} from '@/features/groups/newsletter-workspace-panel';
-import {onWsEvent} from '@/lib/events';
+import {extractWsEventTarget, extractWsRevokeTarget, onWsEvent} from '@/lib/events';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {parseParticipantsList} from '@/lib/participants';
+import {toWhatsAppJid} from '@/lib/phone';
 import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
 const SIDEBAR_STORAGE_KEY = 'gowa-lite:groups-sidebar-width';
@@ -45,11 +61,21 @@ export default function GroupsPage() {
   const canWriteGroups = hasUserPermission(user, 'groups:write');
   const canViewSettings = hasUserAnyPermission(user, ['settings:read', 'settings:write']);
 
+  const [searchParams] = useSearchParams();
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
   const [kindFilter, setKindFilter] = useState<DirectoryKindFilter>('all');
   const [search, setSearch] = useState('');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
+
+  useEffect(() => {
+    const paramDevice = searchParams.get('device')?.trim() || '';
+    const paramJid = searchParams.get('jid')?.trim() || '';
+    if (paramDevice && paramJid && paramJid.toLowerCase().endsWith('@g.us')) {
+      setSelectedKey(`group::${paramDevice}::${paramJid}`);
+      setMobileShowDetail(true);
+    }
+  }, [searchParams]);
 
   const [targetDeviceId, setTargetDeviceId] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
@@ -74,13 +100,97 @@ export default function GroupsPage() {
 
   useEffect(() => {
     return onWsEvent((event) => {
+      const code = (event.code || '').toUpperCase();
+      const target = extractWsEventTarget(event);
+
+      const invalidateScoped = (rootKey: string) => {
+        if (target.deviceId && target.chatJid) {
+          void queryClient.invalidateQueries({
+            queryKey: [rootKey, target.deviceId, target.chatJid],
+          });
+        } else if (target.deviceId) {
+          void queryClient.invalidateQueries({queryKey: [rootKey, target.deviceId]});
+        } else {
+          void queryClient.invalidateQueries({queryKey: [rootKey]});
+        }
+      };
+
+      const revoke = extractWsRevokeTarget(event);
+      if (revoke) {
+        type MessagesPage = {
+          data: MessageInfo[];
+          pagination: Pagination;
+          chat_info: ChatInfo;
+          content_redacted?: boolean;
+          redaction_reason?: ChatRedactionReason;
+        };
+        const canonicalRevokeJid = revoke.chatJid
+          ? toWhatsAppJid(revoke.chatJid) || revoke.chatJid
+          : '';
+        if (!canonicalRevokeJid || canonicalRevokeJid.toLowerCase().endsWith('@g.us')) {
+          queryClient.setQueriesData<InfiniteMessagePagesShape<MessagesPage>>(
+            {
+              predicate: (q) => {
+                if (q.queryKey[0] !== 'unified-messages') return false;
+                if (revoke.deviceId && q.queryKey[1] !== revoke.deviceId) return false;
+                if (canonicalRevokeJid) {
+                  const rawKeyJid = typeof q.queryKey[2] === 'string' ? q.queryKey[2] : '';
+                  const canonicalKeyJid = rawKeyJid ? toWhatsAppJid(rawKeyJid) || rawKeyJid : '';
+                  return canonicalKeyJid === canonicalRevokeJid;
+                }
+                return true;
+              },
+            },
+            (oldData) => applyRevokeToMessagePages(oldData, revoke),
+          );
+          invalidateScoped('unified-messages');
+          void queryClient.invalidateQueries({queryKey: ['unified-groups']});
+          void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
+        }
+        return;
+      }
+
       if (
-        event.code === 'LOGIN_SUCCESS' ||
-        event.code === 'DEVICE_LOGGED_OUT' ||
-        event.code === 'DEVICE_REMOVED' ||
-        event.code === 'LIST_DEVICES'
+        code === 'LOGIN_SUCCESS' ||
+        code === 'DEVICE_LOGGED_OUT' ||
+        code === 'DEVICE_REMOVED' ||
+        code === 'LIST_DEVICES'
       ) {
         void queryClient.invalidateQueries({queryKey: ['unified-groups']});
+        void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
+        void queryClient.invalidateQueries({queryKey: ['unified-messages']});
+        return;
+      }
+
+      if (
+        code === 'MESSAGE_RECEIVED' ||
+        code === 'MESSAGE' ||
+        code === 'MESSAGE_REACTION' ||
+        code === 'MESSAGE_UPDATED' ||
+        code === 'MESSAGE_EDITED' ||
+        code === 'MESSAGE.EDITED' ||
+        code === 'MESSAGE_REVOKED' ||
+        code === 'MESSAGE.REVOKED' ||
+        code === 'MESSAGE_DELETED' ||
+        code === 'MESSAGE.DELETED' ||
+        code === 'MESSAGE_REVOKE' ||
+        code === 'MESSAGE.REVOKE' ||
+        code === 'CHAT_UPDATED'
+      ) {
+        if (!target.chatJid || target.chatJid.toLowerCase().endsWith('@g.us')) {
+          invalidateScoped('unified-messages');
+          void queryClient.invalidateQueries({queryKey: ['unified-groups']});
+          void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
+        }
+      } else if (code === 'CONVERSATION_NOTE_UPDATED') {
+        if (!target.chatJid || target.chatJid.toLowerCase().endsWith('@g.us')) {
+          invalidateScoped('unified-chat-notes');
+        }
+      } else if (code === 'SCHEDULE_UPDATED') {
+        if (!target.chatJid || target.chatJid.toLowerCase().endsWith('@g.us')) {
+          invalidateScoped('unified-chat-schedules');
+        }
+        void queryClient.invalidateQueries({queryKey: ['schedules']});
       }
     });
   }, [queryClient]);
@@ -215,6 +325,40 @@ export default function GroupsPage() {
             onSelect={(item) => {
               setSelectedKey(directoryItemKey(item));
               setMobileShowDetail(true);
+              if (item.kind === 'group') {
+                const clearedCount = item.unread_count ?? 0;
+                if (clearedCount > 0) {
+                  queryClient.setQueriesData<UnifiedGroupsResponse>(
+                    {queryKey: ['unified-groups']},
+                    (oldData) => {
+                      if (!oldData) return oldData;
+                      return {
+                        ...oldData,
+                        total_unread: Math.max(0, (oldData.total_unread ?? 0) - clearedCount),
+                        items: oldData.items.map((entry) =>
+                          entry.kind === 'group' &&
+                          entry.device_id === item.device_id &&
+                          entry.jid === item.jid
+                            ? {...entry, unread_count: 0}
+                            : entry,
+                        ),
+                      };
+                    },
+                  );
+                  queryClient.setQueryData<{total_unread: number}>(
+                    ['unified-groups-unread'],
+                    (oldData) =>
+                      oldData
+                        ? {total_unread: Math.max(0, oldData.total_unread - clearedCount)}
+                        : oldData,
+                  );
+                }
+                void markUnifiedGroupRead(item.device_id, item.jid)
+                  .then(() => {
+                    void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
+                  })
+                  .catch(() => {});
+              }
             }}
             onOpenCreate={() => {
               setTargetDeviceId(defaultTargetDeviceId);

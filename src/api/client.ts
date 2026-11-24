@@ -13,6 +13,8 @@ import type {
   ChatInfo,
   ChatLifecycleEvent,
   ChatLifecycleResponse,
+  ChatListSummary,
+  ChatRedactionReason,
   CheckResponse,
   ConversationNote,
   CreateSchedulePayload,
@@ -30,6 +32,7 @@ import type {
   LiveUpdatesSubscription,
   LoginQr,
   MessageInfo,
+  MuteDuration,
   MyGroup,
   NewsletterMedia,
   NewsletterMessage,
@@ -291,7 +294,13 @@ export function getUnifiedChatMessages(
   deviceId: string,
   chatJid: string,
   params: {limit?: number; offset?: number; search?: string; media_only?: boolean},
-): Promise<{data: MessageInfo[]; pagination: Pagination; chat_info: ChatInfo}> {
+): Promise<{
+  data: MessageInfo[];
+  pagination: Pagination;
+  chat_info: ChatInfo;
+  content_redacted?: boolean;
+  redaction_reason?: ChatRedactionReason;
+}> {
   return results(
     http.get(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/messages`, {
       params: {
@@ -402,6 +411,94 @@ export function markUnifiedChatRead(
   return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/read`));
 }
 
+// Chat Row Menu Actions & Custom Lists
+export function archiveUnifiedChat(
+  deviceId: string,
+  chatJid: string,
+  archived: boolean,
+): Promise<{chat_jid: string; archived: boolean; synced_remote: boolean}> {
+  return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/archive`, {archived}));
+}
+
+export function pinUnifiedChat(
+  deviceId: string,
+  chatJid: string,
+  pinned: boolean,
+): Promise<{chat_jid: string; is_pinned: boolean; pinned_at_ms: number; synced_remote: boolean}> {
+  return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/pin`, {pinned}));
+}
+
+export function muteUnifiedChat(
+  deviceId: string,
+  chatJid: string,
+  duration: MuteDuration,
+): Promise<{chat_jid: string; muted_until_ms: number}> {
+  return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/mute`, {duration}));
+}
+
+export function setUnifiedChatUnread(
+  deviceId: string,
+  chatJid: string,
+  unread: boolean,
+): Promise<{chat_jid: string; unread: boolean}> {
+  return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/unread`, {unread}));
+}
+
+export function favouriteUnifiedChat(
+  deviceId: string,
+  chatJid: string,
+  favourite: boolean,
+): Promise<{chat_jid: string; is_favourite: boolean}> {
+  return results(
+    http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/favourite`, {favourite}),
+  );
+}
+
+export function blockUnifiedChat(
+  deviceId: string,
+  chatJid: string,
+  blocked: boolean,
+): Promise<{chat_jid: string; is_blocked: boolean}> {
+  return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/block`, {blocked}));
+}
+
+export function clearUnifiedChat(
+  deviceId: string,
+  chatJid: string,
+): Promise<{chat_jid: string; cleared_before_ms: number; deleted_messages: number}> {
+  return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/clear`));
+}
+
+export function deleteUnifiedChat(
+  deviceId: string,
+  chatJid: string,
+): Promise<{chat_jid: string; deleted_before_ms: number}> {
+  return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/delete`));
+}
+
+export async function listChatLists(): Promise<ChatListSummary[]> {
+  const res = await results<ChatListSummary[] | null>(http.get('/unified/chat-lists'));
+  return res ?? [];
+}
+
+export function createChatList(name: string): Promise<ChatListSummary> {
+  return results(http.post('/unified/chat-lists', {name}));
+}
+
+export async function deleteChatList(listId: number): Promise<void> {
+  await http.delete(`/unified/chat-lists/${listId}`);
+}
+
+export function assignUnifiedChatLists(
+  deviceId: string,
+  chatJid: string,
+  listIds: number[],
+): Promise<{chat_jid: string; list_ids: number[]}> {
+  return results(
+    http.put(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/lists`, {list_ids: listIds}),
+  );
+}
+
 // Chat Lifecycle & Assignment
 export async function listAssignableAgents(deviceId: string): Promise<AssignableAgent[]> {
   const res = await results<AssignableAgent[] | null>(
@@ -478,13 +575,23 @@ export function bulkUnifiedChatsLifecycle(payload: {
 export async function listUnifiedChatNotes(
   deviceId: string,
   chatJid: string,
-): Promise<{notes: ConversationNote[]; total: number}> {
-  const res = await results<{notes: ConversationNote[]; total: number} | null>(
-    http.get(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/notes`),
-  );
+): Promise<{
+  notes: ConversationNote[];
+  total: number;
+  content_redacted?: boolean;
+  redaction_reason?: ChatRedactionReason;
+}> {
+  const res = await results<{
+    notes: ConversationNote[];
+    total: number;
+    content_redacted?: boolean;
+    redaction_reason?: ChatRedactionReason;
+  } | null>(http.get(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/notes`));
   return {
     notes: res?.notes ?? [],
     total: res?.total ?? 0,
+    content_redacted: res?.content_redacted,
+    redaction_reason: res?.redaction_reason,
   };
 }
 
@@ -529,6 +636,8 @@ export async function listUnifiedChatSchedules(
   return {
     data: res?.data ?? [],
     pagination: res?.pagination ?? {limit: 100, offset: 0, total: 0},
+    content_redacted: res?.content_redacted,
+    redaction_reason: res?.redaction_reason,
   };
 }
 
@@ -650,6 +759,17 @@ export function listUnifiedGroups(params?: {deviceIds?: string[]}): Promise<Unif
       },
     }),
   );
+}
+
+export function getUnifiedGroupsUnread(): Promise<{total_unread: number}> {
+  return results(http.get('/unified/groups/unread'));
+}
+
+export function markUnifiedGroupRead(
+  deviceId: string,
+  groupJid: string,
+): Promise<{chat_jid: string; last_read_seq: number}> {
+  return results(http.post(`/unified/groups/${enc(deviceId)}/${enc(groupJid)}/read`));
 }
 
 export async function listGroups(deviceId: string): Promise<MyGroup[]> {
@@ -851,12 +971,21 @@ export function lookupBusinessProfile(
   return results(http.get(`/devices/${enc(deviceId)}/user/business-profile`, {params: {phone}}));
 }
 
+function unwrapArrayPayload<T>(raw: unknown): T[] {
+  if (Array.isArray(raw)) return raw as T[];
+  if (raw && typeof raw === 'object') {
+    const obj = raw as {data?: unknown; messages?: unknown; items?: unknown};
+    if (Array.isArray(obj.data)) return obj.data as T[];
+    if (Array.isArray(obj.messages)) return obj.messages as T[];
+    if (Array.isArray(obj.items)) return obj.items as T[];
+  }
+  return [];
+}
+
 // Misc: Newsletters (Channels) & Calls (Admin, per-device)
 export async function listDeviceNewsletters(deviceId: string): Promise<NewsletterMetadata[]> {
-  const res = await results<NewsletterMetadata[] | null>(
-    http.get(`/devices/${enc(deviceId)}/newsletters`),
-  );
-  return res ?? [];
+  const res = await results<unknown>(http.get(`/devices/${enc(deviceId)}/newsletters`));
+  return unwrapArrayPayload<NewsletterMetadata>(res);
 }
 
 export async function followNewsletter(deviceId: string, newsletterId: string): Promise<void> {
@@ -900,12 +1029,12 @@ export async function getNewsletterMessages(
   count = 20,
   before?: number,
 ): Promise<NewsletterMessage[]> {
-  const res = await results<NewsletterMessage[] | null>(
+  const res = await results<unknown>(
     http.get(`/devices/${enc(deviceId)}/newsletters/messages`, {
       params: {newsletter_id: newsletterId, count, before},
     }),
   );
-  return res ?? [];
+  return unwrapArrayPayload<NewsletterMessage>(res);
 }
 
 export async function getNewsletterMessageUpdates(
@@ -914,12 +1043,12 @@ export async function getNewsletterMessageUpdates(
   after = 1,
   count = 100,
 ): Promise<NewsletterMessage[]> {
-  const res = await results<NewsletterMessage[] | null>(
+  const res = await results<unknown>(
     http.get(`/devices/${enc(deviceId)}/newsletters/message-updates`, {
       params: {newsletter_id: newsletterId, after, count},
     }),
   );
-  return res ?? [];
+  return unwrapArrayPayload<NewsletterMessage>(res);
 }
 
 export function downloadNewsletterMedia(
@@ -937,10 +1066,10 @@ export function downloadNewsletterMedia(
 export async function listNewsletterLiveUpdates(
   deviceId: string,
 ): Promise<LiveUpdatesSubscription[]> {
-  const res = await results<LiveUpdatesSubscription[] | null>(
+  const res = await results<unknown>(
     http.get(`/devices/${enc(deviceId)}/newsletters/live-updates`),
   );
-  return res ?? [];
+  return unwrapArrayPayload<LiveUpdatesSubscription>(res);
 }
 
 export function subscribeNewsletterLiveUpdates(

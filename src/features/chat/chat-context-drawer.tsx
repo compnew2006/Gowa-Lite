@@ -10,6 +10,7 @@ export type ContextDrawerTab = 'notes' | 'scheduled';
 export function ChatContextDrawer({
   chat,
   activeTab,
+  isContentRedacted = false,
   canReadNotes = true,
   canReadSchedules = true,
   notesCount,
@@ -20,6 +21,7 @@ export function ChatContextDrawer({
 }: {
   chat: UnifiedChat;
   activeTab: ContextDrawerTab;
+  isContentRedacted?: boolean;
   canReadNotes?: boolean;
   canReadSchedules?: boolean;
   notesCount: number;
@@ -57,7 +59,7 @@ export function ChatContextDrawer({
             >
               <StickyNote className="size-3.5 shrink-0" />
               <span className="truncate">{t.chats.notesTab}</span>
-              {notesCount > 0 && (
+              {!isContentRedacted && notesCount > 0 && (
                 <span className="text-[11px] text-muted-foreground tabular-nums">
                   ({notesCount})
                 </span>
@@ -80,7 +82,7 @@ export function ChatContextDrawer({
             >
               <CalendarClock className="size-3.5 shrink-0" />
               <span className="truncate">{t.chats.scheduledTab}</span>
-              {scheduledCount > 0 && (
+              {!isContentRedacted && scheduledCount > 0 && (
                 <span className="text-[11px] text-muted-foreground tabular-nums">
                   ({scheduledCount})
                 </span>
@@ -101,9 +103,13 @@ export function ChatContextDrawer({
       </div>
 
       {activeTab === 'notes' && canReadNotes ? (
-        <NotesPanelBody chat={chat} />
+        <NotesPanelBody chat={chat} isContentRedacted={isContentRedacted} />
       ) : activeTab === 'scheduled' && canReadSchedules ? (
-        <ScheduledPanelBody chat={chat} onOpenCreateSchedule={onOpenCreateSchedule} />
+        <ScheduledPanelBody
+          chat={chat}
+          isContentRedacted={isContentRedacted}
+          onOpenCreateSchedule={onOpenCreateSchedule}
+        />
       ) : null}
     </aside>
   );

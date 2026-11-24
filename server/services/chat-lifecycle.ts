@@ -11,6 +11,7 @@ import {
 import {GowaError} from '../errors.ts';
 import {hasAnyPermission, hasDeviceAccess, hasPermission, isAdminSubject} from '../rbac.ts';
 import {
+  isGroupJid,
   isNewsletterJid,
   isStatusBroadcastJid,
   normalizeWhatsAppJid,
@@ -192,11 +193,11 @@ export function normalizeLifecycleTarget(
   if (!deviceId || !chatJid) {
     throw new GowaError(400, 'VALIDATION_ERROR', 'معرّف الحساب والمحادثة مطلوبان');
   }
-  if (isStatusBroadcastJid(chatJid) || isNewsletterJid(chatJid)) {
+  if (isStatusBroadcastJid(chatJid) || isNewsletterJid(chatJid) || isGroupJid(chatJid)) {
     throw new GowaError(
       400,
       'UNSUPPORTED_CHAT_TYPE',
-      'لا تدعم القنوات أو حالات واتساب دورة حياة المحادثات',
+      'لا تدعم المجموعات أو القنوات أو حالات واتساب دورة حياة المحادثات',
     );
   }
   return {deviceId, chatJid};
@@ -455,9 +456,75 @@ export function updateInboxPolicy(input: {
   return nextPolicy;
 }
 
+export function isLifecycleApplicableJid(chatJid: string): boolean {
+  const trimmed = chatJid.trim();
+  if (!trimmed) return false;
+  return !isStatusBroadcastJid(trimmed) && !isNewsletterJid(trimmed) && !isGroupJid(trimmed);
+}
+
+export type ChatRedactionReason = 'pending' | 'closed' | 'assigned_other';
+
+export interface ChatContentAccessState {
+  allowed: boolean;
+  reason?: ChatRedactionReason;
+  assignment: ChatAssignmentInfo;
+}
+
 export function getChatLifecycleState(deviceIdRaw: string, chatJidRaw: string): ChatAssignmentInfo {
   const {deviceId, chatJid} = normalizeLifecycleTarget(deviceIdRaw, chatJidRaw);
   return readAssignmentInternal(deviceId, chatJid) ?? defaultAssignment(deviceId, chatJid);
+}
+
+export function getChatContentAccessState(
+  user: PublicUser,
+  deviceIdRaw: string,
+  chatJidRaw: string,
+): ChatContentAccessState {
+  const deviceId = deviceIdRaw.trim();
+  const trimmedJid = chatJidRaw.trim();
+  const chatJid = normalizeWhatsAppJid(trimmedJid) || trimmedJid;
+
+  if (!deviceId || !chatJid || !isLifecycleApplicableJid(chatJid)) {
+    return {
+      allowed: true,
+      assignment: defaultAssignment(deviceId, chatJid),
+    };
+  }
+
+  const assignment =
+    readAssignmentInternal(deviceId, chatJid) ?? defaultAssignment(deviceId, chatJid);
+  if (hasSupervisorView(user)) {
+    return {allowed: true, assignment};
+  }
+  if (assignment.status === 'open' && assignment.assigned_user_id === user.id) {
+    return {allowed: true, assignment};
+  }
+
+  const reason: ChatRedactionReason =
+    assignment.status === 'closed'
+      ? 'closed'
+      : assignment.status === 'open'
+        ? 'assigned_other'
+        : 'pending';
+
+  return {allowed: false, reason, assignment};
+}
+
+export function assertChatContentAccess(
+  user: PublicUser,
+  deviceIdRaw: string,
+  chatJidRaw: string,
+): ChatAssignmentInfo {
+  const state = getChatContentAccessState(user, deviceIdRaw, chatJidRaw);
+  if (!state.allowed) {
+    throw new GowaError(
+      403,
+      'CHAT_CONTENT_REDACTED',
+      'محتوى هذه المحادثة محجوب حاليًا حتى يتم استلامها أو فتحها',
+      {redaction_reason: state.reason, assignment: state.assignment},
+    );
+  }
+  return state.assignment;
 }
 
 export type UnifiedChatTab = 'all' | 'me' | 'pending' | 'closed';
@@ -538,6 +605,7 @@ export function getAssignmentStatsForDevices(
      WHERE device_id IN (${placeholders})
        AND LOWER(chat_jid) <> 'status@broadcast'
        AND LOWER(chat_jid) NOT LIKE '%@newsletter'
+       AND LOWER(chat_jid) NOT LIKE '%@g.us'
      GROUP BY status, assigned_user_id`,
     ...cleanIds,
   );
@@ -562,8 +630,8 @@ export function getAssignmentStatsForDevices(
 export function syncAssignmentMetadataFromChats(
   chats: Array<{device_id: string; chat_jid: string; name?: string; last_message_time?: string}>,
   existingMap?: Map<string, ChatAssignmentInfo>,
-): void {
-  if (chats.length === 0) return;
+): boolean {
+  if (chats.length === 0) return false;
   const map = existingMap ?? getChatLifecycleMap(chats);
   const toUpdate: Array<{device_id: string; chat_jid: string; title: string; activityMs: number}> = [];
 
@@ -584,7 +652,7 @@ export function syncAssignmentMetadataFromChats(
     }
   }
 
-  if (toUpdate.length === 0) return;
+  if (toUpdate.length === 0) return false;
 
   withImmediateTransaction(() => {
     const stmt = db.prepare(`
@@ -597,6 +665,7 @@ export function syncAssignmentMetadataFromChats(
       stmt.run(row.title, row.title, row.activityMs, row.device_id, row.chat_jid);
     }
   });
+  return true;
 }
 
 export function listDbChatsByLifecycleStatus(params: {
@@ -673,13 +742,19 @@ export function listDbChatsByLifecycleStatus(params: {
      WHERE ca.status = ?
        AND ca.device_id IN (${placeholders})
        AND LOWER(ca.chat_jid) <> 'status@broadcast'
-       AND LOWER(ca.chat_jid) NOT LIKE '%@newsletter'${ownerClause}
+       AND LOWER(ca.chat_jid) NOT LIKE '%@newsletter'
+       AND LOWER(ca.chat_jid) NOT LIKE '%@g.us'${ownerClause}
      ORDER BY MAX(ca.last_activity_ms, COALESCE(css.last_message_ms, 0)) DESC, ca.updated_at DESC${limitClause}`,
     ...args,
   );
 
   return rows
-    .filter((row) => !isStatusBroadcastJid(row.chat_jid) && !isNewsletterJid(row.chat_jid))
+    .filter(
+      (row) =>
+        !isStatusBroadcastJid(row.chat_jid) &&
+        !isNewsletterJid(row.chat_jid) &&
+        !isGroupJid(row.chat_jid),
+    )
     .map((row) => {
       const assignment = hydrateAssignmentRow(row);
       const effectiveMs = Math.max(
@@ -1204,7 +1279,13 @@ export function handleIncomingCustomerMessageLifecycle(
   const deviceId = deviceIdRaw.trim();
   const trimmedJid = chatJidRaw.trim();
   const chatJid = normalizeWhatsAppJid(trimmedJid) || trimmedJid;
-  if (!deviceId || !chatJid || isStatusBroadcastJid(chatJid) || isNewsletterJid(chatJid)) {
+  if (
+    !deviceId ||
+    !chatJid ||
+    isStatusBroadcastJid(chatJid) ||
+    isNewsletterJid(chatJid) ||
+    isGroupJid(chatJid)
+  ) {
     return null;
   }
 
@@ -1271,6 +1352,15 @@ export function enforceInboxPolicyBeforeSend(
   chatJidRaw: string,
   cachedTitle?: string,
 ): {assignment: ChatAssignmentInfo; lifecycleEvent: ChatLifecycleWsPayload | null} {
+  const trimmedDevice = deviceIdRaw.trim();
+  const trimmedJid = chatJidRaw.trim();
+  const normalizedJid = normalizeWhatsAppJid(trimmedJid) || trimmedJid;
+  if (trimmedDevice && normalizedJid && isGroupJid(normalizedJid)) {
+    return {
+      assignment: defaultAssignment(trimmedDevice, normalizedJid),
+      lifecycleEvent: null,
+    };
+  }
   const {deviceId, chatJid} = normalizeLifecycleTarget(deviceIdRaw, chatJidRaw);
   const policy = getInboxPolicy();
   const supervisor = hasSupervisorView(actor);

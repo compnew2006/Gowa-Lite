@@ -6,7 +6,11 @@ import {
   buildUniqueEntryName,
   computeRangeSelection,
   estimateTotalMediaBytes,
+  extractContactIdentifierForFilename,
+  formatTimestampForFilename,
   isDownloadableMedia,
+  normalizeDownloadedMime,
+  resolveChatMediaFilename,
   resolveMediaFilename,
 } from '../src/lib/media-download.ts';
 
@@ -157,5 +161,96 @@ describe('Media Batch Download & Streaming ZIP Utilities', () => {
     const builder = new StreamingZipBuilder();
     builder.add('sample.txt', new Uint8Array([1, 2, 3]));
     assert.doesNotThrow(() => builder.abort());
+  });
+
+  it('extracts contact phone or group identifier and builds contact_date_time.ext filenames', () => {
+    assert.equal(
+      extractContactIdentifierForFilename({
+        chat_jid: '201007181781@s.whatsapp.net',
+        sender_jid: '201009999999@s.whatsapp.net',
+      }),
+      '201007181781',
+    );
+
+    assert.equal(
+      extractContactIdentifierForFilename({
+        chat_jid: '201007181781:4@s.whatsapp.net',
+        sender_jid: '201007181781@s.whatsapp.net',
+      }),
+      '201007181781',
+    );
+
+    assert.equal(
+      extractContactIdentifierForFilename({
+        chat_jid: 'status@broadcast',
+        sender_jid: '201005551234@s.whatsapp.net',
+      }),
+      '201005551234',
+    );
+
+    assert.equal(
+      extractContactIdentifierForFilename({
+        chat_jid: '120363419978360489@g.us',
+        sender_jid: '201007181781@s.whatsapp.net',
+      }),
+      '120363419978360489',
+    );
+
+    const ts = '2026-11-24T15:08:09.000Z';
+    const d = new Date(ts);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const expectedStamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+
+    assert.equal(formatTimestampForFilename(ts), expectedStamp);
+
+    assert.equal(
+      resolveChatMediaFilename(
+        {
+          id: 'msg-1',
+          chat_jid: '201007181781@s.whatsapp.net',
+          sender_jid: '201007181781@s.whatsapp.net',
+          timestamp: ts,
+          media_type: 'document',
+          filename: 'فاتورة العميل.pdf',
+        },
+        'application/pdf',
+      ),
+      `201007181781_${expectedStamp}.pdf`,
+    );
+
+    assert.equal(
+      resolveChatMediaFilename(
+        {
+          id: 'msg-2',
+          chat_jid: '201007181781@s.whatsapp.net',
+          sender_jid: '201007181781@s.whatsapp.net',
+          timestamp: ts,
+          media_type: 'document',
+          filename: 'document-without-ext',
+        },
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      ),
+      `201007181781_${expectedStamp}.docx`,
+    );
+
+    assert.equal(
+      resolveChatMediaFilename(
+        {
+          id: 'msg-3',
+          chat_jid: '201007181781@s.whatsapp.net',
+          sender_jid: '201007181781@s.whatsapp.net',
+          timestamp: ts,
+          media_type: 'image',
+          filename: '',
+        },
+        'image/jpeg',
+        'photo.jfif',
+      ),
+      `201007181781_${expectedStamp}.jpg`,
+    );
+
+    assert.equal(normalizeDownloadedMime('video/x-f4v; charset=binary'), 'video/mp4');
+    assert.equal(normalizeDownloadedMime('image/pjpeg'), 'image/jpeg');
+    assert.equal(normalizeDownloadedMime(''), 'application/octet-stream');
   });
 });

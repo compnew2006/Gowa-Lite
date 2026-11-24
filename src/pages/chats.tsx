@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useQuery, useQueryClient} from '@tanstack/react-query';
 import {
   Columns2,
@@ -7,10 +7,18 @@ import {
   Plus,
   X,
 } from 'lucide-react';
-import {useSearchParams} from 'react-router-dom';
+import {useNavigate, useSearchParams} from 'react-router-dom';
 import {toast} from 'sonner';
 import {bulkUnifiedChatsLifecycle, listUnifiedChats} from '@/api/client';
-import type {AccountSummary, UnifiedChat, UnifiedChatTab} from '@/api/types';
+import type {
+  AccountSummary,
+  ChatInfo,
+  ChatRedactionReason,
+  MessageInfo,
+  Pagination,
+  UnifiedChat,
+  UnifiedChatTab,
+} from '@/api/types';
 import {
   GowaSetupNotice,
   isGowaConnectionError,
@@ -19,41 +27,40 @@ import {
 } from '@/components/layout/split-workspace';
 import {Button} from '@/components/ui/button';
 import {ChatList, chatUniqueKey} from '@/features/chat/chat-list';
-import {chatDisplayName, formatJidPhone} from '@/features/chat/display-name';
+import {chatDisplayName} from '@/features/chat/display-name';
+import {
+  applyRevokeToMessagePages,
+  type InfiniteMessagePagesShape,
+} from '@/features/chat/message-reactions';
 import {MessageView} from '@/features/chat/message-view';
-import {NewChatDialog} from '@/features/chat/new-chat-dialog';
+import {resolveSelectedUnifiedChat} from '@/features/chat/selected-chat';
+
+const NewChatDialog = lazy(() =>
+  import('@/features/chat/new-chat-dialog').then((m) => ({default: m.NewChatDialog})),
+);
 import {
   buildJidAccountsMap,
   getOtherAccountsForChat,
   type OtherAccountRef,
 } from '@/features/chat/other-accounts';
 import {usePaginatedChats} from '@/features/chat/use-paginated-chats';
-import {extractWsEventTarget, onWsEvent} from '@/lib/events';
+import {extractWsEventTarget, extractWsRevokeTarget, onWsEvent} from '@/lib/events';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {toWhatsAppJid} from '@/lib/phone';
 import {cn} from '@/lib/utils';
 import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
-function buildFallbackUnifiedChat(
-  deviceId: string,
-  jid: string,
-  accounts: AccountSummary[],
-): UnifiedChat {
-  const account = accounts.find((a) => a.id === deviceId);
-  return {
-    jid,
-    name: formatJidPhone(jid) || jid,
-    last_message_time: '',
-    ephemeral_expiration: 0,
-    created_at: '',
-    updated_at: '',
-    archived: false,
-    device_id: deviceId,
-    device_display_name: account?.display_name || deviceId,
-    device_state: account?.state || 'disconnected',
-    unread_count: 0,
-  };
+function isChatRedactedForUser(
+  chat: UnifiedChat,
+  userId: number | undefined,
+  canViewAll: boolean,
+): boolean {
+  if (canViewAll) return false;
+  if (chat.jid.endsWith('@newsletter') || chat.jid === 'status@broadcast') return false;
+  const st = chat.lifecycle?.status ?? 'pending';
+  if (st === 'pending' || st === 'closed') return true;
+  return st === 'open' && chat.lifecycle?.assigned_user_id !== userId;
 }
 
 type WorkspaceMode = 'unified' | 'split';
@@ -100,11 +107,12 @@ function SplitWorkspacePane({
   const [assignedToFilter, setAssignedToFilter] = useState<'all' | 'me'>('all');
   const [isBulkPending, setIsBulkPending] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [retainedChat, setRetainedChat] = useState<UnifiedChat | null>(null);
   const [adHocChat, setAdHocChat] = useState<{deviceId: string; jid: string} | null>(null);
   const [newChatOpen, setNewChatOpen] = useState(false);
 
   useEffect(() => {
-    if (!canViewAll && (activeTab === 'all' || activeTab === 'closed')) {
+    if (!canViewAll && activeTab === 'all') {
       setActiveTab('pending');
     }
   }, [activeTab, canViewAll]);
@@ -154,15 +162,28 @@ function SplitWorkspacePane({
     [queryClient, t.chats],
   );
 
-  const selectedChat = useMemo<UnifiedChat | null>(() => {
-    if (!selectedKey) return null;
-    const match = chats.find((c) => chatUniqueKey(c) === selectedKey);
-    if (match) return match;
-    if (adHocChat && `${adHocChat.deviceId}::${adHocChat.jid}` === selectedKey) {
-      return buildFallbackUnifiedChat(adHocChat.deviceId, adHocChat.jid, resolvedAccounts);
+  useEffect(() => {
+    if (!selectedKey) {
+      setRetainedChat(null);
+      return;
     }
-    return null;
-  }, [adHocChat, chats, resolvedAccounts, selectedKey]);
+    const match = chats.find((c) => chatUniqueKey(c) === selectedKey);
+    if (match) {
+      setRetainedChat(match);
+    }
+  }, [chats, selectedKey]);
+
+  const selectedChat = useMemo<UnifiedChat | null>(
+    () =>
+      resolveSelectedUnifiedChat({
+        selectedKey,
+        chats,
+        retainedChat,
+        adHocChat,
+        accounts: resolvedAccounts,
+      }),
+    [adHocChat, chats, resolvedAccounts, retainedChat, selectedKey],
+  );
 
   const paneLabel = useMemo(() => {
     if (pane.deviceIds.length === 0) return t.chats.columnTitle(index + 1);
@@ -220,6 +241,7 @@ function SplitWorkspacePane({
         ) : (
           <ChatList
             chats={chats}
+            chatLists={paginated.chatLists}
             accounts={resolvedAccounts}
             jidAccountsMap={globalJidAccountsMap}
             deviceErrors={deviceErrors}
@@ -234,7 +256,6 @@ function SplitWorkspacePane({
             canClose={canClose}
             assignedToFilter={assignedToFilter}
             isBulkPending={isBulkPending}
-            totalUnread={paginated.totalUnread}
             totalChatsCount={paginated.totalCount}
             hasMore={paginated.hasMore}
             isLoadingMore={paginated.isLoadingMore}
@@ -253,24 +274,39 @@ function SplitWorkspacePane({
             onRefresh={() => void paginated.refresh()}
             onLoadMore={() => void paginated.loadMore()}
             onOpenNewChat={canWriteChats ? () => setNewChatOpen(true) : undefined}
+            onChatDeleted={(deleted) => {
+              if (selectedKey === chatUniqueKey(deleted)) {
+                setSelectedKey(null);
+                setRetainedChat(null);
+                setAdHocChat(null);
+              }
+            }}
             onSelect={(chat) => {
-              paginated.markExtraChatRead(chat.device_id, chat.jid);
+              if (!isChatRedactedForUser(chat, user?.id, canViewAll)) {
+                paginated.markExtraChatRead(chat.device_id, chat.jid);
+              }
+              setAdHocChat(null);
+              setRetainedChat(chat);
               setSelectedKey(chatUniqueKey(chat));
             }}
           />
         )}
       </div>
 
-      <NewChatDialog
-        open={newChatOpen}
-        onOpenChange={setNewChatOpen}
-        accounts={resolvedAccounts}
-        defaultDeviceId={pane.deviceIds[0]}
-        onStartChat={(deviceId, jid) => {
-          setAdHocChat({deviceId, jid});
-          setSelectedKey(`${deviceId}::${jid}`);
-        }}
-      />
+      {newChatOpen && (
+        <Suspense fallback={null}>
+          <NewChatDialog
+            open={newChatOpen}
+            onOpenChange={setNewChatOpen}
+            accounts={resolvedAccounts}
+            defaultDeviceId={pane.deviceIds[0]}
+            onStartChat={(deviceId, jid) => {
+              setAdHocChat({deviceId, jid});
+              setSelectedKey(`${deviceId}::${jid}`);
+            }}
+          />
+        </Suspense>
+      )}
     </section>
   );
 }
@@ -298,13 +334,16 @@ export default function ChatsPage() {
   const [assignedToFilter, setAssignedToFilter] = useState<'all' | 'me'>('all');
   const [isBulkPending, setIsBulkPending] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [retainedChat, setRetainedChat] = useState<UnifiedChat | null>(null);
   const [adHocChat, setAdHocChat] = useState<{deviceId: string; jid: string} | null>(null);
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [mobileShowMessages, setMobileShowMessages] = useState(false);
   const [splitPanes, setSplitPanes] = useState<SplitPaneConfig[]>([]);
 
+  const navigate = useNavigate();
+
   useEffect(() => {
-    if (!canViewAll && (activeTab === 'all' || activeTab === 'closed')) {
+    if (!canViewAll && activeTab === 'all') {
       setActiveTab('pending');
     }
   }, [activeTab, canViewAll]);
@@ -316,8 +355,22 @@ export default function ChatsPage() {
     const paramDevice = searchParams.get('device')?.trim() || '';
     const rawTarget = searchParams.get('jid')?.trim() || searchParams.get('phone')?.trim() || '';
     const resolvedJid = rawTarget ? toWhatsAppJid(rawTarget) : '';
+    const lowerResolved = resolvedJid.toLowerCase();
 
-    if (paramDevice && resolvedJid) {
+    if (paramDevice && resolvedJid && lowerResolved.endsWith('@g.us')) {
+      navigate(
+        `/groups?device=${encodeURIComponent(paramDevice)}&jid=${encodeURIComponent(resolvedJid)}`,
+        {replace: true},
+      );
+      return;
+    }
+
+    if (
+      paramDevice &&
+      resolvedJid &&
+      !lowerResolved.endsWith('@newsletter') &&
+      lowerResolved !== 'status@broadcast'
+    ) {
       setMode('unified');
       setAdHocChat({deviceId: paramDevice, jid: resolvedJid});
       setSelectedKey(`${paramDevice}::${resolvedJid}`);
@@ -329,7 +382,7 @@ export default function ChatsPage() {
       setAdHocChat(null);
       setMobileShowMessages(false);
     }
-  }, [searchParams, searchParamsKey]);
+  }, [navigate, searchParams, searchParamsKey]);
 
   const effectiveAssignedTo =
     activeTab === 'me' && canViewAll ? assignedToFilter : undefined;
@@ -428,6 +481,38 @@ export default function ChatsPage() {
         }
       };
 
+      const revoke = extractWsRevokeTarget(event);
+      if (revoke) {
+        type MessagesPage = {
+          data: MessageInfo[];
+          pagination: Pagination;
+          chat_info: ChatInfo;
+          content_redacted?: boolean;
+          redaction_reason?: ChatRedactionReason;
+        };
+        const canonicalRevokeJid = revoke.chatJid
+          ? toWhatsAppJid(revoke.chatJid) || revoke.chatJid
+          : '';
+        queryClient.setQueriesData<InfiniteMessagePagesShape<MessagesPage>>(
+          {
+            predicate: (q) => {
+              if (q.queryKey[0] !== 'unified-messages') return false;
+              if (revoke.deviceId && q.queryKey[1] !== revoke.deviceId) return false;
+              if (canonicalRevokeJid) {
+                const rawKeyJid = typeof q.queryKey[2] === 'string' ? q.queryKey[2] : '';
+                const canonicalKeyJid = rawKeyJid ? toWhatsAppJid(rawKeyJid) || rawKeyJid : '';
+                return canonicalKeyJid === canonicalRevokeJid;
+              }
+              return true;
+            },
+          },
+          (oldData) => applyRevokeToMessagePages(oldData, revoke),
+        );
+        invalidateChats();
+        invalidateScoped('unified-messages');
+        return;
+      }
+
       if (
         code === 'MESSAGE_RECEIVED' ||
         code === 'MESSAGE' ||
@@ -439,10 +524,15 @@ export default function ChatsPage() {
         code === 'MESSAGE.REVOKED' ||
         code === 'MESSAGE_DELETED' ||
         code === 'MESSAGE.DELETED' ||
+        code === 'MESSAGE_REVOKE' ||
+        code === 'MESSAGE.REVOKE' ||
         code === 'CHAT_UPDATED'
       ) {
-        invalidateChats();
-        invalidateScoped('unified-messages');
+        const isGroupEvent = Boolean(target.chatJid?.toLowerCase().endsWith('@g.us'));
+        if (!isGroupEvent) {
+          invalidateChats();
+          invalidateScoped('unified-messages');
+        }
       } else if (
         code === 'LOGIN_SUCCESS' ||
         code === 'DEVICE_LOGGED_OUT' ||
@@ -463,6 +553,9 @@ export default function ChatsPage() {
       } else if (code === 'CHAT_LIFECYCLE_UPDATED') {
         invalidateChats();
         invalidateScoped('chat-lifecycle');
+        invalidateScoped('unified-messages');
+        invalidateScoped('unified-chat-notes');
+        invalidateScoped('unified-chat-schedules');
         void queryClient.invalidateQueries({queryKey: ['assignable-agents']});
       } else if (code === 'INBOX_POLICY_UPDATED') {
         void queryClient.invalidateQueries({queryKey: ['inbox-policy']});
@@ -470,15 +563,28 @@ export default function ChatsPage() {
     });
   }, [queryClient]);
 
-  const selectedChat = useMemo<UnifiedChat | null>(() => {
-    if (!selectedKey) return null;
-    const match = chats.find((c) => chatUniqueKey(c) === selectedKey);
-    if (match) return match;
-    if (adHocChat && `${adHocChat.deviceId}::${adHocChat.jid}` === selectedKey) {
-      return buildFallbackUnifiedChat(adHocChat.deviceId, adHocChat.jid, accounts);
+  useEffect(() => {
+    if (!selectedKey) {
+      setRetainedChat(null);
+      return;
     }
-    return null;
-  }, [accounts, adHocChat, chats, selectedKey]);
+    const match = chats.find((c) => chatUniqueKey(c) === selectedKey);
+    if (match) {
+      setRetainedChat(match);
+    }
+  }, [chats, selectedKey]);
+
+  const selectedChat = useMemo<UnifiedChat | null>(
+    () =>
+      resolveSelectedUnifiedChat({
+        selectedKey,
+        chats,
+        retainedChat,
+        adHocChat,
+        accounts,
+      }),
+    [accounts, adHocChat, chats, retainedChat, selectedKey],
+  );
 
   const handleSwitchMode = (nextMode: WorkspaceMode) => {
     setMode(nextMode);
@@ -520,7 +626,7 @@ export default function ChatsPage() {
       title={mode === 'unified' ? t.chats.splitView : t.chats.unifiedView}
       aria-label={mode === 'unified' ? t.chats.splitView : t.chats.unifiedView}
       className={cn(
-        'flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+        'flex size-9 cursor-pointer items-center justify-center rounded-lg transition-colors focus-visible:outline-2 focus-visible:outline-ring',
         mode === 'split'
           ? 'bg-accent text-accent-foreground'
           : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
@@ -600,6 +706,7 @@ export default function ChatsPage() {
             headerTitle={t.chats.pageTitle}
             headerActions={modeSwitcher}
             chats={chats}
+            chatLists={paginated.chatLists}
             accounts={accounts}
             jidAccountsMap={jidAccountsMap}
             deviceErrors={deviceErrors}
@@ -614,7 +721,6 @@ export default function ChatsPage() {
             canClose={canClose}
             assignedToFilter={assignedToFilter}
             isBulkPending={isBulkPending}
-            totalUnread={paginated.totalUnread}
             totalChatsCount={paginated.totalCount}
             hasMore={paginated.hasMore}
             isLoadingMore={paginated.isLoadingMore}
@@ -630,8 +736,20 @@ export default function ChatsPage() {
             onRefresh={() => void paginated.refresh()}
             onLoadMore={() => void paginated.loadMore()}
             onOpenNewChat={canWriteChats ? () => setNewChatOpen(true) : undefined}
+            onChatDeleted={(deleted) => {
+              if (selectedKey === chatUniqueKey(deleted)) {
+                setSelectedKey(null);
+                setRetainedChat(null);
+                setAdHocChat(null);
+                setMobileShowMessages(false);
+              }
+            }}
             onSelect={(chat) => {
-              paginated.markExtraChatRead(chat.device_id, chat.jid);
+              if (!isChatRedactedForUser(chat, user?.id, canViewAll)) {
+                paginated.markExtraChatRead(chat.device_id, chat.jid);
+              }
+              setAdHocChat(null);
+              setRetainedChat(chat);
               setSelectedKey(chatUniqueKey(chat));
               setMobileShowMessages(true);
             }}
@@ -664,17 +782,21 @@ export default function ChatsPage() {
           />
         }
       />
-      <NewChatDialog
-        open={newChatOpen}
-        onOpenChange={setNewChatOpen}
-        accounts={accounts}
-        defaultDeviceId={selectedDeviceIds[0]}
-        onStartChat={(deviceId, jid) => {
-          setAdHocChat({deviceId, jid});
-          setSelectedKey(`${deviceId}::${jid}`);
-          setMobileShowMessages(true);
-        }}
-      />
+      {newChatOpen && (
+        <Suspense fallback={null}>
+          <NewChatDialog
+            open={newChatOpen}
+            onOpenChange={setNewChatOpen}
+            accounts={accounts}
+            defaultDeviceId={selectedDeviceIds[0]}
+            onStartChat={(deviceId, jid) => {
+              setAdHocChat({deviceId, jid});
+              setSelectedKey(`${deviceId}::${jid}`);
+              setMobileShowMessages(true);
+            }}
+          />
+        </Suspense>
+      )}
     </>
   );
 }

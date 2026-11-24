@@ -7,6 +7,7 @@ import {
   FileText,
   Image as ImageIcon,
   Loader2,
+  Lock,
   MessageSquare,
   Mic,
   Pause,
@@ -258,9 +259,11 @@ function ScheduleItemCard({
 
 export function ScheduledPanelBody({
   chat,
+  isContentRedacted = false,
   onOpenCreateSchedule,
 }: {
   chat: UnifiedChat;
+  isContentRedacted?: boolean;
   onOpenCreateSchedule: () => void;
 }) {
   const {t} = useI18n();
@@ -276,6 +279,7 @@ export function ScheduledPanelBody({
   const schedulesQuery = useQuery({
     queryKey: ['unified-chat-schedules', chat.device_id, chat.jid],
     queryFn: () => listUnifiedChatSchedules(chat.device_id, chat.jid),
+    enabled: !isContentRedacted,
   });
 
   const invalidateSchedules = () => {
@@ -355,6 +359,21 @@ export function ScheduledPanelBody({
       toast.error(t.chats.schedulePastError);
     }
   };
+
+  const redacted = isContentRedacted || Boolean(schedulesQuery.data?.content_redacted);
+  if (redacted) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-14 text-center">
+        <div className="mb-3 flex size-11 items-center justify-center rounded-full bg-secondary text-muted-foreground">
+          <Lock className="size-5" />
+        </div>
+        <p className="text-sm font-medium text-foreground">{t.chats.redactedLockedHint}</p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          {t.chats.redactedSchedulesHint}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">

@@ -1,6 +1,6 @@
 import {useEffect, useMemo, useRef, useState, type KeyboardEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
-import {Check, Loader2, Pencil, Pin, PinOff, Search, Send, StickyNote, Trash2} from 'lucide-react';
+import {Check, Loader2, Lock, Pencil, Pin, PinOff, Search, Send, StickyNote, Trash2} from 'lucide-react';
 import {toast} from 'sonner';
 import {
   createUnifiedChatNote,
@@ -261,7 +261,13 @@ function NoteRow({
   );
 }
 
-export function NotesPanelBody({chat}: {chat: UnifiedChat}) {
+export function NotesPanelBody({
+  chat,
+  isContentRedacted = false,
+}: {
+  chat: UnifiedChat;
+  isContentRedacted?: boolean;
+}) {
   const {t} = useI18n();
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
@@ -276,6 +282,7 @@ export function NotesPanelBody({chat}: {chat: UnifiedChat}) {
   const notesQuery = useQuery({
     queryKey: ['unified-chat-notes', chat.device_id, chat.jid],
     queryFn: () => listUnifiedChatNotes(chat.device_id, chat.jid),
+    enabled: !isContentRedacted,
   });
 
   const invalidateNotes = () => {
@@ -372,6 +379,22 @@ export function NotesPanelBody({chat}: {chat: UnifiedChat}) {
       ))}
     </div>
   );
+
+  const redacted = isContentRedacted || Boolean(notesQuery.data?.content_redacted);
+
+  if (redacted) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-14 text-center">
+        <div className="mb-3 flex size-11 items-center justify-center rounded-full bg-secondary text-muted-foreground">
+          <Lock className="size-5" />
+        </div>
+        <p className="text-sm font-medium text-foreground">{t.chats.redactedLockedHint}</p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          {t.chats.redactedNotesHint}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">

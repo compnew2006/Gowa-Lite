@@ -8,6 +8,7 @@ import {
 } from 'react';
 import {
   AlertTriangle,
+  Ban,
   CalendarClock,
   FileText,
   Film,
@@ -31,7 +32,7 @@ import {useI18n} from '@/lib/i18n';
 export const MAX_CHAT_MEDIA_BYTES = 20 * 1024 * 1024;
 
 export interface ComposerLockState {
-  reason: 'closed' | 'assigned_other' | 'claim_required';
+  reason: 'blocked' | 'closed' | 'assigned_other' | 'claim_required';
   ownerName?: string;
   closedByName?: string | null;
 }
@@ -78,9 +79,11 @@ export function MessageComposer({
   autoReopenHint = false,
   canClaimFromComposer = false,
   canReopenFromComposer = false,
+  canUnblockFromComposer = false,
   isLifecyclePending = false,
   onClaimFromComposer,
   onReopenFromComposer,
+  onUnblockFromComposer,
   draft,
   attachment,
   replyingTo,
@@ -100,9 +103,11 @@ export function MessageComposer({
   autoReopenHint?: boolean;
   canClaimFromComposer?: boolean;
   canReopenFromComposer?: boolean;
+  canUnblockFromComposer?: boolean;
   isLifecyclePending?: boolean;
   onClaimFromComposer?: () => void;
   onReopenFromComposer?: () => void;
+  onUnblockFromComposer?: () => void;
   draft: string;
   attachment: File | null;
   replyingTo: MessageInfo | null;
@@ -158,22 +163,30 @@ export function MessageComposer({
 
   if (lockState) {
     const lockMessage =
-      lockState.reason === 'closed'
-        ? t.chats.composerLockedClosed(lockState.closedByName)
-        : lockState.reason === 'assigned_other'
-          ? t.chats.composerLockedOther(lockState.ownerName || '')
-          : t.chats.composerLockedClaimRequired;
+      lockState.reason === 'blocked'
+        ? t.chats.composerBlockedBanner
+        : lockState.reason === 'closed'
+          ? t.chats.composerLockedClosed(lockState.closedByName)
+          : lockState.reason === 'assigned_other'
+            ? t.chats.composerLockedOther(lockState.ownerName || '')
+            : t.chats.composerLockedClaimRequired;
 
     const showClaimBtn =
       lockState.reason === 'claim_required' && canClaimFromComposer && onClaimFromComposer;
     const showReopenBtn =
       lockState.reason === 'closed' && canReopenFromComposer && onReopenFromComposer;
+    const showUnblockBtn =
+      lockState.reason === 'blocked' && canUnblockFromComposer && onUnblockFromComposer;
 
     return (
       <div className="wa-wallpaper shrink-0 px-3 pb-3 pt-1.5">
         <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-2.5 shadow-2xs">
           <div className="flex min-w-0 flex-1 items-center gap-2.5 text-xs text-muted-foreground">
-            <Lock className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+            {lockState.reason === 'blocked' ? (
+              <Ban className="size-4 shrink-0 text-destructive" />
+            ) : (
+              <Lock className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+            )}
             <span className="leading-relaxed text-foreground/90">{lockMessage}</span>
           </div>
           {showClaimBtn && (
@@ -207,6 +220,23 @@ export function MessageComposer({
                 <RotateCcw className="size-3.5" />
               )}
               <span>{t.chats.reopenAction}</span>
+            </Button>
+          )}
+          {showUnblockBtn && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={isLifecyclePending}
+              onClick={onUnblockFromComposer}
+              className="h-8 whitespace-nowrap shrink-0 px-3 text-xs"
+            >
+              {isLifecyclePending ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Ban className="size-3.5" />
+              )}
+              <span>{t.chats.unblockAction}</span>
             </Button>
           )}
         </div>
@@ -306,7 +336,7 @@ export function MessageComposer({
 
       <form
         onSubmit={onSubmit}
-        className="mx-auto flex max-w-4xl items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1.5 shadow-sm"
+        className="mx-auto flex max-w-4xl items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1.5 shadow-[0_1px_4px_rgba(11,20,26,0.1)]"
       >
         {canWrite && (
           <>
@@ -379,7 +409,7 @@ export function MessageComposer({
             aria-label={t.chats.send}
             title={t.chats.send}
             disabled={!canSend}
-            className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-live text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-40"
           >
             {isSending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
           </button>

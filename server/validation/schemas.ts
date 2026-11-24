@@ -165,3 +165,44 @@ export const lifecycleActionBodySchema = z.object({
   assigned_user_id: z.unknown().optional(),
   assign_to_self: z.boolean().optional(),
 });
+
+export const chatArchiveBodySchema = z.object({
+  archived: z.boolean({error: 'قيمة الأرشفة مطلوبة'}),
+});
+
+export const chatPinBodySchema = z.object({
+  pinned: z.boolean({error: 'قيمة التثبيت مطلوبة'}),
+});
+
+export const chatMuteBodySchema = z.object({
+  duration: z.enum(['8h', '1w', 'always', 'unmute'], {
+    error: 'مدة كتم الإشعارات غير صالحة',
+  }),
+});
+
+export const chatUnreadBodySchema = z.object({
+  unread: z.boolean({error: 'قيمة حالة القراءة مطلوبة'}),
+});
+
+export const chatFavouriteBodySchema = z.object({
+  favourite: z.boolean({error: 'قيمة المفضلة مطلوبة'}),
+});
+
+export const chatBlockBodySchema = z.object({
+  blocked: z.boolean({error: 'قيمة الحظر مطلوبة'}),
+});
+
+export const chatListCreateSchema = z.object({
+  name: z
+    .string({error: 'اسم القائمة مطلوب'})
+    .trim()
+    .min(1, {message: 'اسم القائمة مطلوب'})
+    .max(60, {message: 'اسم القائمة يجب ألا يتجاوز 60 حرفًا'}),
+});
+
+export const chatListsAssignSchema = z.object({
+  list_ids: z
+    .array(z.number().int().positive(), {error: 'قائمة المعرّفات غير صالحة'})
+    .max(50, {message: 'الحد الأقصى 50 قائمة للمحادثة'}),
+});
+

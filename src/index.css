@@ -58,7 +58,7 @@
 }
 
 :root {
-  --background: #f0f2f5;
+  --background: #f5f4f2;
   --foreground: #111b21;
   --card: #ffffff;
   --card-foreground: #111b21;
@@ -66,25 +66,25 @@
   --popover-foreground: #111b21;
   --primary: #008069;
   --primary-foreground: #ffffff;
-  --secondary: #f0f2f5;
+  --secondary: #f5f4f2;
   --secondary-foreground: #111b21;
-  --muted: #f0f2f5;
-  --muted-foreground: #54656f;
+  --muted: #efeeec;
+  --muted-foreground: #667781;
   --accent: #d9fdd3;
-  --accent-foreground: #008069;
+  --accent-foreground: #15603e;
   --destructive: #ea0038;
   --destructive-foreground: #ffffff;
-  --border: rgba(17, 27, 33, 0.09);
-  --input: rgba(17, 27, 33, 0.16);
-  --ring: #00a884;
+  --border: rgba(17, 27, 33, 0.08);
+  --input: rgba(17, 27, 33, 0.14);
+  --ring: #1daa61;
   --sidebar: #ffffff;
   --sidebar-foreground: #111b21;
-  --sidebar-accent: #f0f2f5;
-  --sidebar-accent-foreground: #008069;
-  --sidebar-border: rgba(17, 27, 33, 0.09);
-  --rail: #f0f2f5;
+  --sidebar-accent: #f5f4f2;
+  --sidebar-accent-foreground: #15603e;
+  --sidebar-border: rgba(17, 27, 33, 0.08);
+  --rail: #f7f5f3;
   --chat-canvas: #efeae2;
-  --live: #25d366;
+  --live: #1daa61;
   --bubble-in: #ffffff;
   --bubble-out: #d9fdd3;
   --bubble-out-subtle: #c8f1c1;

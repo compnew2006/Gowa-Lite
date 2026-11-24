@@ -72,3 +72,43 @@ export function applyOptimisticReaction(
     },
   ];
 }
+
+export interface InfiniteMessagePagesShape<TPage extends {data: MessageInfo[]} = {data: MessageInfo[]}> {
+  pages: TPage[];
+  pageParams: unknown[];
+}
+
+export function applyRevokeToMessagePages<TPage extends {data: MessageInfo[]}>(
+  oldData: InfiniteMessagePagesShape<TPage> | undefined,
+  revoke: {messageId: string; revokedBy?: string; revokedAt?: string},
+): InfiniteMessagePagesShape<TPage> | undefined {
+  if (!oldData || !Array.isArray(oldData.pages) || !revoke.messageId) {
+    return oldData;
+  }
+
+  let changedAnyPage = false;
+  const nextPages = oldData.pages.map((page) => {
+    if (!Array.isArray(page.data)) return page;
+    let changedPage = false;
+    const nextMessages = page.data.map((msg) => {
+      if (msg.id !== revoke.messageId) return msg;
+      const nextRevokedAt = msg.revoked_at || revoke.revokedAt || new Date().toISOString();
+      const nextRevokedBy = msg.revoked_by || revoke.revokedBy;
+      if (msg.is_revoked && msg.revoked_at === nextRevokedAt && msg.revoked_by === nextRevokedBy) {
+        return msg;
+      }
+      changedPage = true;
+      changedAnyPage = true;
+      return {
+        ...msg,
+        is_revoked: true,
+        revoked_at: nextRevokedAt,
+        ...(nextRevokedBy ? {revoked_by: nextRevokedBy} : {}),
+      };
+    });
+    return changedPage ? {...page, data: nextMessages} : page;
+  });
+
+  if (!changedAnyPage) return oldData;
+  return {...oldData, pages: nextPages};
+}

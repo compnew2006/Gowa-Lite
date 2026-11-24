@@ -4,6 +4,11 @@ import {WebSocket, WebSocketServer} from 'ws';
 import {getGowaConfig, getUserById, getUserCacheVersion, type PublicUser} from './db.ts';
 import {gowaFetch, type GowaDevice} from './gowa-client.ts';
 import {hasAnyPermission, hasDeviceAccess, hasPermission} from './rbac.ts';
+import {
+  getChatContentAccessState,
+  isLifecycleApplicableJid,
+  type ChatRedactionReason,
+} from './services/chat-lifecycle.ts';
 
 interface TicketEntry {
   user: PublicUser;
@@ -43,6 +48,34 @@ export interface GowaUpstreamEvent {
   result: unknown;
 }
 
+function redactWsMessageObject(
+  src: Record<string, unknown>,
+  reason: ChatRedactionReason,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {...src};
+  out.content = '';
+  if ('body' in out) out.body = '';
+  if ('text' in out) out.text = '';
+  if ('caption' in out) out.caption = '';
+  out.media_type = '';
+  out.filename = '';
+  out.url = '';
+  out.context_metadata = '';
+  if ('replied_to_id' in out) out.replied_to_id = '';
+  out.reactions = [];
+  if ('reaction' in out) out.reaction = '';
+  if ('emoji' in out) out.emoji = '';
+  out.file_length = 0;
+  delete out.image;
+  delete out.video;
+  delete out.audio;
+  delete out.document;
+  delete out.sticker;
+  out.content_redacted = true;
+  out.redaction_reason = reason;
+  return out;
+}
+
 export function shouldDeliverWsEventToUser(
   user: PublicUser,
   payload: unknown,
@@ -64,7 +97,41 @@ export function shouldDeliverWsEventToUser(
   }
 
   if (code === 'CHAT_LIFECYCLE_UPDATED') {
-    return {allowed: hasPermission(user, 'chats', 'read')};
+    if (!hasPermission(user, 'chats', 'read')) {
+      return {allowed: false};
+    }
+    const resultObj =
+      typeof obj?.result === 'object' && obj.result !== null
+        ? (obj.result as Record<string, unknown>)
+        : null;
+    const assignmentObj =
+      typeof resultObj?.assignment === 'object' && resultObj.assignment !== null
+        ? (resultObj.assignment as Record<string, unknown>)
+        : null;
+    const lifecycleChatJid = String(resultObj?.chat_jid || assignmentObj?.chat_jid || '').trim();
+    if (deviceId && lifecycleChatJid && isLifecycleApplicableJid(lifecycleChatJid)) {
+      const access = getChatContentAccessState(user, deviceId, lifecycleChatJid);
+      if (
+        !access.allowed &&
+        obj &&
+        resultObj &&
+        typeof resultObj.event === 'object' &&
+        resultObj.event !== null
+      ) {
+        const eventObj = resultObj.event as Record<string, unknown>;
+        return {
+          allowed: true,
+          filteredPayload: {
+            ...obj,
+            result: {
+              ...resultObj,
+              event: {...eventObj, note: ''},
+            },
+          },
+        };
+      }
+    }
+    return {allowed: true};
   }
 
   if (code === 'INBOX_POLICY_UPDATED') {
@@ -115,17 +182,75 @@ export function shouldDeliverWsEventToUser(
     typeof resultObj?.payload === 'object' && resultObj.payload !== null
       ? (resultObj.payload as Record<string, unknown>)
       : null;
-  const chatJid = String(
-    resultObj?.chat_jid || innerPayload?.chat_jid || innerPayload?.from || '',
-  )
-    .trim()
-    .toLowerCase();
+  const innerMessage =
+    typeof resultObj?.message === 'object' && resultObj.message !== null
+      ? (resultObj.message as Record<string, unknown>)
+      : typeof innerPayload?.message === 'object' && innerPayload.message !== null
+        ? (innerPayload.message as Record<string, unknown>)
+        : null;
+  const rawChatJid = String(
+    resultObj?.chat_jid ||
+      resultObj?.chat_id ||
+      resultObj?.jid ||
+      resultObj?.from ||
+      innerPayload?.chat_jid ||
+      innerPayload?.chat_id ||
+      innerPayload?.jid ||
+      innerPayload?.from ||
+      innerMessage?.chat_jid ||
+      innerMessage?.chat_id ||
+      innerMessage?.jid ||
+      innerMessage?.from ||
+      '',
+  ).trim();
+  const chatJid = rawChatJid.toLowerCase();
 
   if (chatJid === 'status@broadcast') {
     return {allowed: hasPermission(user, 'misc', 'status.read')};
   }
 
-  return {allowed: hasPermission(user, 'chats', 'read')};
+  if (chatJid.endsWith('@g.us')) {
+    return {allowed: hasPermission(user, 'groups', 'read')};
+  }
+
+  if (!hasPermission(user, 'chats', 'read')) {
+    return {allowed: false};
+  }
+
+  if (obj && resultObj && deviceId && rawChatJid && isLifecycleApplicableJid(rawChatJid)) {
+    const access = getChatContentAccessState(user, deviceId, rawChatJid);
+    if (!access.allowed && access.reason) {
+      const redactedResult = redactWsMessageObject(resultObj, access.reason);
+      if (innerPayload) {
+        const nextPayload = redactWsMessageObject(innerPayload, access.reason);
+        if (
+          typeof innerPayload.message === 'object' &&
+          innerPayload.message !== null
+        ) {
+          nextPayload.message = redactWsMessageObject(
+            innerPayload.message as Record<string, unknown>,
+            access.reason,
+          );
+        }
+        redactedResult.payload = nextPayload;
+      }
+      if (typeof resultObj.message === 'object' && resultObj.message !== null) {
+        redactedResult.message = redactWsMessageObject(
+          resultObj.message as Record<string, unknown>,
+          access.reason,
+        );
+      }
+      return {
+        allowed: true,
+        filteredPayload: {
+          ...obj,
+          result: redactedResult,
+        },
+      };
+    }
+  }
+
+  return {allowed: true};
 }
 
 export function buildUpstreamWsTarget(

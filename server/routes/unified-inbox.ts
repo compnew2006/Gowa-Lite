@@ -1,17 +1,31 @@
 import express, {type Router} from 'express';
 import {
   clearChatCatchup,
+  clearChatHistoryInDb,
+  createChatListForUser,
   createConversationNote,
+  deleteChatInDb,
+  deleteChatListForUser,
   deleteConversationNote,
   getAccountAliases,
   getCachedAvatar,
   getCachedMessage,
   getConversationNoteById,
   getUnreadCountsForUser,
+  getUserMutedChatKeys,
+  isChatBlocked,
+  listChatListsForUser,
   listConversationNotes,
   markCachedMessageRevoked,
   markChatReadForUser,
+  markChatUnreadForUser,
   parseTimestampMs,
+  setChatArchiveOverride,
+  setChatBlockedState,
+  setChatListMembership,
+  setChatPinState,
+  setUserChatFavourite,
+  setUserChatMute,
   syncAndMergeChatMessages,
   syncChatWatermarks,
   updateConversationNote,
@@ -49,6 +63,7 @@ import {
 import {buildSafeMediaHeaders, decodeRouteParam} from '../security.ts';
 import {
   inferForwardMimeType,
+  isGroupJid,
   isNewsletterJid,
   MAX_MEDIA_UPLOAD_BYTES,
   normalizePhoneQueryForGowa,
@@ -66,7 +81,9 @@ import {
   type ScheduleInputBody,
 } from '../services/schedule-service.ts';
 import {
+  assertChatContentAccess,
   enforceInboxPolicyBeforeSend,
+  getChatContentAccessState,
   listAssignmentsForDevices,
   type ChatAssignmentInfo,
 } from '../services/chat-lifecycle.ts';
@@ -82,6 +99,14 @@ import {
 } from '../services/unified-chats-service.ts';
 import type {AuthedRequest} from '../types.ts';
 import {
+  chatArchiveBodySchema,
+  chatBlockBodySchema,
+  chatFavouriteBodySchema,
+  chatListCreateSchema,
+  chatListsAssignSchema,
+  chatMuteBodySchema,
+  chatPinBodySchema,
+  chatUnreadBodySchema,
   conversationNoteCreateSchema,
   conversationNotePatchSchema,
   parsePositiveIntId,
@@ -219,6 +244,8 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
             },
             tab_counts: tabCounts,
             total_unread: totalUnread,
+            muted_keys: getUserMutedChatKeys(req.user!.id),
+            chat_lists: listChatListsForUser(req.user!.id),
             accounts: devices.map((d) => ({
               id: d.id,
               display_name: resolveAccountDisplayName(d, aliases),
@@ -243,6 +270,20 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const chatJid = decodeRouteParam(req.params.jid);
       try {
+        const access = getChatContentAccessState(req.user!, deviceId, chatJid);
+        if (!access.allowed) {
+          res.json({
+            code: 'SUCCESS',
+            message: 'ok',
+            results: {
+              chat_jid: chatJid,
+              last_read_seq: 0,
+              content_redacted: true,
+              redaction_reason: access.reason,
+            },
+          });
+          return;
+        }
         const lastReadSeq = markChatReadForUser(req.user!.id, deviceId, chatJid);
         res.json({
           code: 'SUCCESS',
@@ -258,11 +299,15 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
   router.get(
     '/api/unified/chats/:deviceId/:jid/messages',
     requireAuth,
-    requirePermission('chats', 'read'),
+    requireAnyPermission(['chats:read', 'groups:read']),
     requireDeviceParamAccess,
-    async (req, res) => {
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const chatJid = decodeRouteParam(req.params.jid);
+      if (!hasPermission(req.user!, 'chats', 'read') && !isGroupJid(chatJid)) {
+        res.status(403).json({code: 'FORBIDDEN', message: 'ليس لديك صلاحية تنفيذ هذا الإجراء'});
+        return;
+      }
       const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
       const offset = Math.max(Number(req.query.offset) || 0, 0);
       const rawSearch = typeof req.query.search === 'string' ? req.query.search : '';
@@ -270,6 +315,50 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
       const mediaOnly = req.query.media_only === 'true';
 
       try {
+        const access = getChatContentAccessState(req.user!, deviceId, chatJid);
+        if (!access.allowed) {
+          let safeChatInfo: GowaChatInfo = {
+            jid: chatJid,
+            name: access.assignment.cached_title || '',
+            last_message_time: '',
+            ephemeral_expiration: 0,
+            created_at: '',
+            updated_at: '',
+            archived: false,
+          };
+          try {
+            const probe = await gowaFetch<{
+              data: GowaMessageInfo[];
+              pagination: GowaPagination;
+              chat_info: GowaChatInfo;
+            }>(`/chat/${encodeURIComponent(chatJid)}/messages`, {
+              deviceId,
+              query: {limit: 1, offset: 0},
+            });
+            if (probe?.chat_info) {
+              safeChatInfo = {
+                ...safeChatInfo,
+                jid: probe.chat_info.jid || chatJid,
+                name: probe.chat_info.name || safeChatInfo.name,
+              };
+            }
+          } catch {
+            // Keep safe identity fallback when upstream probe fails
+          }
+          res.json({
+            code: 'SUCCESS',
+            message: 'ok',
+            results: {
+              data: [],
+              pagination: {limit, offset, total: 0, raw_count: 0},
+              chat_info: safeChatInfo,
+              content_redacted: true,
+              redaction_reason: access.reason,
+            },
+          });
+          return;
+        }
+
         const data = await gowaFetch<{
           data: GowaMessageInfo[];
           pagination: GowaPagination;
@@ -314,14 +403,19 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
   router.post(
     '/api/unified/chats/:deviceId/:jid/history',
     requireAuth,
-    requirePermission('chats', 'read'),
+    requireAnyPermission(['chats:read', 'groups:read']),
     requireDeviceParamAccess,
-    async (req, res) => {
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const chatJid = decodeRouteParam(req.params.jid);
+      if (!hasPermission(req.user!, 'chats', 'read') && !isGroupJid(chatJid)) {
+        res.status(403).json({code: 'FORBIDDEN', message: 'ليس لديك صلاحية تنفيذ هذا الإجراء'});
+        return;
+      }
       const body = req.body as {count?: unknown};
       const count = Math.min(Math.max(Number(body.count) || 50, 1), 200);
       try {
+        assertChatContentAccess(req.user!, deviceId, chatJid);
         const result = await gowaFetch(`/chat/${encodeURIComponent(chatJid)}/history`, {
           method: 'POST',
           deviceId,
@@ -346,6 +440,13 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
         const parsed = parseSchema(sendTextMessageSchema, req.body ?? {});
         const message = parsed.message;
         const replyMessageId = parsed.reply_message_id || undefined;
+        if (isChatBlocked(deviceId, chatJid)) {
+          res.status(403).json({
+            code: 'CHAT_BLOCKED',
+            message: 'تم حظر هذه المحادثة؛ قم بإلغاء الحظر أولًا لإرسال الرسائل.',
+          });
+          return;
+        }
         const status = await gowaFetch<GowaDeviceStatus>(
           `/devices/${encodeURIComponent(deviceId)}/status`,
         );
@@ -450,6 +551,13 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
       }
 
       try {
+        if (isChatBlocked(deviceId, chatJid)) {
+          res.status(403).json({
+            code: 'CHAT_BLOCKED',
+            message: 'تم حظر هذه المحادثة؛ قم بإلغاء الحظر أولًا لإرسال الرسائل.',
+          });
+          return;
+        }
         const target = resolveGowaMediaTarget(rawMimeType, rawFilename);
 
         const status = await gowaFetch<GowaDeviceStatus>(
@@ -523,7 +631,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     requireAuth,
     requirePermission('chats', 'write'),
     requireDeviceParamAccess,
-    async (req, res) => {
+    async (req: AuthedRequest, res) => {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
@@ -534,6 +642,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
           res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الرسالة مطلوب'});
           return;
         }
+        assertChatContentAccess(req.user!, deviceId, chatJid);
         const status = await gowaFetch<GowaDeviceStatus>(
           `/devices/${encodeURIComponent(deviceId)}/status`,
         );
@@ -570,7 +679,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     requireAuth,
     requirePermission('chats', 'revoke'),
     requireDeviceParamAccess,
-    async (req, res) => {
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const chatJid = decodeRouteParam(req.params.jid);
       const messageId = decodeRouteParam(req.params.messageId);
@@ -581,6 +690,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
       }
 
       try {
+        assertChatContentAccess(req.user!, deviceId, chatJid);
         const status = await gowaFetch<GowaDeviceStatus>(
           `/devices/${encodeURIComponent(deviceId)}/status`,
         );
@@ -653,6 +763,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
 
       try {
         assertDeviceAccess(req.user, targetDeviceId);
+        assertChatContentAccess(req.user!, sourceDeviceId, sourceChatJid);
         const cached = getCachedMessage(sourceDeviceId, sourceChatJid, messageId);
         if (cached?.is_revoked) {
           res.status(400).json({code: 'MESSAGE_REVOKED', message: 'لا يمكن إعادة توجيه رسالة محذوفة'});
@@ -818,10 +929,24 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     requireAuth,
     requirePermission('notes', 'read'),
     requireDeviceParamAccess,
-    (req, res) => {
+    (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const chatJid = decodeRouteParam(req.params.jid);
       try {
+        const access = getChatContentAccessState(req.user!, deviceId, chatJid);
+        if (!access.allowed) {
+          res.json({
+            code: 'SUCCESS',
+            message: 'ok',
+            results: {
+              notes: [],
+              total: 0,
+              content_redacted: true,
+              redaction_reason: access.reason,
+            },
+          });
+          return;
+        }
         const notes = listConversationNotes(deviceId, chatJid);
         res.json({
           code: 'SUCCESS',
@@ -843,6 +968,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
+        assertChatContentAccess(req.user!, deviceId, chatJid);
         const parsed = parseSchema(conversationNoteCreateSchema, req.body ?? {});
         const note = createConversationNote({
           deviceId,
@@ -874,6 +1000,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
+        assertChatContentAccess(req.user!, deviceId, chatJid);
         const noteId = parsePositiveIntId(req.params.noteId, 'معرّف الملاحظة');
 
         const existing = getConversationNoteById(noteId, deviceId, chatJid);
@@ -919,6 +1046,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
+        assertChatContentAccess(req.user!, deviceId, chatJid);
         const noteId = parsePositiveIntId(req.params.noteId, 'معرّف الملاحظة');
 
       const existing = getConversationNoteById(noteId, deviceId, chatJid);
@@ -953,7 +1081,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     requireAuth,
     requirePermission('schedules', 'read'),
     requireDeviceParamAccess,
-    async (req, res) => {
+    async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const chatJid = decodeRouteParam(req.params.jid);
       const status = typeof req.query.status === 'string' ? req.query.status.trim() : undefined;
@@ -962,6 +1090,20 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
       const searchKey = localPart.split(':')[0] || chatJid;
 
       try {
+        const access = getChatContentAccessState(req.user!, deviceId, chatJid);
+        if (!access.allowed) {
+          res.json({
+            code: 'SUCCESS',
+            message: 'ok',
+            results: {
+              data: [],
+              pagination: {limit: 100, offset: 0, total: 0},
+              content_redacted: true,
+              redaction_reason: access.reason,
+            },
+          });
+          return;
+        }
         const raw = await gowaFetch<{
           data?: Array<Record<string, unknown>>;
           pagination?: GowaPagination;
@@ -1009,10 +1151,11 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     requireAuth,
     requirePermission('schedules', 'write'),
     requireDeviceParamAccess,
-    async (req, res) => {
+    async (req: AuthedRequest, res) => {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
+        assertChatContentAccess(req.user!, deviceId, chatJid);
         const payload = validateAndBuildSchedulePayload(req.body as ScheduleInputBody, {
           fixedPhone: chatJid,
         });
@@ -1029,10 +1172,11 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     requireAuth,
     requirePermission('schedules', 'manage'),
     requireDeviceParamAccess,
-    async (req, res) => {
+    async (req: AuthedRequest, res) => {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
+        assertChatContentAccess(req.user!, deviceId, chatJid);
         const scheduleId = decodeRouteParam(req.params.id);
         const body = req.body as {scheduled_at?: unknown; message?: unknown};
         const result = await rescheduleChatSchedule(deviceId, chatJid, scheduleId, body, wsBridge);
@@ -1048,10 +1192,11 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     requireAuth,
     requirePermission('schedules', 'manage'),
     requireDeviceParamAccess,
-    async (req, res) => {
+    async (req: AuthedRequest, res) => {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
+        assertChatContentAccess(req.user!, deviceId, chatJid);
         const scheduleId = decodeRouteParam(req.params.id);
         await executeScheduleAction(deviceId, scheduleId, req.params.action, wsBridge, chatJid);
         res.json({code: 'SUCCESS', message: 'تم تحديث الجدولة'});
@@ -1065,7 +1210,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
   router.get(
     '/api/unified/media/download',
     requireAuth,
-    requireAnyPermission(['chats:read', 'misc:status.read']),
+    requireAnyPermission(['chats:read', 'misc:status.read', 'groups:read']),
     async (req: AuthedRequest, res) => {
       const deviceId = typeof req.query.deviceId === 'string' ? req.query.deviceId.trim() : '';
       const messageId = typeof req.query.messageId === 'string' ? req.query.messageId.trim() : '';
@@ -1074,6 +1219,14 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
         typeof req.query.fallbackUrl === 'string' ? req.query.fallbackUrl.trim() : '';
       if (!deviceId || !messageId || !phone) {
         res.status(400).json({code: 'VALIDATION_ERROR', message: 'معلمات الوسائط غير مكتملة'});
+        return;
+      }
+      if (
+        !hasPermission(req.user!, 'chats', 'read') &&
+        !hasPermission(req.user!, 'misc', 'status.read') &&
+        !isGroupJid(phone)
+      ) {
+        res.status(403).json({code: 'FORBIDDEN', message: 'ليس لديك صلاحية تنفيذ هذا الإجراء'});
         return;
       }
       if (!hasDeviceAccess(req.user!, deviceId)) {
@@ -1085,6 +1238,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
       }
 
     try {
+      assertChatContentAccess(req.user!, deviceId, phone);
       let downloaded: GowaDownloadedMedia | null = null;
       try {
         const result = await gowaFetch<GowaDownloadedMedia | null>(
@@ -1133,12 +1287,16 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     async (req: AuthedRequest, res) => {
       const filePath = typeof req.query.path === 'string' ? req.query.path : '';
       const deviceId = typeof req.query.deviceId === 'string' ? req.query.deviceId.trim() : '';
+      const chatJid = typeof req.query.chatJid === 'string' ? req.query.chatJid.trim() : '';
       try {
         if (!deviceId) {
           res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الحساب مطلوب'});
           return;
         }
         assertDeviceAccess(req.user, deviceId);
+        if (chatJid) {
+          assertChatContentAccess(req.user!, deviceId, chatJid);
+        }
         const asset = await gowaFetchBinary(filePath);
         const safeHeaders = buildSafeMediaHeaders(asset.contentType, asset.filename);
         res.setHeader('Content-Type', asset.contentType);
@@ -1266,8 +1424,353 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
       res.send(Buffer.from(resolved.image_blob));
       return;
     }
-    res.status(204).end();
-  });
+      res.status(204).end();
+    });
+
+  // Chat Row Menu Actions & Custom Lists
+  router.post(
+    '/api/unified/chats/:deviceId/:jid/archive',
+    requireAuth,
+    requirePermission('chats', 'write'),
+    requireDeviceParamAccess,
+    async (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const {archived} = parseSchema(chatArchiveBodySchema, req.body ?? {});
+
+        let syncedRemote = false;
+        try {
+          const status = await gowaFetch<GowaDeviceStatus>(
+            `/devices/${encodeURIComponent(deviceId)}/status`,
+          );
+          if (status?.is_logged_in) {
+            await gowaFetch(`/chat/${encodeURIComponent(chatJid)}/archive`, {
+              method: 'POST',
+              deviceId,
+              body: {archived},
+            });
+            syncedRemote = true;
+          }
+        } catch (err) {
+          if (
+            !(err instanceof GowaError) ||
+            (err.code !== 'GOWA_NOT_CONFIGURED' && err.status !== 502 && err.status !== 503)
+          ) {
+            throw err;
+          }
+        }
+
+        const state = setChatArchiveOverride(deviceId, chatJid, archived);
+        wsBridge.broadcast({
+          code: 'CHAT_UPDATED',
+          message: archived ? 'archived' : 'unarchived',
+          device_id: deviceId,
+          result: {chat_jid: chatJid},
+        });
+        res.json({
+          code: 'SUCCESS',
+          message: archived ? 'تمت أرشفة المحادثة' : 'تم إلغاء أرشفة المحادثة',
+          results: {
+            chat_jid: chatJid,
+            archived: Boolean(state.archived_override),
+            synced_remote: syncedRemote,
+          },
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/unified/chats/:deviceId/:jid/pin',
+    requireAuth,
+    requirePermission('chats', 'write'),
+    requireDeviceParamAccess,
+    async (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const {pinned} = parseSchema(chatPinBodySchema, req.body ?? {});
+
+        let syncedRemote = false;
+        try {
+          const status = await gowaFetch<GowaDeviceStatus>(
+            `/devices/${encodeURIComponent(deviceId)}/status`,
+          );
+          if (status?.is_logged_in) {
+            await gowaFetch(`/chat/${encodeURIComponent(chatJid)}/pin`, {
+              method: 'POST',
+              deviceId,
+              body: {pinned},
+            });
+            syncedRemote = true;
+          }
+        } catch (err) {
+          if (
+            !(err instanceof GowaError) ||
+            (err.code !== 'GOWA_NOT_CONFIGURED' && err.status !== 502 && err.status !== 503)
+          ) {
+            throw err;
+          }
+        }
+
+        const state = setChatPinState(deviceId, chatJid, pinned);
+        wsBridge.broadcast({
+          code: 'CHAT_UPDATED',
+          message: pinned ? 'pinned' : 'unpinned',
+          device_id: deviceId,
+          result: {chat_jid: chatJid},
+        });
+        res.json({
+          code: 'SUCCESS',
+          message: pinned ? 'تم تثبيت المحادثة' : 'تم إلغاء تثبيت المحادثة',
+          results: {
+            chat_jid: chatJid,
+            is_pinned: state.is_pinned,
+            pinned_at_ms: state.pinned_at_ms,
+            synced_remote: syncedRemote,
+          },
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/unified/chats/:deviceId/:jid/mute',
+    requireAuth,
+    requirePermission('chats', 'read'),
+    requireDeviceParamAccess,
+    (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const {duration} = parseSchema(chatMuteBodySchema, req.body ?? {});
+        const mutedUntilMs = setUserChatMute(req.user!.id, deviceId, chatJid, duration);
+        res.json({
+          code: 'SUCCESS',
+          message: duration === 'unmute' ? 'تم إلغاء كتم الإشعارات' : 'تم كتم إشعارات المحادثة',
+          results: {chat_jid: chatJid, muted_until_ms: mutedUntilMs},
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/unified/chats/:deviceId/:jid/unread',
+    requireAuth,
+    requirePermission('chats', 'read'),
+    requireDeviceParamAccess,
+    (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const {unread} = parseSchema(chatUnreadBodySchema, req.body ?? {});
+        if (unread) {
+          markChatUnreadForUser(req.user!.id, deviceId, chatJid);
+        } else {
+          markChatReadForUser(req.user!.id, deviceId, chatJid);
+        }
+        res.json({
+          code: 'SUCCESS',
+          message: unread ? 'تم التحديد كغير مقروءة' : 'تم التحديد كمقروءة',
+          results: {chat_jid: chatJid, unread},
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/unified/chats/:deviceId/:jid/favourite',
+    requireAuth,
+    requirePermission('chats', 'read'),
+    requireDeviceParamAccess,
+    (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const {favourite} = parseSchema(chatFavouriteBodySchema, req.body ?? {});
+        setUserChatFavourite(req.user!.id, deviceId, chatJid, favourite);
+        res.json({
+          code: 'SUCCESS',
+          message: favourite ? 'تمت الإضافة إلى المفضلة' : 'تمت الإزالة من المفضلة',
+          results: {chat_jid: chatJid, is_favourite: favourite},
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/unified/chats/:deviceId/:jid/block',
+    requireAuth,
+    requirePermission('chats', 'write'),
+    requireDeviceParamAccess,
+    (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const {blocked} = parseSchema(chatBlockBodySchema, req.body ?? {});
+        const state = setChatBlockedState(deviceId, chatJid, blocked);
+        wsBridge.broadcast({
+          code: 'CHAT_UPDATED',
+          message: blocked ? 'blocked' : 'unblocked',
+          device_id: deviceId,
+          result: {chat_jid: chatJid},
+        });
+        res.json({
+          code: 'SUCCESS',
+          message: blocked ? 'تم حظر المحادثة داخل النظام' : 'تم إلغاء حظر المحادثة',
+          results: {chat_jid: chatJid, is_blocked: state.is_blocked},
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/unified/chats/:deviceId/:jid/clear',
+    requireAuth,
+    requirePermission('chats', 'revoke'),
+    requireDeviceParamAccess,
+    (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const result = clearChatHistoryInDb(deviceId, chatJid);
+        wsBridge.broadcast({
+          code: 'CHAT_UPDATED',
+          message: 'cleared',
+          device_id: deviceId,
+          result: {chat_jid: chatJid},
+        });
+        res.json({
+          code: 'SUCCESS',
+          message: 'تم مسح سجل رسائل المحادثة داخل النظام',
+          results: {
+            chat_jid: chatJid,
+            cleared_before_ms: result.clearedBeforeMs,
+            deleted_messages: result.deletedMessages,
+          },
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/unified/chats/:deviceId/:jid/delete',
+    requireAuth,
+    requirePermission('chats', 'revoke'),
+    requireDeviceParamAccess,
+    (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const result = deleteChatInDb(deviceId, chatJid);
+        wsBridge.broadcast({
+          code: 'CHAT_UPDATED',
+          message: 'deleted',
+          device_id: deviceId,
+          result: {chat_jid: chatJid},
+        });
+        res.json({
+          code: 'SUCCESS',
+          message: 'تم حذف المحادثة من النظام',
+          results: {
+            chat_jid: chatJid,
+            deleted_before_ms: result.deletedBeforeMs,
+          },
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.get(
+    '/api/unified/chat-lists',
+    requireAuth,
+    requirePermission('chats', 'read'),
+    (req: AuthedRequest, res) => {
+      try {
+        const lists = listChatListsForUser(req.user!.id);
+        res.json({code: 'SUCCESS', message: 'ok', results: lists});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/unified/chat-lists',
+    requireAuth,
+    requirePermission('chats', 'read'),
+    (req: AuthedRequest, res) => {
+      try {
+        const {name} = parseSchema(chatListCreateSchema, req.body ?? {});
+        const created = createChatListForUser(req.user!.id, name);
+        res.status(201).json({
+          code: 'SUCCESS',
+          message: 'تم إنشاء القائمة',
+          results: created,
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.delete(
+    '/api/unified/chat-lists/:listId',
+    requireAuth,
+    requirePermission('chats', 'read'),
+    (req: AuthedRequest, res) => {
+      try {
+        const listId = parsePositiveIntId(req.params.listId, 'معرّف القائمة');
+        const deleted = deleteChatListForUser(req.user!.id, listId);
+        if (!deleted) {
+          res.status(404).json({code: 'NOT_FOUND', message: 'القائمة غير موجودة'});
+          return;
+        }
+        res.json({code: 'SUCCESS', message: 'تم حذف القائمة'});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.put(
+    '/api/unified/chats/:deviceId/:jid/lists',
+    requireAuth,
+    requirePermission('chats', 'read'),
+    requireDeviceParamAccess,
+    (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const {list_ids} = parseSchema(chatListsAssignSchema, req.body ?? {});
+        const saved = setChatListMembership(req.user!.id, deviceId, chatJid, list_ids);
+        res.json({
+          code: 'SUCCESS',
+          message: 'تم تحديث قوائم المحادثة',
+          results: {chat_jid: chatJid, list_ids: saved},
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
 
   return router;
 }

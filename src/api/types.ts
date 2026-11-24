@@ -171,6 +171,8 @@ export interface ChatInfo {
 
 export type ChatLifecycleStatus = 'pending' | 'open' | 'closed';
 
+export type ChatRedactionReason = 'pending' | 'closed' | 'assigned_other';
+
 export interface ChatAssignmentSummary {
   status: ChatLifecycleStatus;
   assigned_user_id: number | null;
@@ -181,12 +183,28 @@ export interface ChatAssignmentSummary {
   close_reason: string;
 }
 
+export type MuteDuration = '8h' | '1w' | 'always' | 'unmute';
+
+export interface ChatListSummary {
+  id: number;
+  name: string;
+  chat_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface UnifiedChat extends ChatInfo {
   device_id: string;
   device_display_name: string;
   device_state: DeviceState;
   unread_count?: number;
   lifecycle?: ChatAssignmentSummary;
+  is_pinned?: boolean;
+  pinned_at_ms?: number;
+  is_blocked?: boolean;
+  is_favourite?: boolean;
+  muted_until_ms?: number;
+  list_ids?: number[];
 }
 
 export interface UnifiedChatsPagination {
@@ -212,6 +230,8 @@ export interface UnifiedChatsResponse {
   pagination?: UnifiedChatsPagination;
   tab_counts?: UnifiedTabCounts;
   total_unread?: number;
+  muted_keys?: string[];
+  chat_lists?: ChatListSummary[];
   accounts: AccountSummary[];
   device_errors: Array<{
     device_id: string;
@@ -320,6 +340,8 @@ export interface ScheduledSend {
 export interface ScheduleList {
   data: ScheduledSend[];
   pagination: Pagination;
+  content_redacted?: boolean;
+  redaction_reason?: ChatRedactionReason;
 }
 
 export interface CreateSchedulePayload {
@@ -408,6 +430,7 @@ export interface UnifiedGroupItem {
   jid: string;
   name: string;
   participant_count: number;
+  unread_count?: number;
   group: MyGroup;
 }
 
@@ -429,6 +452,7 @@ export interface UnifiedGroupsResponse {
   items: UnifiedDirectoryItem[];
   groups_count: number;
   newsletters_count: number;
+  total_unread?: number;
   accounts: AccountSummary[];
   device_errors: Array<{
     device_id: string;

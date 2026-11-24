@@ -56,6 +56,7 @@ export interface IncomingAlertPayload {
   senderName: string;
   body: string;
   mediaType: string;
+  contentRedacted?: boolean;
 }
 
 function unwrapPayload(result: unknown): Record<string, unknown> | null {
@@ -84,7 +85,13 @@ export function extractIncomingAlertData(event: WsEvent): IncomingAlertPayload |
   const deviceId = target.deviceId || '';
   const chatJid = target.chatJid || '';
   const lowerJid = chatJid.toLowerCase();
-  if (!deviceId || !chatJid || lowerJid.endsWith('@newsletter') || lowerJid === 'status@broadcast') {
+  if (
+    !deviceId ||
+    !chatJid ||
+    lowerJid.endsWith('@newsletter') ||
+    lowerJid.endsWith('@g.us') ||
+    lowerJid === 'status@broadcast'
+  ) {
     return null;
   }
 
@@ -121,6 +128,12 @@ export function extractIncomingAlertData(event: WsEvent): IncomingAlertPayload |
     }
   }
 
+  const resultObj =
+    event.result && typeof event.result === 'object' && !Array.isArray(event.result)
+      ? (event.result as Record<string, unknown>)
+      : null;
+  const contentRedacted = Boolean(raw.content_redacted || resultObj?.content_redacted);
+
   const rawSender =
     (typeof raw.sender_display_name === 'string' && raw.sender_display_name.trim()) ||
     (typeof raw.pushname === 'string' && raw.pushname.trim()) ||
@@ -131,8 +144,9 @@ export function extractIncomingAlertData(event: WsEvent): IncomingAlertPayload |
     deviceId,
     chatJid,
     senderName: rawSender,
-    body: body.trim(),
-    mediaType,
+    body: contentRedacted ? '' : body.trim(),
+    mediaType: contentRedacted ? '' : mediaType,
+    ...(contentRedacted ? {contentRedacted: true} : {}),
   };
 }
 
@@ -188,14 +202,31 @@ export function shouldAlertIncomingChat(params: {
   deviceId: string;
   chatJid: string;
   lifecycle?: Pick<ChatAssignmentSummary, 'status' | 'assigned_user_id'> | null;
+  mutedKeys?: ReadonlySet<string> | readonly string[] | null;
 }): boolean {
-  const {user, deviceId, chatJid, lifecycle} = params;
+  const {user, deviceId, chatJid, lifecycle, mutedKeys} = params;
   if (!user || !user.is_active) return false;
 
   const cleanDevice = deviceId.trim();
   const cleanJid = chatJid.trim().toLowerCase();
   if (!cleanDevice || !cleanJid) return false;
-  if (cleanJid.endsWith('@newsletter') || cleanJid === 'status@broadcast') return false;
+  if (
+    cleanJid.endsWith('@newsletter') ||
+    cleanJid.endsWith('@g.us') ||
+    cleanJid === 'status@broadcast'
+  ) {
+    return false;
+  }
+
+  if (mutedKeys) {
+    const exactKey = `${cleanDevice}::${chatJid.trim()}`;
+    const lowerKey = `${cleanDevice}::${cleanJid}`;
+    if (mutedKeys instanceof Set) {
+      if (mutedKeys.has(exactKey) || mutedKeys.has(lowerKey)) return false;
+    } else if (Array.isArray(mutedKeys)) {
+      if (mutedKeys.includes(exactKey) || mutedKeys.includes(lowerKey)) return false;
+    }
+  }
 
   const isAdmin = user.role === 'admin' || user.role_slug === 'admin';
   const perms = user.permissions ?? [];

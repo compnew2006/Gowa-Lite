@@ -1,5 +1,10 @@
 import type {Router} from 'express';
-import {db, getAccountAliases} from '../db.ts';
+import {
+  db,
+  getAccountAliases,
+  getGroupUnreadSummaryForUser,
+  markChatReadForUser,
+} from '../db.ts';
 import {GowaError, gowaFetch, gowaFetchRaw, type GowaDevice} from '../gowa-client.ts';
 import {
   assertDeviceAccess,
@@ -9,9 +14,13 @@ import {
   requireAuth,
   requirePermission,
 } from '../middleware/auth.ts';
-import {filterAllowedDevices, hasPermission} from '../rbac.ts';
+import {filterAllowedDevices, hasPermission, isAdminSubject} from '../rbac.ts';
 import {decodeRouteParam} from '../security.ts';
-import {resolveAccountDisplayName} from '../services/chat-sync.ts';
+import {
+  isGroupJid,
+  normalizeWhatsAppJid,
+  resolveAccountDisplayName,
+} from '../services/chat-sync.ts';
 import type {AuthedRequest} from '../types.ts';
 
 export interface RawGowaGroup {
@@ -206,6 +215,7 @@ export function registerGroupRoutes(): Router {
             jid: string;
             name: string;
             participant_count: number;
+            unread_count?: number;
             group: RawGowaGroup;
           }
         | {
@@ -297,6 +307,16 @@ export function registerGroupRoutes(): Router {
 
       items.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
 
+      const unreadSummary = getGroupUnreadSummaryForUser(
+        req.user!,
+        targetDevices.map((d) => d.id),
+      );
+      for (const item of items) {
+        if (item.kind === 'group') {
+          item.unread_count = unreadSummary.byKey.get(`${item.device_id}::${item.jid}`) ?? 0;
+        }
+      }
+
       res.json({
         code: 'SUCCESS',
         message: 'ok',
@@ -304,6 +324,7 @@ export function registerGroupRoutes(): Router {
           items,
           groups_count: groupsCount,
           newsletters_count: newslettersCount,
+          total_unread: unreadSummary.totalUnread,
           accounts: devices.map((d) => ({
             id: d.id,
             display_name: resolveAccountDisplayName(d, aliases),
@@ -317,6 +338,57 @@ export function registerGroupRoutes(): Router {
       handleRouteError(res, err);
     }
   });
+
+  router.get(
+    '/api/unified/groups/unread',
+    requireAuth,
+    requirePermission('groups', 'read'),
+    (req: AuthedRequest, res) => {
+      try {
+        const user = req.user!;
+        const deviceIds =
+          !isAdminSubject(user) && user.allowed_device_ids.length > 0
+            ? user.allowed_device_ids
+            : undefined;
+        const summary = getGroupUnreadSummaryForUser(user, deviceIds);
+        res.json({
+          code: 'SUCCESS',
+          message: 'ok',
+          results: {
+            total_unread: summary.totalUnread,
+          },
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/unified/groups/:deviceId/:jid/read',
+    requireAuth,
+    requirePermission('groups', 'read'),
+    (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      const rawJid = decodeRouteParam(req.params.jid);
+      const groupJid = normalizeWhatsAppJid(rawJid) || rawJid;
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        if (!groupJid || !isGroupJid(groupJid)) {
+          res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المجموعة غير صالح'});
+          return;
+        }
+        const lastReadSeq = markChatReadForUser(req.user!.id, deviceId, groupJid);
+        res.json({
+          code: 'SUCCESS',
+          message: 'ok',
+          results: {chat_jid: groupJid, last_read_seq: lastReadSeq},
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
 
   router.get(
     '/api/devices/:deviceId/groups',
