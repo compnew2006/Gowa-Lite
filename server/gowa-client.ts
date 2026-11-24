@@ -62,6 +62,9 @@ export interface GowaMessageInfo {
   filename: string;
   url: string;
   file_length: number;
+  is_revoked?: boolean;
+  revoked_at?: string;
+  revoked_by?: string;
 }
 
 export interface GowaPagination {

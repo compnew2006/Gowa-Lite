@@ -7,31 +7,58 @@ import {
   useState,
   type FormEvent,
 } from 'react';
-import {useInfiniteQuery, useMutation, useQueryClient} from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+} from '@tanstack/react-query';
 import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  Ban,
+  CalendarClock,
+  Check,
   CheckCheck,
+  Copy,
   History,
   Image as ImageIcon,
   Loader2,
+  Reply,
   Search,
   Send,
+  SmilePlus,
+  StickyNote,
   X,
 } from 'lucide-react';
 import {toast} from 'sonner';
 import {
   getUnifiedChatMessages,
+  listUnifiedChatNotes,
+  listUnifiedChatSchedules,
+  markUnifiedChatRead,
   requestUnifiedChatHistory,
+  sendUnifiedMessageReaction,
   sendUnifiedTextMessage,
 } from '@/api/client';
-import type {MessageInfo, UnifiedChat} from '@/api/types';
+import type {
+  ChatInfo,
+  MessageInfo,
+  Pagination,
+  ReactionInfo,
+  UnifiedChat,
+  UnifiedChatsResponse,
+} from '@/api/types';
 import {ContactAvatar} from '@/components/contact-avatar';
 import {Button} from '@/components/ui/button';
+import {ChatContextDrawer, type ContextDrawerTab} from '@/features/chat/chat-context-drawer';
 import {chatDisplayName, formatJidPhone, senderDisplayName} from '@/features/chat/display-name';
 import {FormattedText} from '@/features/chat/formatted-text';
 import {MessageMedia} from '@/features/chat/message-media';
+import {ScheduleMessageDialog} from '@/features/chat/schedule-dialog';
+import {onWsEvent} from '@/lib/events';
 import {formatDate, formatDay} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -42,6 +69,9 @@ const PAGE_SIZE = 40;
 const HISTORY_POLL_MS = 2_000;
 const HISTORY_POLL_WINDOW_MS = 30_000;
 const SCROLL_TOP_THRESHOLD_PX = 140;
+const QUICK_REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
+type MessagesPage = {data: MessageInfo[]; pagination: Pagination; chat_info: ChatInfo};
 
 function sortMessagesChronologically(messages: MessageInfo[]): MessageInfo[] {
   return [...messages].sort((a, b) => {
@@ -66,32 +96,166 @@ function repliedToId(message: MessageInfo): string | undefined {
   }
 }
 
+async function copyTextWithFallback(text: string): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall through to execCommand fallback
+    }
+  }
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    textarea.style.pointerEvents = 'none';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+interface GroupedReaction {
+  emoji: string;
+  count: number;
+  hasMe: boolean;
+  senders: string[];
+}
+
+function groupReactions(reactions: ReactionInfo[]): GroupedReaction[] {
+  const map = new Map<string, GroupedReaction>();
+  for (const reaction of reactions) {
+    if (!reaction.emoji) continue;
+    const senderLabel =
+      reaction.sender_display_name || formatJidPhone(reaction.sender_jid) || '';
+    const existing = map.get(reaction.emoji);
+    if (existing) {
+      existing.count += 1;
+      if (reaction.is_from_me) existing.hasMe = true;
+      if (senderLabel && !existing.senders.includes(senderLabel)) {
+        existing.senders.push(senderLabel);
+      }
+    } else {
+      map.set(reaction.emoji, {
+        emoji: reaction.emoji,
+        count: 1,
+        hasMe: Boolean(reaction.is_from_me),
+        senders: senderLabel ? [senderLabel] : [],
+      });
+    }
+  }
+  return Array.from(map.values());
+}
+
+function applyOptimisticReaction(
+  reactions: ReactionInfo[] | undefined,
+  emoji: string,
+): ReactionInfo[] {
+  const filtered = (reactions ?? []).filter((r) => !r.is_from_me);
+  if (!emoji) return filtered;
+  return [
+    ...filtered,
+    {
+      emoji,
+      sender_jid: 'me',
+      is_from_me: true,
+      timestamp: new Date().toISOString(),
+    },
+  ];
+}
+
 function MessageBubble({
   message,
   quoted,
   deviceId,
+  isDeviceReady,
+  isReactionPickerOpen,
+  onToggleReactionPicker,
+  onCloseReactionPicker,
+  onReact,
+  onReply,
+  onJumpToMessage,
 }: {
   message: MessageInfo;
   quoted: MessageInfo | null | undefined;
   deviceId: string;
+  isDeviceReady: boolean;
+  isReactionPickerOpen: boolean;
+  onToggleReactionPicker: (messageId: string) => void;
+  onCloseReactionPicker: () => void;
+  onReact: (message: MessageInfo, emoji: string) => void;
+  onReply: (message: MessageInfo) => void;
+  onJumpToMessage: (messageId: string) => void;
 }) {
   const {lang, t} = useI18n();
   const isOut = message.is_from_me;
+  const isRevoked = Boolean(message.is_revoked);
   const hasMedia = Boolean(message.media_type);
+  const copyableText = message.content?.trim() ? message.content : '';
+  const [copied, setCopied] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isReactionPickerOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
+        onCloseReactionPicker();
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onCloseReactionPicker();
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isReactionPickerOpen, onCloseReactionPicker]);
+
+  const handleCopy = async () => {
+    if (!copyableText) return;
+    const ok = await copyTextWithFallback(copyableText);
+    if (ok) {
+      setCopied(true);
+      toast.success(t.chats.copiedToClipboard);
+      window.setTimeout(() => setCopied(false), 1500);
+    } else {
+      toast.error(t.chats.copyFailedToast);
+    }
+  };
+
+  const myReactionEmoji = message.reactions?.find((r) => r.is_from_me)?.emoji;
+  const groupedReactions = useMemo(
+    () => (message.reactions?.length ? groupReactions(message.reactions) : []),
+    [message.reactions],
+  );
 
   return (
     <div
+      data-message-id={message.id}
       className={cn(
-        'flex',
+        'group flex items-end gap-1.5',
         isOut ? 'ltr:justify-end rtl:justify-start' : 'ltr:justify-start rtl:justify-end',
       )}
     >
+      {/* Bubble */}
       <div
         className={cn(
           'max-w-[82%] rounded-xl px-3 py-2 text-[13.5px] leading-relaxed shadow-2xs sm:max-w-[68%]',
           isOut
             ? 'rounded-tr-xs bg-bubble-out text-foreground'
             : 'rounded-tl-xs bg-bubble-in text-foreground',
+          isRevoked && 'border border-destructive/25',
         )}
       >
         {!isOut && message.chat_jid.endsWith('@g.us') && (
@@ -100,9 +264,23 @@ function MessageBubble({
 
         {quoted !== undefined && (
           <div
+            role={quoted ? 'button' : undefined}
+            tabIndex={quoted ? 0 : undefined}
+            onClick={quoted ? () => onJumpToMessage(quoted.id) : undefined}
+            onKeyDown={
+              quoted
+                ? (event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      onJumpToMessage(quoted.id);
+                    }
+                  }
+                : undefined
+            }
             className={cn(
               'mb-2 rounded-md border-s-3 border-primary px-2.5 py-1.5 text-xs',
               isOut ? 'bg-bubble-out-subtle' : 'bg-black/10 dark:bg-black/25',
+              quoted && 'cursor-pointer transition-opacity hover:opacity-90',
             )}
           >
             {quoted ? (
@@ -120,17 +298,140 @@ function MessageBubble({
           </div>
         )}
 
-        {message.content && <FormattedText text={message.content} />}
-        {hasMedia && <MessageMedia message={message} deviceId={deviceId} />}
+        {isRevoked && (
+          <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-destructive dark:text-red-400">
+            <Ban className="size-3.5 shrink-0" />
+            <span>{t.chats.messageDeletedBySender}</span>
+          </div>
+        )}
 
-        {message.reactions && message.reactions.length > 0 && (
-          <p className="mt-1.5 text-xs">{message.reactions.map((r) => r.emoji).join(' ')}</p>
+        {message.content || hasMedia ? (
+          <div className={cn(isRevoked && 'opacity-70')}>
+            {message.content && <FormattedText text={message.content} />}
+            {hasMedia && <MessageMedia message={message} deviceId={deviceId} />}
+          </div>
+        ) : isRevoked ? (
+          <p className="text-xs italic text-muted-foreground opacity-75">
+            {t.chats.messageDeletedNoContent}
+          </p>
+        ) : null}
+
+        {groupedReactions.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {groupedReactions.map((reaction) => (
+              <button
+                key={reaction.emoji}
+                type="button"
+                disabled={!isDeviceReady || isRevoked}
+                onClick={() => onReact(message, reaction.emoji)}
+                title={reaction.senders.join('، ')}
+                className={cn(
+                  'inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs leading-none transition-colors',
+                  isDeviceReady && !isRevoked ? 'cursor-pointer hover:bg-muted/80' : 'cursor-default',
+                  reaction.hasMe
+                    ? 'border-primary/60 bg-primary/15 text-foreground'
+                    : 'border-border/80 bg-background/60 text-foreground',
+                )}
+              >
+                <span>{reaction.emoji}</span>
+                {reaction.count > 1 && (
+                  <span className="text-[10px] font-medium text-muted-foreground tabular-nums">
+                    {reaction.count}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
         )}
 
         <div className="mt-1 flex items-center justify-end gap-1 text-[10.5px] text-muted-foreground tabular-nums">
           <span>{formatDate(message.timestamp, lang)}</span>
           {isOut && <CheckCheck className="size-3.5 text-[#53bdeb]" aria-hidden="true" />}
         </div>
+      </div>
+
+      {/* Message Actions (React, Reply, Copy) positioned on inner side of bubble */}
+      <div
+        className={cn(
+          'relative flex shrink-0 items-center gap-0.5 self-center transition-opacity',
+          isReactionPickerOpen
+            ? 'opacity-100'
+            : 'opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100',
+          isOut ? 'ltr:order-first rtl:order-last' : 'ltr:order-last rtl:order-first',
+        )}
+      >
+        {/* Emoji Reaction Button + Quick Picker */}
+        <div ref={pickerRef} className="relative">
+          <button
+            type="button"
+            disabled={!isDeviceReady || isRevoked}
+            onClick={() => onToggleReactionPicker(message.id)}
+            title={isDeviceReady ? t.chats.addReaction : t.chats.accountCurrentlyOffline}
+            aria-label={t.chats.addReaction}
+            aria-expanded={isReactionPickerOpen}
+            className={cn(
+              'flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40',
+              isReactionPickerOpen && 'bg-secondary text-foreground',
+            )}
+          >
+            <SmilePlus className="size-3.5" />
+          </button>
+
+          {isReactionPickerOpen && !isRevoked && (
+            <div
+              role="menu"
+              className={cn(
+                'absolute bottom-full z-30 mb-1.5 flex items-center gap-0.5 rounded-full border border-border bg-popover px-1.5 py-1 shadow-lg',
+                isOut ? 'ltr:right-0 rtl:right-0' : 'ltr:left-0 rtl:left-0',
+              )}
+            >
+              {QUICK_REACTION_EMOJIS.map((emoji) => {
+                const isSelected = myReactionEmoji === emoji;
+                return (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => {
+                      onReact(message, emoji);
+                      onCloseReactionPicker();
+                    }}
+                    className={cn(
+                      'flex size-8 cursor-pointer items-center justify-center rounded-full text-base transition-transform hover:scale-115 hover:bg-muted',
+                      isSelected && 'bg-primary/15 ring-1 ring-primary/50',
+                    )}
+                  >
+                    {emoji}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Reply Button */}
+        <button
+          type="button"
+          disabled={!isDeviceReady || isRevoked}
+          onClick={() => onReply(message)}
+          title={isDeviceReady ? t.chats.reply : t.chats.accountCurrentlyOffline}
+          aria-label={t.chats.reply}
+          className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Reply className="size-3.5" />
+        </button>
+
+        {/* Copy Text Button */}
+        {copyableText && (
+          <button
+            type="button"
+            onClick={() => void handleCopy()}
+            title={t.chats.copyText}
+            aria-label={t.chats.copyText}
+            className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground"
+          >
+            {copied ? <Check className="size-3.5 text-primary" /> : <Copy className="size-3.5" />}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -148,25 +449,37 @@ export function MessageView({
   const queryClient = useQueryClient();
   const {lang, isRtl, t} = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerInputRef = useRef<HTMLInputElement>(null);
   const initialScrolledRef = useRef(false);
   const prevScrollAnchorRef = useRef<{scrollHeight: number; scrollTop: number} | null>(null);
   const stickToBottomRef = useRef(true);
+  const markingReadRef = useRef(false);
+  const pendingMarkReadRef = useRef(false);
+  const lastMarkedKeyRef = useRef('');
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [mediaOnly, setMediaOnly] = useState(false);
   const [draft, setDraft] = useState('');
+  const [replyingTo, setReplyingTo] = useState<MessageInfo | null>(null);
+  const [reactionPickerMessageId, setReactionPickerMessageId] = useState<string | null>(null);
   const [historyPollUntil, setHistoryPollUntil] = useState(0);
+  const [drawerTab, setDrawerTab] = useState<ContextDrawerTab | null>(null);
+  const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
 
   useEffect(() => {
     setSearchOpen(false);
     setSearch('');
     setMediaOnly(false);
     setDraft('');
+    setReplyingTo(null);
+    setReactionPickerMessageId(null);
     setHistoryPollUntil(0);
+    setScheduleDialogOpen(false);
     initialScrolledRef.current = false;
     prevScrollAnchorRef.current = null;
     stickToBottomRef.current = true;
+    lastMarkedKeyRef.current = '';
   }, [chat.device_id, chat.jid]);
 
   useEffect(() => {
@@ -174,6 +487,106 @@ export function MessageView({
     prevScrollAnchorRef.current = null;
     stickToBottomRef.current = true;
   }, [search, mediaOnly]);
+
+  const notesQuery = useQuery({
+    queryKey: ['unified-chat-notes', chat.device_id, chat.jid],
+    queryFn: () => listUnifiedChatNotes(chat.device_id, chat.jid),
+  });
+
+  const schedulesQuery = useQuery({
+    queryKey: ['unified-chat-schedules', chat.device_id, chat.jid],
+    queryFn: () => listUnifiedChatSchedules(chat.device_id, chat.jid),
+  });
+
+  const notesCount = notesQuery.data?.notes?.length ?? 0;
+  const activeScheduledCount = useMemo(
+    () =>
+      (schedulesQuery.data?.data ?? []).filter(
+        (item) => item.status === 'active' || item.status === 'running' || item.status === 'paused',
+      ).length,
+    [schedulesQuery.data?.data],
+  );
+
+  const markAsRead = useCallback(() => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    if (markingReadRef.current) {
+      pendingMarkReadRef.current = true;
+      return;
+    }
+    markingReadRef.current = true;
+    pendingMarkReadRef.current = false;
+
+    queryClient.setQueriesData<UnifiedChatsResponse>(
+      {queryKey: ['unified-chats']},
+      (old) => {
+        if (!old) return old;
+        let removed = 0;
+        const nextData = old.data.map((item) => {
+          if (item.device_id === chat.device_id && item.jid === chat.jid) {
+            removed = item.unread_count ?? 0;
+            return {...item, unread_count: 0};
+          }
+          return item;
+        });
+        if (removed === 0) return old;
+        const totalUnread =
+          typeof old.total_unread === 'number'
+            ? Math.max(0, old.total_unread - removed)
+            : nextData.reduce((sum, item) => sum + (item.unread_count ?? 0), 0);
+        return {...old, data: nextData, total_unread: totalUnread};
+      },
+    );
+
+    void markUnifiedChatRead(chat.device_id, chat.jid)
+      .then(() => {
+        void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+      })
+      .catch(() => {
+        // Non-blocking: sidebar will resync on next fetch
+      })
+      .finally(() => {
+        markingReadRef.current = false;
+        if (pendingMarkReadRef.current) {
+          pendingMarkReadRef.current = false;
+          markAsRead();
+        }
+      });
+  }, [chat.device_id, chat.jid, queryClient]);
+
+  useEffect(() => {
+    const signature = `${chat.device_id}:${chat.jid}:${chat.unread_count ?? 0}:${chat.last_message_time ?? ''}`;
+    if (document.visibilityState === 'visible' && lastMarkedKeyRef.current !== signature) {
+      if (lastMarkedKeyRef.current === '' || (chat.unread_count ?? 0) > 0) {
+        lastMarkedKeyRef.current = signature;
+        markAsRead();
+      }
+    }
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible' && (chat.unread_count ?? 0) > 0) {
+        markAsRead();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [chat.device_id, chat.jid, chat.unread_count, chat.last_message_time, markAsRead]);
+
+  useEffect(() => {
+    return onWsEvent((event) => {
+      if (event.code !== 'MESSAGE_RECEIVED') return;
+      if (event.device_id && event.device_id !== chat.device_id) return;
+      const result = event.result as Record<string, unknown> | undefined;
+      const eventChatJid =
+        typeof result?.chat_id === 'string'
+          ? result.chat_id
+          : typeof result?.chat_jid === 'string'
+            ? result.chat_jid
+            : '';
+      if (eventChatJid && eventChatJid === chat.jid && document.visibilityState === 'visible') {
+        markAsRead();
+      }
+    });
+  }, [chat.device_id, chat.jid, markAsRead]);
 
   const normalizedSearch = normalizeSearchInput(search);
 
@@ -188,6 +601,17 @@ export function MessageView({
         media_only: mediaOnly || undefined,
       }),
     getNextPageParam: (lastPage, allPages) => {
+      if (typeof lastPage.pagination.next_offset === 'number') {
+        const rawCount = lastPage.pagination.raw_count ?? lastPage.data.length;
+        const liveTotal = lastPage.pagination.live_total;
+        if (rawCount === 0 || lastPage.data.length === 0) {
+          return undefined;
+        }
+        if (typeof liveTotal === 'number' && lastPage.pagination.next_offset >= liveTotal) {
+          return undefined;
+        }
+        return lastPage.pagination.next_offset;
+      }
       const loadedCount = allPages.reduce((sum, page) => sum + page.data.length, 0);
       const totalCount = lastPage.pagination.total ?? 0;
       if (lastPage.data.length === 0 || loadedCount >= totalCount) {
@@ -267,9 +691,11 @@ export function MessageView({
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
   const sendMutation = useMutation({
-    mutationFn: (text: string) => sendUnifiedTextMessage(chat.device_id, chat.jid, text),
+    mutationFn: ({text, replyMessageId}: {text: string; replyMessageId?: string}) =>
+      sendUnifiedTextMessage(chat.device_id, chat.jid, text, replyMessageId),
     onSuccess: () => {
       setDraft('');
+      setReplyingTo(null);
       stickToBottomRef.current = true;
       void queryClient.invalidateQueries({
         queryKey: ['unified-messages', chat.device_id, chat.jid],
@@ -278,6 +704,46 @@ export function MessageView({
     },
     onError: (err) => {
       toast.error(toApiError(err).message);
+    },
+  });
+
+  const reactionMutation = useMutation({
+    mutationFn: ({messageId, emoji}: {messageId: string; emoji: string}) =>
+      sendUnifiedMessageReaction(chat.device_id, chat.jid, messageId, emoji),
+    onMutate: async ({messageId, emoji}) => {
+      const queryKey = ['unified-messages', chat.device_id, chat.jid] as const;
+      await queryClient.cancelQueries({queryKey});
+      const previous = queryClient.getQueriesData<InfiniteData<MessagesPage>>({queryKey});
+
+      queryClient.setQueriesData<InfiniteData<MessagesPage>>({queryKey}, (old) => {
+        if (!old) return old;
+        return {
+          ...old,
+          pages: old.pages.map((page) => ({
+            ...page,
+            data: page.data.map((msg) =>
+              msg.id === messageId
+                ? {...msg, reactions: applyOptimisticReaction(msg.reactions, emoji)}
+                : msg,
+            ),
+          })),
+        };
+      });
+
+      return {previous};
+    },
+    onError: (err, _vars, context) => {
+      if (context?.previous) {
+        for (const [key, data] of context.previous) {
+          queryClient.setQueryData(key, data);
+        }
+      }
+      toast.error(toApiError(err).message);
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ['unified-messages', chat.device_id, chat.jid],
+      });
     },
   });
 
@@ -296,8 +762,32 @@ export function MessageView({
     event.preventDefault();
     const trimmed = draft.trim();
     if (!trimmed || sendMutation.isPending || !isDeviceReady) return;
-    sendMutation.mutate(trimmed);
+    sendMutation.mutate({text: trimmed, replyMessageId: replyingTo?.id});
   };
+
+  const handleReact = useCallback(
+    (message: MessageInfo, emoji: string) => {
+      if (!isDeviceReady) return;
+      const myExisting = message.reactions?.find((r) => r.is_from_me && r.emoji === emoji);
+      const emojiToSend = myExisting ? '' : emoji;
+      reactionMutation.mutate({messageId: message.id, emoji: emojiToSend});
+    },
+    [isDeviceReady, reactionMutation],
+  );
+
+  const handleReply = useCallback((message: MessageInfo) => {
+    setReplyingTo(message);
+    setReactionPickerMessageId(null);
+    window.setTimeout(() => composerInputRef.current?.focus(), 0);
+  }, []);
+
+  const handleJumpToMessage = useCallback((messageId: string) => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const escapedId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(messageId) : messageId;
+    const target = container.querySelector<HTMLElement>(`[data-message-id="${escapedId}"]`);
+    target?.scrollIntoView({behavior: 'smooth', block: 'center'});
+  }, []);
 
   const replyTarget = (message: MessageInfo) => {
     const id = repliedToId(message);
@@ -305,16 +795,19 @@ export function MessageView({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-chat-canvas">
-      {/* Top WhatsApp Conversation Header */}
-      <div className="flex h-[58px] shrink-0 items-center justify-between gap-3 border-b border-border bg-card px-4">
+    <div className="relative flex h-full min-h-0 w-full bg-chat-canvas">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* Top WhatsApp Conversation Header */}
+        <div className="flex h-[58px] shrink-0 items-center justify-between gap-3 border-b border-border bg-card px-4">
         <div className="flex min-w-0 items-center gap-3">
           {onBack && (
             <Button
               variant="ghost"
               size="icon"
               onClick={onBack}
-              className={alwaysShowBack ? 'size-8 shrink-0 rounded-full' : 'size-8 shrink-0 rounded-full lg:hidden'}
+              className={
+                alwaysShowBack ? 'size-8 shrink-0 rounded-full' : 'size-8 shrink-0 rounded-full lg:hidden'
+              }
               aria-label={t.chats.backToChatsAria}
               title={t.chats.backToChatsAria}
             >
@@ -376,6 +869,46 @@ export function MessageView({
               </button>
             </div>
           )}
+
+          <button
+            type="button"
+            onClick={() => setDrawerTab((prev) => (prev === 'notes' ? null : 'notes'))}
+            title={t.chats.notesTitle}
+            aria-label={t.chats.notesTitle}
+            aria-pressed={drawerTab === 'notes'}
+            className={cn(
+              'flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 transition-colors',
+              drawerTab === 'notes'
+                ? 'bg-accent text-accent-foreground'
+                : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+            )}
+          >
+            <StickyNote className="size-4" />
+            {notesCount > 0 && (
+              <span className="text-[11px] font-semibold tabular-nums">{notesCount}</span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setDrawerTab((prev) => (prev === 'scheduled' ? null : 'scheduled'))}
+            title={t.chats.scheduledMessagesTitle}
+            aria-label={t.chats.scheduledMessagesTitle}
+            aria-pressed={drawerTab === 'scheduled'}
+            className={cn(
+              'flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 transition-colors',
+              drawerTab === 'scheduled'
+                ? 'bg-accent text-accent-foreground'
+                : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+            )}
+          >
+            <CalendarClock className="size-4" />
+            {activeScheduledCount > 0 && (
+              <span className="text-[11px] font-semibold tabular-nums">
+                {activeScheduledCount}
+              </span>
+            )}
+          </button>
 
           <button
             type="button"
@@ -487,6 +1020,15 @@ export function MessageView({
                     message={message}
                     quoted={replyTarget(message)}
                     deviceId={chat.device_id}
+                    isDeviceReady={isDeviceReady}
+                    isReactionPickerOpen={reactionPickerMessageId === message.id}
+                    onToggleReactionPicker={(id) =>
+                      setReactionPickerMessageId((prev) => (prev === id ? null : id))
+                    }
+                    onCloseReactionPicker={() => setReactionPickerMessageId(null)}
+                    onReact={handleReact}
+                    onReply={handleReply}
+                    onJumpToMessage={handleJumpToMessage}
                   />
                 </div>
               );
@@ -504,11 +1046,40 @@ export function MessageView({
           </div>
         )}
 
+        {replyingTo && (
+          <div className="mx-auto mb-2 flex max-w-4xl items-center justify-between gap-2 rounded-xl border border-border bg-card/95 px-3 py-2 shadow-xs">
+            <div className="min-w-0 flex-1 border-s-3 border-primary ps-2.5">
+              <p className="truncate text-xs font-semibold text-primary">
+                {t.chats.replyingTo(
+                  replyingTo.is_from_me ? t.you : senderDisplayName(replyingTo),
+                )}
+              </p>
+              <p className="truncate text-xs text-muted-foreground">
+                {replyingTo.content ||
+                  replyingTo.filename ||
+                  t.chats.mediaLabels[replyingTo.media_type] ||
+                  replyingTo.media_type ||
+                  t.messageFallback}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReplyingTo(null)}
+              aria-label={t.chats.cancelReply}
+              title={t.chats.cancelReply}
+              className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+        )}
+
         <form
           onSubmit={handleSend}
           className="mx-auto flex max-w-4xl items-center gap-2 rounded-full border border-border bg-card px-4 py-1.5 shadow-sm"
         >
           <input
+            ref={composerInputRef}
             type="text"
             placeholder={
               isDeviceReady
@@ -518,8 +1089,24 @@ export function MessageView({
             value={draft}
             disabled={!isDeviceReady || sendMutation.isPending}
             onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && replyingTo) {
+                event.preventDefault();
+                setReplyingTo(null);
+              }
+            }}
             className="h-9 min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none disabled:opacity-50"
           />
+          <button
+            type="button"
+            disabled={sendMutation.isPending}
+            onClick={() => setScheduleDialogOpen(true)}
+            title={t.chats.scheduleMessageBtn}
+            aria-label={t.chats.scheduleMessageBtn}
+            className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <CalendarClock className="size-4" />
+          </button>
           <button
             type="submit"
             aria-label={t.chats.send}
@@ -536,5 +1123,31 @@ export function MessageView({
         </form>
       </div>
     </div>
+
+    {drawerTab && (
+      <ChatContextDrawer
+        chat={chat}
+        activeTab={drawerTab}
+        notesCount={notesCount}
+        scheduledCount={activeScheduledCount}
+        onTabChange={setDrawerTab}
+        onClose={() => setDrawerTab(null)}
+        onOpenCreateSchedule={() => setScheduleDialogOpen(true)}
+      />
+    )}
+
+    <ScheduleMessageDialog
+      open={scheduleDialogOpen}
+      onOpenChange={setScheduleDialogOpen}
+      chat={chat}
+      initialMessage={draft}
+      onScheduled={(submittedMessage) => {
+        if (draft.trim() === submittedMessage) {
+          setDraft('');
+          setReplyingTo(null);
+        }
+      }}
+    />
+  </div>
   );
 }

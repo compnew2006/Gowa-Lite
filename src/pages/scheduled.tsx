@@ -22,38 +22,23 @@ import {Dialog} from '@/components/ui/dialog';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
 import {Skeleton} from '@/components/ui/skeleton';
-import {useI18n} from '@/lib/i18n';
+import {ScheduleRecurrenceFields} from '@/features/schedules/schedule-recurrence-fields';
+import {
+  ScheduleValidationError,
+  defaultScheduleDateTimeLocal,
+  statusToneClass,
+  validateAndBuildScheduleFields,
+} from '@/features/schedules/schedule-utils';
+import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
+import {useI18n} from '@/lib/i18n';
 import {normalizePhoneQueryForGowa, normalizeSearchInput} from '@/lib/phone';
 import {cn} from '@/lib/utils';
 
 const PAGE_SIZE = 25;
 
-function statusColorClass(status: ScheduleStatus): string {
-  switch (status) {
-    case 'active':
-      return 'text-emerald-600 dark:text-emerald-400';
-    case 'running':
-      return 'text-sky-600 dark:text-sky-400';
-    case 'paused':
-      return 'text-amber-600 dark:text-amber-400';
-    case 'completed':
-      return 'text-muted-foreground';
-    case 'failed':
-      return 'text-destructive';
-    case 'cancelled':
-      return 'text-muted-foreground';
-  }
-}
-
-function defaultDateTimeLocal(): string {
-  const target = new Date(Date.now() + 15 * 60_000);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}T${pad(target.getHours())}:${pad(target.getMinutes())}`;
-}
-
 export default function ScheduledPage() {
-  const {t} = useI18n();
+  const {lang, t} = useI18n();
   const queryClient = useQueryClient();
   const deviceState = useActiveDevice();
   const deviceId = deviceState.selectedDeviceId;
@@ -66,10 +51,11 @@ export default function ScheduledPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [confirmCancelTarget, setConfirmCancelTarget] = useState<ScheduledSend | null>(null);
 
-  // Create form state
   const [phone, setPhone] = useState('');
   const [message, setMessage] = useState('');
-  const [scheduledAtLocal, setScheduledAtLocal] = useState(defaultDateTimeLocal);
+  const [scheduledAtLocal, setScheduledAtLocal] = useState(() =>
+    defaultScheduleDateTimeLocal(15),
+  );
   const [timezone, setTimezone] = useState(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
   );
@@ -112,20 +98,28 @@ export default function ScheduledPage() {
 
   const createMutation = useMutation({
     mutationFn: () => {
-      const isoScheduledAt = new Date(scheduledAtLocal).toISOString();
-      const isoEndAt = endAtLocal ? new Date(endAtLocal).toISOString() : undefined;
-      const limitNum = occurrenceLimit.trim() ? Number(occurrenceLimit.trim()) : undefined;
-      const domNum = recurrence === 'monthly' && dayOfMonth.trim() ? Number(dayOfMonth.trim()) : undefined;
+      const validated = validateAndBuildScheduleFields(
+        {
+          message,
+          scheduledAtLocal,
+          timezone,
+          recurrence,
+          weekdays,
+          dayOfMonth,
+          occurrenceLimit,
+          endAtLocal,
+        },
+        {
+          pastTime: t.chats.schedulePastError,
+          invalidEndAt:
+            lang === 'ar'
+              ? 'تاريخ انتهاء التكرار يجب أن يكون بعد موعد البدء'
+              : 'End date must be after scheduled send time',
+        },
+      );
       return createSchedule(deviceId, {
         phone: normalizeSearchInput(phone) || phone.trim(),
-        message: message.trim(),
-        scheduled_at: isoScheduledAt,
-        timezone: timezone.trim() || undefined,
-        recurrence,
-        weekdays: recurrence === 'weekly' && weekdays.length > 0 ? weekdays : undefined,
-        day_of_month: domNum && Number.isInteger(domNum) ? domNum : undefined,
-        end_at: isoEndAt,
-        occurrence_limit: limitNum && limitNum > 0 ? limitNum : undefined,
+        ...validated,
       });
     },
     onSuccess: () => {
@@ -133,14 +127,20 @@ export default function ScheduledPage() {
       setCreateOpen(false);
       setPhone('');
       setMessage('');
-      setScheduledAtLocal(defaultDateTimeLocal());
+      setScheduledAtLocal(defaultScheduleDateTimeLocal(15));
       setRecurrence('once');
       setWeekdays([]);
       setOccurrenceLimit('');
       setEndAtLocal('');
       void queryClient.invalidateQueries({queryKey: ['schedules', deviceId]});
     },
-    onError: (err) => toast.error(toApiError(err).message),
+    onError: (err) => {
+      if (err instanceof ScheduleValidationError) {
+        toast.error(err.message);
+        return;
+      }
+      toast.error(toApiError(err).message);
+    },
   });
 
   const statusLabels = useMemo<Record<ScheduleStatus, string>>(
@@ -182,12 +182,6 @@ export default function ScheduledPage() {
     {key: 'cancelled', label: t.scheduled.statusCancelled},
   ];
 
-  const toggleWeekday = (dayIndex: number) => {
-    setWeekdays((prev) =>
-      prev.includes(dayIndex) ? prev.filter((d) => d !== dayIndex) : [...prev, dayIndex].sort(),
-    );
-  };
-
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -198,7 +192,7 @@ export default function ScheduledPage() {
         {deviceId && (
           <Button
             onClick={() => {
-              setScheduledAtLocal(defaultDateTimeLocal());
+              setScheduledAtLocal(defaultScheduleDateTimeLocal(15));
               setCreateOpen(true);
             }}
           >
@@ -227,7 +221,6 @@ export default function ScheduledPage() {
 
       {deviceId && (
         <>
-          {/* Filter Controls */}
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-3">
             <div className="flex flex-wrap items-center gap-1.5">
               {statusFilters.map((item) => (
@@ -239,7 +232,7 @@ export default function ScheduledPage() {
                     setOffset(0);
                   }}
                   className={cn(
-                    'h-8 rounded-lg px-2.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer',
+                    'h-8 shrink-0 cursor-pointer whitespace-nowrap rounded-lg px-2.5 text-xs font-medium transition-colors',
                     statusFilter === item.key
                       ? 'bg-primary text-primary-foreground'
                       : 'text-muted-foreground hover:bg-muted hover:text-foreground',
@@ -341,24 +334,27 @@ export default function ScheduledPage() {
                               {previewText}
                             </p>
                             {item.last_error && (
-                              <p className="mt-0.5 truncate text-[11px] text-destructive" title={item.last_error}>
+                              <p
+                                className="mt-0.5 truncate text-[11px] text-destructive"
+                                title={item.last_error}
+                              >
                                 {item.last_error}
                               </p>
                             )}
                           </td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
+                          <td className="px-4 py-3 text-xs whitespace-nowrap text-muted-foreground">
                             {recurrenceLabels[item.recurrence] || item.recurrence}
                           </td>
-                          <td className="px-4 py-3 text-xs tabular-nums text-muted-foreground whitespace-nowrap">
-                            {nextRunRaw ? new Date(nextRunRaw).toLocaleString() : '—'}
+                          <td className="px-4 py-3 text-xs whitespace-nowrap text-muted-foreground tabular-nums">
+                            {nextRunRaw ? formatDate(nextRunRaw, lang) : '—'}
                           </td>
-                          <td className="px-4 py-3 text-xs tabular-nums text-muted-foreground whitespace-nowrap">
+                          <td className="px-4 py-3 text-xs whitespace-nowrap text-muted-foreground tabular-nums">
                             {item.occurrence_limit
                               ? `${item.occurrence_count}/${item.occurrence_limit}`
                               : item.occurrence_count}
                           </td>
                           <td className="px-4 py-3 text-xs font-medium whitespace-nowrap">
-                            <span className={statusColorClass(item.status)}>
+                            <span className={statusToneClass(item.status)}>
                               {statusLabels[item.status] || item.status}
                             </span>
                           </td>
@@ -485,116 +481,23 @@ export default function ScheduledPage() {
             />
           </div>
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div>
-              <Label htmlFor="sched-at">{t.scheduled.scheduledAtLabel}</Label>
-              <Input
-                id="sched-at"
-                type="datetime-local"
-                dir="ltr"
-                className="mt-1.5"
-                value={scheduledAtLocal}
-                onChange={(e) => setScheduledAtLocal(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="sched-tz">{t.scheduled.timezoneLabel}</Label>
-              <Input
-                id="sched-tz"
-                dir="ltr"
-                className="mt-1.5"
-                value={timezone}
-                onChange={(e) => setTimezone(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div>
-            <Label htmlFor="sched-recurrence">{t.scheduled.recurrenceLabel}</Label>
-            <select
-              id="sched-recurrence"
-              value={recurrence}
-              onChange={(e) => setRecurrence(e.target.value as ScheduleRecurrence)}
-              className="mt-1.5 h-9 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-ring"
-            >
-              <option value="once">{t.scheduled.recurrenceOnce}</option>
-              <option value="daily">{t.scheduled.recurrenceDaily}</option>
-              <option value="weekly">{t.scheduled.recurrenceWeekly}</option>
-              <option value="monthly">{t.scheduled.recurrenceMonthly}</option>
-            </select>
-          </div>
-
-          {recurrence === 'weekly' && (
-            <div>
-              <Label>{t.scheduled.weekdaysLabel}</Label>
-              <div className="mt-1.5 flex flex-wrap gap-1.5">
-                {t.scheduled.weekdaysShort.map((dayLabel, idx) => {
-                  const active = weekdays.includes(idx);
-                  return (
-                    <button
-                      key={dayLabel}
-                      type="button"
-                      onClick={() => toggleWeekday(idx)}
-                      className={cn(
-                        'h-8 rounded-lg border px-2.5 text-xs font-medium cursor-pointer transition-colors',
-                        active
-                          ? 'border-primary bg-primary text-primary-foreground'
-                          : 'border-border bg-background text-muted-foreground hover:bg-muted',
-                      )}
-                    >
-                      {dayLabel}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {recurrence === 'monthly' && (
-            <div>
-              <Label htmlFor="sched-dom">{t.scheduled.dayOfMonthLabel}</Label>
-              <Input
-                id="sched-dom"
-                type="number"
-                min={1}
-                max={31}
-                dir="ltr"
-                className="mt-1.5"
-                value={dayOfMonth}
-                onChange={(e) => setDayOfMonth(e.target.value)}
-              />
-            </div>
-          )}
-
-          {recurrence !== 'once' && (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <Label htmlFor="sched-limit">{t.scheduled.occurrenceLimitLabel}</Label>
-                <Input
-                  id="sched-limit"
-                  type="number"
-                  min={1}
-                  dir="ltr"
-                  className="mt-1.5"
-                  value={occurrenceLimit}
-                  onChange={(e) => setOccurrenceLimit(e.target.value)}
-                />
-              </div>
-              <div>
-                <Label htmlFor="sched-end">{t.scheduled.endAtLabel}</Label>
-                <Input
-                  id="sched-end"
-                  type="datetime-local"
-                  dir="ltr"
-                  className="mt-1.5"
-                  value={endAtLocal}
-                  onChange={(e) => setEndAtLocal(e.target.value)}
-                />
-              </div>
-            </div>
-          )}
+          <ScheduleRecurrenceFields
+            idPrefix="sched"
+            scheduledAtLocal={scheduledAtLocal}
+            onScheduledAtChange={setScheduledAtLocal}
+            timezone={timezone}
+            onTimezoneChange={setTimezone}
+            recurrence={recurrence}
+            onRecurrenceChange={setRecurrence}
+            weekdays={weekdays}
+            onWeekdaysChange={setWeekdays}
+            dayOfMonth={dayOfMonth}
+            onDayOfMonthChange={setDayOfMonth}
+            occurrenceLimit={occurrenceLimit}
+            onOccurrenceLimitChange={setOccurrenceLimit}
+            endAtLocal={endAtLocal}
+            onEndAtChange={setEndAtLocal}
+          />
 
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
@@ -619,10 +522,11 @@ export default function ScheduledPage() {
         }
       >
         <div className="flex justify-end gap-2 pt-2">
-          <Button variant="outline" onClick={() => setConfirmCancelTarget(null)}>
+          <Button type="button" variant="outline" onClick={() => setConfirmCancelTarget(null)}>
             {t.cancel}
           </Button>
           <Button
+            type="button"
             variant="destructive"
             disabled={actionMutation.isPending || !confirmCancelTarget}
             onClick={() => {

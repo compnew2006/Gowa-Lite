@@ -104,11 +104,13 @@ export interface UnifiedChat extends ChatInfo {
   device_id: string;
   device_display_name: string;
   device_state: DeviceState;
+  unread_count?: number;
 }
 
 export interface UnifiedChatsResponse {
   data: UnifiedChat[];
   total: number;
+  total_unread?: number;
   accounts: AccountSummary[];
   device_errors: Array<{
     device_id: string;
@@ -139,12 +141,30 @@ export interface MessageInfo {
   filename: string;
   url: string;
   file_length: number;
+  is_revoked?: boolean;
+  revoked_at?: string;
+  revoked_by?: string;
+}
+
+export interface ConversationNote {
+  id: number;
+  device_id: string;
+  chat_jid: string;
+  created_by_id: number;
+  created_by_name: string;
+  content: string;
+  is_pinned: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Pagination {
   limit: number;
   offset: number;
   total: number;
+  live_total?: number;
+  raw_count?: number;
+  next_offset?: number;
 }
 
 export interface DownloadedMedia {

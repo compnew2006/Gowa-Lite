@@ -12,6 +12,19 @@ function renderInline(nodes: InlineNode[]): ReactNode[] {
     switch (node.type) {
       case 'text':
         return <Fragment key={index}>{node.text}</Fragment>;
+      case 'link':
+        return (
+          <a
+            key={index}
+            href={node.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(event) => event.stopPropagation()}
+            className="break-all text-sky-600 underline decoration-sky-600/50 underline-offset-2 transition-colors hover:text-sky-500 dark:text-sky-400 dark:decoration-sky-400/50 dark:hover:text-sky-300"
+          >
+            {node.text}
+          </a>
+        );
       case 'bold':
         return <strong key={index}>{renderInline(node.children)}</strong>;
       case 'italic':

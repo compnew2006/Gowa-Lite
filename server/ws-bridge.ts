@@ -36,14 +36,54 @@ interface BridgeClient {
   user: PublicUser;
 }
 
+export interface GowaUpstreamEvent {
+  code: string;
+  message: string;
+  result: unknown;
+}
+
+export function buildUpstreamWsTarget(
+  config: {url: string; username: string; password: string},
+  deviceId: string,
+  options?: {allowQueryAuth?: boolean},
+): {url: string; headers?: Record<string, string>} | null {
+  if (!config.url) return null;
+  try {
+    const httpUrl = new URL(config.url);
+    httpUrl.protocol = httpUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+    httpUrl.pathname = `${httpUrl.pathname.replace(/\/+$/, '')}/ws`;
+    if (deviceId) {
+      httpUrl.searchParams.set('device_id', deviceId);
+    }
+    let headers: Record<string, string> | undefined;
+    if (config.username && config.password) {
+      const encoded = Buffer.from(`${config.username}:${config.password}`, 'utf8').toString(
+        'base64',
+      );
+      headers = {Authorization: `Basic ${encoded}`};
+      if (options?.allowQueryAuth) {
+        httpUrl.searchParams.set('authorization', encoded);
+      }
+    }
+    return {url: httpUrl.toString(), headers};
+  } catch {
+    return null;
+  }
+}
+
 export class GowaWsBridge {
   private wss: WebSocketServer;
   private clients = new Set<BridgeClient>();
   private upstreamSockets = new Map<string, WebSocket>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private syncTimer: ReturnType<typeof setInterval> | null = null;
+  private onUpstreamEvent?: (deviceId: string, event: GowaUpstreamEvent) => void;
 
-  constructor(httpServer: HttpServer) {
+  constructor(
+    httpServer: HttpServer,
+    options?: {onUpstreamEvent?: (deviceId: string, event: GowaUpstreamEvent) => void},
+  ) {
+    this.onUpstreamEvent = options?.onUpstreamEvent;
     this.wss = new WebSocketServer({noServer: true});
 
     httpServer.on('upgrade', (request, socket, head) => {
@@ -154,32 +194,16 @@ export class GowaWsBridge {
 
   private connectUpstream(deviceId: string): void {
     const config = getGowaConfig();
-    if (!config.url) return;
-
-    let wsUrl: URL;
-    try {
-      const httpUrl = new URL(config.url);
-      httpUrl.protocol = httpUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-      httpUrl.pathname = `${httpUrl.pathname.replace(/\/+$/, '')}/ws`;
-      if (deviceId) {
-        httpUrl.searchParams.set('device_id', deviceId);
-      }
-      if (config.username && config.password) {
-        const encoded = Buffer.from(`${config.username}:${config.password}`, 'utf8').toString(
-          'base64',
-        );
-        httpUrl.searchParams.set('authorization', encoded);
-      }
-      wsUrl = httpUrl;
-    } catch {
-      return;
-    }
+    const target = buildUpstreamWsTarget(config, deviceId, {
+      allowQueryAuth: process.env.GOWA_WS_QUERY_AUTH === 'true',
+    });
+    if (!target) return;
 
     const existing = this.upstreamSockets.get(deviceId);
     if (existing) return;
 
     try {
-      const upstream = new WebSocket(wsUrl.toString());
+      const upstream = new WebSocket(target.url, {headers: target.headers});
       this.upstreamSockets.set(deviceId, upstream);
 
       upstream.on('message', (data) => {
@@ -190,10 +214,18 @@ export class GowaWsBridge {
             result?: unknown;
           };
           if (parsed && typeof parsed.code === 'string') {
-            this.broadcast({
+            const eventPayload: GowaUpstreamEvent = {
               code: parsed.code,
               message: parsed.message ?? '',
               result: parsed.result ?? null,
+            };
+            try {
+              this.onUpstreamEvent?.(deviceId, eventPayload);
+            } catch (err) {
+              console.error('[ws-bridge] onUpstreamEvent error', err);
+            }
+            this.broadcast({
+              ...eventPayload,
               device_id: deviceId || undefined,
             });
           }

@@ -1,6 +1,6 @@
 import {useEffect, useRef, useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
-import {Download, FileText, Image as ImageIcon, Loader2, RefreshCw} from 'lucide-react';
+import {Download, ExternalLink, FileText, Image as ImageIcon, Loader2, RefreshCw} from 'lucide-react';
 import {downloadUnifiedMedia, fetchAuthorizedBlobUrl} from '@/api/client';
 import type {MessageInfo} from '@/api/types';
 import {Button} from '@/components/ui/button';
@@ -21,7 +21,20 @@ function isImageAttachment(message: MessageInfo, resolvedFilename?: string): boo
   return false;
 }
 
+function isLinkMessage(message: MessageInfo): boolean {
+  return message.media_type === 'link' || message.media_type === 'url';
+}
+
+function normalizeHref(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (/^www\./i.test(trimmed)) return `https://${trimmed}`;
+  return null;
+}
+
 function shouldAutoFetch(message: MessageInfo): boolean {
+  if (isLinkMessage(message)) return false;
   if (isImageAttachment(message)) return true;
   if (message.media_type === 'audio' || message.media_type === 'video') {
     return !message.file_length || message.file_length <= AUTO_MEDIA_MAX_BYTES;
@@ -32,6 +45,8 @@ function shouldAutoFetch(message: MessageInfo): boolean {
 export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceId: string}) {
   const {lang, t} = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
+  const isLink = isLinkMessage(message);
+  const linkHref = isLink ? normalizeHref(message.url || message.content) : null;
   const autoFetch = shouldAutoFetch(message);
   const [inView, setInView] = useState(!autoFetch);
   const [requested, setRequested] = useState(autoFetch);
@@ -109,6 +124,31 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
   const isImage = isImageAttachment(message, query.data?.filename);
   const label =
     t.chats.mediaLabels[message.media_type] || message.media_type || t.chats.mediaLabels.file;
+
+  if (isLink) {
+    if (!linkHref) return null;
+    return (
+      <a
+        href={linkHref}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(event) => event.stopPropagation()}
+        className="mt-2 flex w-full max-w-xs items-center gap-2.5 rounded-lg border border-black/10 bg-black/10 px-3 py-2 text-start transition-colors hover:bg-black/15 dark:border-white/10 dark:bg-black/25 dark:hover:bg-black/35"
+      >
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
+          <ExternalLink className="size-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          {message.filename && (
+            <p className="truncate text-xs font-medium text-foreground">{message.filename}</p>
+          )}
+          <p dir="ltr" className="truncate text-xs text-sky-600 underline dark:text-sky-400">
+            {linkHref}
+          </p>
+        </div>
+      </a>
+    );
+  }
 
   if (!requested) {
     return (

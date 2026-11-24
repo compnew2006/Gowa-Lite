@@ -5,6 +5,10 @@ import {useAuthStore} from '@/stores/auth';
 export const http = axios.create({
   baseURL: '/api',
   timeout: 30_000,
+  withCredentials: true,
+  headers: {
+    'X-Requested-With': 'XMLHttpRequest',
+  },
 });
 
 http.interceptors.request.use((config) => {

@@ -1,4 +1,5 @@
 import {useState} from 'react';
+import {useQuery} from '@tanstack/react-query';
 import {
   CalendarClock,
   LogOut,
@@ -16,7 +17,7 @@ import {
 } from 'lucide-react';
 import {NavLink, Outlet, useLocation, useNavigate} from 'react-router-dom';
 import {toast} from 'sonner';
-import {logoutUser, updateMyTheme} from '@/api/client';
+import {listUnifiedChats, logoutUser, updateMyTheme} from '@/api/client';
 import {LanguageToggle} from '@/components/language-toggle';
 import {Button} from '@/components/ui/button';
 import {useI18n} from '@/lib/i18n';
@@ -34,6 +35,15 @@ export function AppShell() {
   const clearSession = useAuthStore((s) => s.clearSession);
   const wsStatus = useWsStore((s) => s.status);
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  const unreadQuery = useQuery({
+    queryKey: ['unified-chats', [], '', false],
+    queryFn: () => listUnifiedChats({}),
+    enabled: Boolean(user),
+    refetchInterval: 30_000,
+    staleTime: 20_000,
+  });
+  const totalUnread = unreadQuery.data?.total_unread ?? 0;
 
   const primaryNav = [
     {to: '/chats', label: t.nav.chats, icon: MessagesSquare, adminOnly: false},
@@ -104,7 +114,11 @@ export function AppShell() {
               <NavLink
                 key={to}
                 to={to}
-                title={isChats ? `${label} — ${wsTitle}` : label}
+                title={
+                  isChats
+                    ? `${label}${totalUnread > 0 ? ` (${t.chats.unreadLabel(totalUnread)})` : ''} — ${wsTitle}`
+                    : label
+                }
                 aria-label={label}
                 className={({isActive}) =>
                   cn(
@@ -116,11 +130,19 @@ export function AppShell() {
                 }
               >
                 <Icon className="size-5" />
+                {isChats && totalUnread > 0 && (
+                  <span
+                    aria-label={t.chats.unreadLabel(totalUnread)}
+                    className="absolute -end-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground tabular-nums ring-2 ring-rail"
+                  >
+                    {totalUnread > 99 ? '99+' : totalUnread}
+                  </span>
+                )}
                 {isChats && (
                   <span
                     aria-hidden="true"
                     className={cn(
-                      'absolute end-1.5 top-1.5 size-2 rounded-full ring-2 ring-rail',
+                      'absolute end-1.5 bottom-1.5 size-2 rounded-full ring-2 ring-rail',
                       wsStatus === 'connected'
                         ? 'bg-live'
                         : wsStatus === 'connecting'
@@ -224,7 +246,12 @@ export function AppShell() {
                   }
                 >
                   <Icon className="size-4 shrink-0" />
-                  <span>{label}</span>
+                  <span className="flex-1">{label}</span>
+                  {to === '/chats' && totalUnread > 0 && (
+                    <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground tabular-nums">
+                      {totalUnread > 99 ? '99+' : totalUnread}
+                    </span>
+                  )}
                 </NavLink>
               ))}
             </nav>

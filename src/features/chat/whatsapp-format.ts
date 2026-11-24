@@ -4,6 +4,7 @@
  */
 export type InlineNode =
   | {type: 'text'; text: string}
+  | {type: 'link'; text: string; href: string}
   | {type: 'bold' | 'italic' | 'strike'; children: InlineNode[]}
   | {type: 'code'; text: string}
   | {type: 'mono'; text: string};
@@ -98,12 +99,63 @@ function findClose(text: string, marker: string, openIndex: number): number {
   return -1;
 }
 
+const URL_REGEX = /(https?:\/\/[^\s<>]+|www\.[^\s<>]+)/i;
+const TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', '?', ')', ']', '"', "'", '،', '؛', '؟']);
+
+function trimTrailingPunctuation(rawUrl: string): string {
+  let url = rawUrl;
+  while (url.length > 0) {
+    const last = url[url.length - 1];
+    if (!TRAILING_PUNCTUATION.has(last)) break;
+    if (last === ')') {
+      const openCount = (url.match(/\(/g) ?? []).length;
+      const closeCount = (url.match(/\)/g) ?? []).length;
+      if (closeCount <= openCount) break;
+    }
+    if (last === ']') {
+      const openCount = (url.match(/\[/g) ?? []).length;
+      const closeCount = (url.match(/\]/g) ?? []).length;
+      if (closeCount <= openCount) break;
+    }
+    url = url.slice(0, -1);
+  }
+  return url;
+}
+
+function normalizeUrlHref(url: string): string {
+  return url.toLowerCase().startsWith('www.') ? `https://${url}` : url;
+}
+
 export function parseInline(text: string): InlineNode[] {
   const nodes: InlineNode[] = [];
   const unclosed = new Set<string>();
   let buffer = '';
   let index = 0;
   while (index < text.length) {
+    const rest = text.slice(index);
+    const prev = text[index - 1];
+    if (
+      (prev === undefined || !WORD_CHAR.test(prev)) &&
+      (rest.startsWith('http://') ||
+        rest.startsWith('https://') ||
+        rest.startsWith('HTTP://') ||
+        rest.startsWith('HTTPS://') ||
+        rest.startsWith('www.') ||
+        rest.startsWith('WWW.'))
+    ) {
+      const match = URL_REGEX.exec(rest);
+      if (match && match.index === 0) {
+        const cleanUrl = trimTrailingPunctuation(match[0]);
+        if (cleanUrl) {
+          if (buffer) nodes.push({type: 'text', text: buffer});
+          buffer = '';
+          nodes.push({type: 'link', text: cleanUrl, href: normalizeUrlHref(cleanUrl)});
+          index += cleanUrl.length;
+          continue;
+        }
+      }
+    }
+
     const char = text[index];
     const type = INLINE_MARKERS[char];
     if (type && !unclosed.has(char) && canOpen(text, index)) {

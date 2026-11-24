@@ -7,6 +7,7 @@ import type {
   BusinessProfileResponse,
   ChatInfo,
   CheckResponse,
+  ConversationNote,
   CreateSchedulePayload,
   DeviceStatus,
   DirectoryResponse,
@@ -258,8 +259,126 @@ export function sendUnifiedTextMessage(
   deviceId: string,
   chatJid: string,
   message: string,
+  replyMessageId?: string,
 ): Promise<{message_id: string; status: string}> {
-  return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/send`, {message}));
+  return results(
+    http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/send`, {
+      message,
+      ...(replyMessageId ? {reply_message_id: replyMessageId} : {}),
+    }),
+  );
+}
+
+export function sendUnifiedMessageReaction(
+  deviceId: string,
+  chatJid: string,
+  messageId: string,
+  emoji: string,
+): Promise<unknown> {
+  return results(
+    http.post(
+      `/unified/chats/${enc(deviceId)}/${enc(chatJid)}/messages/${enc(messageId)}/reaction`,
+      {emoji},
+    ),
+  );
+}
+
+export function markUnifiedChatRead(
+  deviceId: string,
+  chatJid: string,
+): Promise<{chat_jid: string; last_read_seq: number}> {
+  return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/read`));
+}
+
+// Conversation Notes (per chat)
+export async function listUnifiedChatNotes(
+  deviceId: string,
+  chatJid: string,
+): Promise<{notes: ConversationNote[]; total: number}> {
+  const res = await results<{notes: ConversationNote[]; total: number} | null>(
+    http.get(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/notes`),
+  );
+  return {
+    notes: res?.notes ?? [],
+    total: res?.total ?? 0,
+  };
+}
+
+export function createUnifiedChatNote(
+  deviceId: string,
+  chatJid: string,
+  payload: {content: string; is_pinned?: boolean},
+): Promise<ConversationNote> {
+  return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/notes`, payload));
+}
+
+export function updateUnifiedChatNote(
+  deviceId: string,
+  chatJid: string,
+  noteId: number,
+  payload: {content?: string; is_pinned?: boolean},
+): Promise<ConversationNote> {
+  return results(
+    http.patch(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/notes/${noteId}`, payload),
+  );
+}
+
+export async function deleteUnifiedChatNote(
+  deviceId: string,
+  chatJid: string,
+  noteId: number,
+): Promise<void> {
+  await http.delete(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/notes/${noteId}`);
+}
+
+// In-Chat Scheduled Messages
+export async function listUnifiedChatSchedules(
+  deviceId: string,
+  chatJid: string,
+  status?: string,
+): Promise<ScheduleList> {
+  const res = await results<ScheduleList | null>(
+    http.get(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/schedules`, {
+      params: {status: status && status !== 'all' ? status : undefined},
+    }),
+  );
+  return {
+    data: res?.data ?? [],
+    pagination: res?.pagination ?? {limit: 100, offset: 0, total: 0},
+  };
+}
+
+export function createUnifiedChatSchedule(
+  deviceId: string,
+  chatJid: string,
+  payload: Omit<CreateSchedulePayload, 'phone'>,
+): Promise<unknown> {
+  return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/schedules`, payload));
+}
+
+export function updateUnifiedChatSchedule(
+  deviceId: string,
+  chatJid: string,
+  scheduleId: string,
+  payload: {scheduled_at: string; message?: string},
+): Promise<unknown> {
+  return results(
+    http.patch(
+      `/unified/chats/${enc(deviceId)}/${enc(chatJid)}/schedules/${enc(scheduleId)}`,
+      payload,
+    ),
+  );
+}
+
+export async function actionUnifiedChatSchedule(
+  deviceId: string,
+  chatJid: string,
+  scheduleId: string,
+  action: 'pause' | 'resume' | 'cancel',
+): Promise<void> {
+  await http.post(
+    `/unified/chats/${enc(deviceId)}/${enc(chatJid)}/schedules/${enc(scheduleId)}/${action}`,
+  );
 }
 
 export function downloadUnifiedMedia(

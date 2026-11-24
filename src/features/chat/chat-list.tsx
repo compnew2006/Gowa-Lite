@@ -7,6 +7,7 @@ import {formatShortTime, isZeroTime} from '@/lib/format';
 import {useI18n} from '@/lib/i18n';
 import {matchesNormalizedQuery} from '@/lib/phone';
 import {cn} from '@/lib/utils';
+import {useAuthStore} from '@/stores/auth';
 
 export {avatarToneClass};
 
@@ -107,7 +108,9 @@ export function AccountMultiSelect({
             : 'h-9 w-full rounded-full bg-secondary px-3 text-xs font-medium text-foreground hover:bg-muted',
         )}
       >
-        <span className="max-w-[140px] truncate">{summaryText}</span>
+        <span className={cn('truncate', compactPill ? 'max-w-[220px]' : 'min-w-0 flex-1')}>
+          {summaryText}
+        </span>
         <ChevronDown
           className={cn(
             'size-3.5 shrink-0 opacity-75 transition-transform',
@@ -182,11 +185,11 @@ export function ChatList({
   headerActions,
   chats,
   accounts,
-  deviceErrors,
   selectedKey,
   selectedDeviceIds,
   search,
   hasMedia,
+  totalUnread,
   isLoading,
   isFetching,
   errorMessage,
@@ -200,11 +203,12 @@ export function ChatList({
   headerActions?: ReactNode;
   chats: UnifiedChat[];
   accounts: AccountSummary[];
-  deviceErrors: Array<{device_id: string; display_name: string; message: string}>;
+  deviceErrors?: Array<{device_id: string; display_name: string; message: string}>;
   selectedKey: string | null;
   selectedDeviceIds: string[];
   search: string;
   hasMedia: boolean;
+  totalUnread?: number;
   isLoading: boolean;
   isFetching: boolean;
   errorMessage: string | null;
@@ -215,25 +219,48 @@ export function ChatList({
   onSelect: (chat: UnifiedChat) => void;
 }) {
   const {lang, t} = useI18n();
-  const isAllActive = !hasMedia && selectedDeviceIds.length === 0;
+  const user = useAuthStore((s) => s.user);
+  const [unreadOnly, setUnreadOnly] = useState(false);
+
+  const computedUnreadCount = useMemo(
+    () => chats.reduce((sum, chat) => sum + Math.max(0, chat.unread_count ?? 0), 0),
+    [chats],
+  );
+  const totalUnreadCount = typeof totalUnread === 'number' ? totalUnread : computedUnreadCount;
+
+  const isAllActive = !hasMedia && !unreadOnly && selectedDeviceIds.length === 0;
   const visibleChats = useMemo(() => {
-    if (!search.trim()) return chats;
-    return chats.filter((chat) =>
+    let filtered = chats;
+    if (unreadOnly) {
+      filtered = filtered.filter((chat) => (chat.unread_count ?? 0) > 0);
+    }
+    if (!search.trim()) return filtered;
+    return filtered.filter((chat) =>
       matchesNormalizedQuery(
         [chatDisplayName(chat), formatJidPhone(chat.jid), chat.jid, chat.device_display_name],
         search,
       ),
     );
-  }, [chats, search]);
+  }, [chats, search, unreadOnly]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-card">
       {/* Top WhatsApp Sidebar Header */}
       {headerTitle && (
         <div className="flex h-[58px] shrink-0 items-center justify-between gap-2 px-4">
-          <h1 className="truncate text-xl font-bold tracking-tight text-foreground">
-            {headerTitle}
-          </h1>
+          <div className="flex min-w-0 items-center gap-2">
+            <h1 className="truncate text-xl font-bold tracking-tight text-foreground">
+              {headerTitle}
+            </h1>
+            {totalUnreadCount > 0 && (
+              <span
+                title={t.chats.unreadLabel(totalUnreadCount)}
+                className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground tabular-nums"
+              >
+                {totalUnreadCount > 99 ? '99+' : totalUnreadCount}
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-1">
             {headerActions}
             <button
@@ -250,8 +277,48 @@ export function ChatList({
         </div>
       )}
 
-      {/* Search & Filter Strip */}
+      {/* Search, Isolated User Unread Widget & Filter Strip */}
       <div className={cn('flex flex-col gap-2.5 px-3 pb-2.5', !headerTitle && 'pt-3')}>
+        {user && (
+          <button
+            type="button"
+            data-testid="user-unread-widget"
+            onClick={() => setUnreadOnly((prev) => !prev)}
+            aria-pressed={unreadOnly}
+            title={t.chats.userUnreadIsolatedHint}
+            className={cn(
+              'flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-xl border px-3 py-2 text-start transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+              unreadOnly
+                ? 'border-primary/50 bg-primary/10'
+                : 'border-border/80 bg-secondary/50 hover:bg-secondary/80',
+            )}
+          >
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-bold text-accent-foreground select-none">
+                {user.display_name.slice(0, 1).toUpperCase()}
+              </span>
+              <div className="min-w-0">
+                <p className="truncate text-xs font-semibold text-foreground">
+                  {t.chats.userUnreadTitle(user.display_name)}
+                </p>
+                <p className="truncate text-[11px] text-muted-foreground">
+                  {t.chats.userUnreadCountText(totalUnreadCount)}
+                </p>
+              </div>
+            </div>
+            <span
+              className={cn(
+                'inline-flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full px-2 text-xs font-bold tabular-nums',
+                totalUnreadCount > 0
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-background text-muted-foreground ring-1 ring-border',
+              )}
+            >
+              {totalUnreadCount > 99 ? '99+' : totalUnreadCount}
+            </span>
+          </button>
+        )}
+
         <div className="relative">
           <Search className="pointer-events-none absolute start-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <input
@@ -268,6 +335,7 @@ export function ChatList({
             type="button"
             onClick={() => {
               onHasMediaChange(false);
+              setUnreadOnly(false);
               onSelectedDeviceIdsChange([]);
             }}
             className={cn(
@@ -278,6 +346,24 @@ export function ChatList({
             )}
           >
             {t.scheduled.statusAll}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setUnreadOnly((prev) => !prev)}
+            className={cn(
+              'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full px-3 text-xs font-medium whitespace-nowrap shrink-0 transition-colors',
+              unreadOnly
+                ? 'bg-accent text-accent-foreground'
+                : 'bg-secondary text-muted-foreground hover:text-foreground',
+            )}
+          >
+            <span>{t.chats.unreadOnly}</span>
+            {totalUnreadCount > 0 && (
+              <span className="text-[11px] font-semibold tabular-nums">
+                {totalUnreadCount > 99 ? '99+' : totalUnreadCount}
+              </span>
+            )}
           </button>
 
           <button
@@ -315,13 +401,6 @@ export function ChatList({
         </div>
       </div>
 
-      {deviceErrors.length > 0 && (
-        <div className="mx-3 mb-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
-          {t.chats.deviceFetchErrorPrefix(deviceErrors.length)}{' '}
-          {deviceErrors.map((e) => `${e.display_name} (${e.message})`).join(' · ')}
-        </div>
-      )}
-
       {/* Chat Rows */}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {isLoading ? (
@@ -342,6 +421,8 @@ export function ChatList({
               const isSelected = selectedKey === key;
               const name = chatDisplayName(chat);
               const phone = formatJidPhone(chat.jid);
+              const unreadCount = Math.max(0, chat.unread_count ?? 0);
+              const hasUnread = unreadCount > 0;
               const timeLabel = isZeroTime(chat.last_message_time)
                 ? ''
                 : formatShortTime(chat.last_message_time, lang);
@@ -365,11 +446,21 @@ export function ChatList({
 
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline justify-between gap-2">
-                        <span className="truncate text-[14.5px] font-medium text-foreground">
+                        <span
+                          className={cn(
+                            'truncate text-[14.5px] text-foreground',
+                            hasUnread ? 'font-semibold' : 'font-medium',
+                          )}
+                        >
                           {name}
                         </span>
                         {timeLabel && (
-                          <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+                          <span
+                            className={cn(
+                              'shrink-0 text-[11px] tabular-nums',
+                              hasUnread ? 'font-semibold text-primary' : 'text-muted-foreground',
+                            )}
+                          >
                             {timeLabel}
                           </span>
                         )}
@@ -378,7 +469,7 @@ export function ChatList({
                       <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                         <span
                           title={chat.device_display_name}
-                          className="inline-flex max-w-[104px] shrink-0 items-center gap-1.5 rounded-md border border-border/80 bg-background/70 px-1.5 py-0.5 text-[10.5px] font-medium text-foreground/90"
+                          className="inline-flex min-w-0 max-w-[72%] items-center gap-1.5 rounded-md border border-border/80 bg-background/70 px-2 py-0.5 text-[11px] font-medium text-foreground/90"
                         >
                           <span
                             aria-hidden="true"
@@ -391,6 +482,15 @@ export function ChatList({
                         <span dir="ltr" className="min-w-0 flex-1 truncate font-mono text-[11px] tabular-nums">
                           {phone}
                         </span>
+                        {hasUnread && (
+                          <span
+                            aria-label={t.chats.unreadLabel(unreadCount)}
+                            title={t.chats.unreadLabel(unreadCount)}
+                            className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground tabular-nums"
+                          >
+                            {unreadCount > 99 ? '99+' : unreadCount}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </button>
