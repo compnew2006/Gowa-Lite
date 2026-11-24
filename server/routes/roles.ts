@@ -14,6 +14,12 @@ import {
   normalizePermissionsInput,
 } from '../rbac.ts';
 import type {AuthedRequest} from '../types.ts';
+import {
+  createRoleBodySchema,
+  parsePositiveIntId,
+  parseSchema,
+  updateRoleBodySchema,
+} from '../validation/schemas.ts';
 
 export function registerRoleRoutes(): Router {
   const router = createApiRouter();
@@ -41,16 +47,8 @@ export function registerRoleRoutes(): Router {
     requireAuth,
     requirePermission('roles', 'write'),
     (req: AuthedRequest, res) => {
-      const body = req.body as {
-        name?: unknown;
-        description?: unknown;
-        permissions?: unknown;
-        is_default?: unknown;
-      };
-      const name = typeof body.name === 'string' ? body.name : '';
-      const description = typeof body.description === 'string' ? body.description : '';
-
       try {
+        const body = parseSchema(createRoleBodySchema, req.body ?? {});
         const normalizedPermissions = normalizePermissionsInput(body.permissions);
         if (!isAdminSubject(req.user!)) {
           const disallowed = normalizedPermissions.filter(
@@ -66,8 +64,8 @@ export function registerRoleRoutes(): Router {
         }
 
         const created = createRole({
-          name,
-          description,
+          name: body.name,
+          description: body.description,
           permissions: normalizedPermissions,
           is_default: body.is_default === true,
         });
@@ -87,26 +85,15 @@ export function registerRoleRoutes(): Router {
     requireAuth,
     requirePermission('roles', 'write'),
     (req: AuthedRequest, res) => {
-      const roleId = Number(req.params.id);
-      if (!Number.isInteger(roleId) || roleId <= 0) {
-        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الدور غير صالح'});
-        return;
-      }
-
-      const existing = getRoleById(roleId);
-      if (!existing) {
-        res.status(404).json({code: 'NOT_FOUND', message: 'الدور غير موجود'});
-        return;
-      }
-
-      const body = req.body as {
-        name?: unknown;
-        description?: unknown;
-        permissions?: unknown;
-        is_default?: unknown;
-      };
-
       try {
+        const roleId = parsePositiveIntId(req.params.id, 'معرّف الدور');
+        const existing = getRoleById(roleId);
+        if (!existing) {
+          res.status(404).json({code: 'NOT_FOUND', message: 'الدور غير موجود'});
+          return;
+        }
+
+        const body = parseSchema(updateRoleBodySchema, req.body ?? {});
         let normalizedPermissions: string[] | undefined;
         if (body.permissions !== undefined) {
           normalizedPermissions = normalizePermissionsInput(body.permissions);
@@ -125,10 +112,10 @@ export function registerRoleRoutes(): Router {
         }
 
         const updated = updateRole(roleId, {
-          name: typeof body.name === 'string' ? body.name : undefined,
-          description: typeof body.description === 'string' ? body.description : undefined,
+          name: body.name,
+          description: body.description,
           permissions: normalizedPermissions,
-          is_default: typeof body.is_default === 'boolean' ? body.is_default : undefined,
+          is_default: body.is_default,
         });
         res.json({
           code: 'SUCCESS',
@@ -146,12 +133,8 @@ export function registerRoleRoutes(): Router {
     requireAuth,
     requirePermission('roles', 'delete'),
     (req, res) => {
-      const roleId = Number(req.params.id);
-      if (!Number.isInteger(roleId) || roleId <= 0) {
-        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الدور غير صالح'});
-        return;
-      }
       try {
+        const roleId = parsePositiveIntId(req.params.id, 'معرّف الدور');
         const deleted = deleteRole(roleId);
         if (!deleted) {
           res.status(404).json({code: 'NOT_FOUND', message: 'الدور غير موجود'});

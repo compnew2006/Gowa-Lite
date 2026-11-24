@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type {Server as HttpServer} from 'node:http';
 import {WebSocket, WebSocketServer} from 'ws';
-import {getGowaConfig, getUserById, type PublicUser} from './db.ts';
+import {getGowaConfig, getUserById, getUserCacheVersion, type PublicUser} from './db.ts';
 import {gowaFetch, type GowaDevice} from './gowa-client.ts';
 import {hasAnyPermission, hasDeviceAccess, hasPermission} from './rbac.ts';
 
@@ -164,6 +164,7 @@ export class GowaWsBridge {
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private syncTimer: ReturnType<typeof setInterval> | null = null;
   private onUpstreamEvent?: (deviceId: string, event: GowaUpstreamEvent) => void;
+  private userCache = new Map<number, {user: PublicUser | null; version: number; fetchedAt: number}>();
 
   constructor(
     httpServer: HttpServer,
@@ -226,11 +227,23 @@ export class GowaWsBridge {
     void this.reconcileUpstreams();
   }
 
+  private getCachedLiveUser(userId: number): PublicUser | null {
+    const version = getUserCacheVersion();
+    const now = Date.now();
+    const hit = this.userCache.get(userId);
+    if (hit && hit.version === version && now - hit.fetchedAt < 10_000) {
+      return hit.user;
+    }
+    const fresh = getUserById(userId);
+    this.userCache.set(userId, {user: fresh, version, fetchedAt: now});
+    return fresh;
+  }
+
   broadcast(payload: unknown): void {
     let defaultSerialized: string | null = null;
     for (const client of this.clients) {
       if (client.socket.readyState !== WebSocket.OPEN) continue;
-      const liveUser = getUserById(client.userId);
+      const liveUser = this.getCachedLiveUser(client.userId);
       if (!liveUser || !liveUser.is_active) {
         client.socket.close(4001, 'Session revoked');
         this.clients.delete(client);
@@ -246,6 +259,14 @@ export class GowaWsBridge {
         }
         client.socket.send(defaultSerialized);
       }
+    }
+  }
+
+  sendToUser(userId: number, payload: unknown): void {
+    const serialized = JSON.stringify(payload);
+    for (const client of this.clients) {
+      if (client.userId !== userId || client.socket.readyState !== WebSocket.OPEN) continue;
+      client.socket.send(serialized);
     }
   }
 
@@ -317,8 +338,9 @@ export class GowaWsBridge {
       this.upstreamSockets.set(deviceId, upstream);
 
       upstream.on('message', (data) => {
+        const raw = data.toString();
         try {
-          const parsed = JSON.parse(data.toString()) as {
+          const parsed = JSON.parse(raw) as {
             code?: string;
             message?: string;
             result?: unknown;
@@ -339,8 +361,10 @@ export class GowaWsBridge {
               device_id: deviceId || undefined,
             });
           }
-        } catch {
-          // ignore non-JSON frames
+        } catch (err) {
+          if (raw.trim().startsWith('{')) {
+            console.warn('[ws-bridge] malformed upstream JSON frame', deviceId || 'default', err);
+          }
         }
       });
 
@@ -351,13 +375,20 @@ export class GowaWsBridge {
         }
       });
 
-      upstream.on('error', () => {
+      upstream.on('error', (err) => {
+        console.error('[ws-bridge] upstream socket error', deviceId || 'default', err.message);
         if (this.upstreamSockets.get(deviceId) === upstream) {
           this.upstreamSockets.delete(deviceId);
-          upstream.close();
+          this.scheduleReconnect(deviceId);
+          try {
+            upstream.terminate();
+          } catch {
+            // ignore terminate failure
+          }
         }
       });
-    } catch {
+    } catch (err) {
+      console.error('[ws-bridge] upstream connect failed', deviceId || 'default', err);
       this.scheduleReconnect(deviceId);
     }
   }

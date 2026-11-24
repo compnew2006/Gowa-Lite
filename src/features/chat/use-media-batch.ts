@@ -170,7 +170,7 @@ export function useMediaBatch({
       }
 
       const targetPath = resolved.file_path || resolved.file_url || '';
-      const fileUrl = `/api/unified/media/file?path=${encodeURIComponent(targetPath)}`;
+      const fileUrl = `/api/unified/media/file?deviceId=${encodeURIComponent(deviceId)}&path=${encodeURIComponent(targetPath)}`;
       const {bytes, contentType} = await fetchAuthorizedMediaBytes(fileUrl, signal);
       const filename = resolveMediaFilename(message, contentType, resolved.filename);
       return {bytes, contentType, filename};

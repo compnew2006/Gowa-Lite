@@ -355,7 +355,7 @@ export function MessageViewHeader({
               type="button"
               onClick={onCloseSearch}
               aria-label={t.close}
-              className="cursor-pointer text-muted-foreground hover:text-foreground"
+              className="cursor-pointer rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
             >
               <X className="size-3.5" />
             </button>
@@ -370,7 +370,7 @@ export function MessageViewHeader({
             aria-label={t.chats.notesTitle}
             aria-pressed={drawerTab === 'notes'}
             className={cn(
-              'flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 transition-colors',
+              'flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 transition-colors focus-visible:outline-2 focus-visible:outline-ring',
               drawerTab === 'notes'
                 ? 'bg-accent text-accent-foreground'
                 : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
@@ -391,7 +391,7 @@ export function MessageViewHeader({
             aria-label={t.chats.scheduledMessagesTitle}
             aria-pressed={drawerTab === 'scheduled'}
             className={cn(
-              'flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 transition-colors',
+              'flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 transition-colors focus-visible:outline-2 focus-visible:outline-ring',
               drawerTab === 'scheduled'
                 ? 'bg-accent text-accent-foreground'
                 : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
@@ -411,7 +411,7 @@ export function MessageViewHeader({
           aria-label={t.chats.mediaOnly}
           aria-pressed={mediaOnly}
           className={cn(
-            'flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors',
+            'flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-ring',
             mediaOnly
               ? 'bg-accent text-accent-foreground'
               : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
@@ -427,7 +427,7 @@ export function MessageViewHeader({
           aria-label={t.chats.selectMediaTitle}
           aria-pressed={selectMode}
           className={cn(
-            'flex h-9 cursor-pointer items-center justify-center gap-1 rounded-full px-2.5 transition-colors',
+            'flex h-9 cursor-pointer items-center justify-center gap-1 rounded-full px-2.5 transition-colors focus-visible:outline-2 focus-visible:outline-ring',
             selectMode
               ? 'bg-accent text-accent-foreground'
               : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
@@ -446,7 +446,7 @@ export function MessageViewHeader({
           aria-label={t.chats.searchMessagesPlaceholder}
           aria-pressed={searchOpen}
           className={cn(
-            'flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors',
+            'flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-ring',
             searchOpen
               ? 'bg-secondary text-foreground'
               : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
@@ -461,7 +461,7 @@ export function MessageViewHeader({
           onClick={onFetchHistory}
           title={t.chats.fetchOlderFromPhone}
           aria-label={t.chats.fetchOlderFromPhone}
-          className="flex size-9 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
+          className="flex size-9 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
         >
           {isHistoryPending ? (
             <Loader2 className="size-4 animate-spin" />

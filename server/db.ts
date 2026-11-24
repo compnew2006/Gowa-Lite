@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import {DatabaseSync, type SQLInputValue} from 'node:sqlite';
 import dotenv from 'dotenv';
@@ -88,9 +89,97 @@ function queryOne<T extends object>(sql: string, ...params: SQLInputValue[]): T 
   return db.prepare(sql).get(...params) as T | undefined;
 }
 
+let userCacheVersion = 1;
+
+export function getUserCacheVersion(): number {
+  return userCacheVersion;
+}
+
+export function bumpUserCacheVersion(): void {
+  userCacheVersion += 1;
+}
+
+let cachedSettingsKey: Buffer | null = null;
+const SETTINGS_ENC_PREFIX = 'enc:v1:';
+
+function getSettingsEncryptionKey(): Buffer {
+  const envSecret = process.env.GOWA_SETTINGS_SECRET?.trim();
+  if (envSecret) {
+    return crypto.createHash('sha256').update(envSecret, 'utf8').digest();
+  }
+  if (cachedSettingsKey) return cachedSettingsKey;
+
+  if (dbPath === ':memory:') {
+    cachedSettingsKey = crypto.randomBytes(32);
+    return cachedSettingsKey;
+  }
+
+  const keyFilePath = `${dbPath}.key`;
+  try {
+    if (fs.existsSync(keyFilePath)) {
+      const rawHex = fs.readFileSync(keyFilePath, 'utf8').trim();
+      const buf = Buffer.from(rawHex, 'hex');
+      if (buf.length === 32) {
+        cachedSettingsKey = buf;
+        return cachedSettingsKey;
+      }
+    }
+  } catch {
+    // Regenerate key below if unreadable
+  }
+
+  const generated = crypto.randomBytes(32);
+  fs.mkdirSync(path.dirname(keyFilePath), {recursive: true});
+  fs.writeFileSync(keyFilePath, generated.toString('hex'), {encoding: 'utf8', mode: 0o600});
+  try {
+    fs.chmodSync(keyFilePath, 0o600);
+  } catch {
+    // Best-effort chmod on non-POSIX filesystems
+  }
+  cachedSettingsKey = generated;
+  return cachedSettingsKey;
+}
+
+export function encryptSettingSecret(plainText: string): string {
+  if (!plainText) return '';
+  if (plainText.startsWith(SETTINGS_ENC_PREFIX)) return plainText;
+  const key = getSettingsEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plainText, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${SETTINGS_ENC_PREFIX}${iv.toString('base64')}:${tag.toString('base64')}:${encrypted.toString('base64')}`;
+}
+
+export function decryptSettingSecret(storedValue: string): {value: string; wasPlaintext: boolean} {
+  if (!storedValue) return {value: '', wasPlaintext: false};
+  if (!storedValue.startsWith(SETTINGS_ENC_PREFIX)) {
+    return {value: storedValue, wasPlaintext: true};
+  }
+  const rest = storedValue.slice(SETTINGS_ENC_PREFIX.length);
+  const parts = rest.split(':');
+  if (parts.length !== 3) {
+    throw new Error('Malformed encrypted setting secret');
+  }
+  const [ivB64, tagB64, cipherB64] = parts;
+  const key = getSettingsEncryptionKey();
+  const decipher = crypto.createDecipheriv(
+    'aes-256-gcm',
+    key,
+    Buffer.from(ivB64, 'base64'),
+  );
+  decipher.setAuthTag(Buffer.from(tagB64, 'base64'));
+  const plain = Buffer.concat([
+    decipher.update(Buffer.from(cipherB64, 'base64')),
+    decipher.final(),
+  ]).toString('utf8');
+  return {value: plain, wasPlaintext: false};
+}
+
 db.exec(`
   PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
+  PRAGMA busy_timeout = 5000;
 
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -253,6 +342,8 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_chat_assignments_status_owner
     ON chat_assignments(status, assigned_user_id, last_activity_ms DESC);
+  CREATE INDEX IF NOT EXISTS idx_chat_assignments_status_device_activity
+    ON chat_assignments(status, device_id, last_activity_ms DESC);
 
   CREATE TABLE IF NOT EXISTS chat_lifecycle_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -560,6 +651,7 @@ export function setUserPreferences(
        language = excluded.language,
        updated_at = datetime('now')`,
   ).run(userId, nextTheme, nextLanguage);
+  bumpUserCacheVersion();
 }
 
 export function setUserTheme(userId: number, theme: ThemePreference): void {
@@ -782,6 +874,7 @@ export function updateRole(
     }
 
     db.exec(`RELEASE SAVEPOINT ${sp}`);
+    bumpUserCacheVersion();
     return getRoleById(id);
   } catch (err) {
     db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
@@ -815,6 +908,7 @@ export function deleteRole(id: number): boolean {
     }
     const result = db.prepare('DELETE FROM roles WHERE id = ?').run(id);
     db.exec(`RELEASE SAVEPOINT ${sp}`);
+    if (result.changes > 0) bumpUserCacheVersion();
     return result.changes > 0;
   } catch (err) {
     db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
@@ -920,6 +1014,7 @@ export function createUser(input: {
     }
 
     db.exec(`RELEASE SAVEPOINT ${sp}`);
+    bumpUserCacheVersion();
     const created = getUserById(userId);
     if (!created) {
       throw new Error('Failed to load newly created user');
@@ -1012,6 +1107,7 @@ export function updateUser(
     }
 
     db.exec(`RELEASE SAVEPOINT ${sp}`);
+    bumpUserCacheVersion();
     return getUserById(id);
   } catch (err) {
     db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
@@ -1046,6 +1142,7 @@ export function deleteUser(id: number): boolean {
     ).run(Date.now(), id);
     const result = db.prepare('DELETE FROM users WHERE id = ?').run(id);
     db.exec(`RELEASE SAVEPOINT ${sp}`);
+    if (result.changes > 0) bumpUserCacheVersion();
     return result.changes > 0;
   } catch (err) {
     db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
@@ -1139,7 +1236,20 @@ export function setSetting(key: string, value: string): void {
 export function getGowaConfig(): GowaConfig {
   const url = (getSetting('gowa_url') ?? process.env.GOWA_URL ?? '').trim().replace(/\/+$/, '');
   const username = (getSetting('gowa_username') ?? process.env.GOWA_USERNAME ?? '').trim();
-  const password = getSetting('gowa_password') ?? process.env.GOWA_PASSWORD ?? '';
+  const storedPassword = getSetting('gowa_password');
+  let password = process.env.GOWA_PASSWORD ?? '';
+  if (storedPassword !== null) {
+    try {
+      const decoded = decryptSettingSecret(storedPassword);
+      password = decoded.value;
+      if (decoded.wasPlaintext && decoded.value) {
+        setSetting('gowa_password', encryptSettingSecret(decoded.value));
+      }
+    } catch (err) {
+      console.error('[db] failed to decrypt gowa_password setting', err);
+      password = '';
+    }
+  }
   return {url, username, password};
 }
 
@@ -1147,7 +1257,7 @@ export function setGowaConfig(config: {url: string; username: string; password?:
   setSetting('gowa_url', config.url.trim().replace(/\/+$/, ''));
   setSetting('gowa_username', config.username.trim());
   if (config.password !== undefined) {
-    setSetting('gowa_password', config.password);
+    setSetting('gowa_password', config.password ? encryptSettingSecret(config.password) : '');
   }
 }
 
@@ -1177,6 +1287,26 @@ export function setAccountAlias(deviceId: string, alias: string): Record<string,
   }
   setSetting('account_aliases', JSON.stringify(current));
   return current;
+}
+
+export function listKnownDeviceIds(): string[] {
+  const seen = new Set<string>();
+  for (const id of Object.keys(getAccountAliases())) {
+    const clean = id.trim();
+    if (clean) seen.add(clean);
+  }
+  const rows = queryAll<{device_id: string}>(
+    `SELECT DISTINCT device_id FROM user_device_access
+     UNION
+     SELECT DISTINCT device_id FROM chat_assignments
+     UNION
+     SELECT DISTINCT device_id FROM chat_sync_state`,
+  );
+  for (const row of rows) {
+    const clean = row.device_id?.trim();
+    if (clean) seen.add(clean);
+  }
+  return Array.from(seen).sort();
 }
 
 export interface CachedAvatarRow {
@@ -1330,6 +1460,15 @@ function rowToMessagePayload(row: CachedMessageRow): CachedMessagePayload {
   };
 }
 
+const CACHED_MESSAGE_COLUMNS = `
+  device_id, chat_jid, id, seq,
+  sender_jid, sender_display_name, content, timestamp, timestamp_ms,
+  is_from_me, media_type, reactions_json, context_metadata,
+  filename, url, file_length,
+  is_revoked, revoked_at, revoked_by,
+  is_unread_candidate, cached_at, updated_at
+`;
+
 export function getCachedMessage(
   deviceId: string,
   chatJid: string,
@@ -1337,7 +1476,7 @@ export function getCachedMessage(
 ): CachedMessagePayload | null {
   if (!deviceId || !chatJid || !messageId) return null;
   const row = queryOne<CachedMessageRow>(
-    'SELECT * FROM cached_messages WHERE device_id = ? AND chat_jid = ? AND id = ?',
+    `SELECT ${CACHED_MESSAGE_COLUMNS} FROM cached_messages WHERE device_id = ? AND chat_jid = ? AND id = ?`,
     deviceId,
     chatJid,
     messageId,
@@ -1360,7 +1499,7 @@ export function upsertCachedMessages(
   let seqCursor = nextMessageSeq();
 
   const selectStmt = db.prepare(
-    'SELECT * FROM cached_messages WHERE device_id = ? AND chat_jid = ? AND id = ?',
+    `SELECT ${CACHED_MESSAGE_COLUMNS} FROM cached_messages WHERE device_id = ? AND chat_jid = ? AND id = ?`,
   );
   const upsertStmt = db.prepare(`
     INSERT INTO cached_messages (
@@ -1625,7 +1764,7 @@ export function syncAndMergeChatMessages(
   const cachedById = new Map<string, CachedMessageRow>();
   if (liveMessages.length > 0) {
     const allForChat = queryAll<CachedMessageRow>(
-      'SELECT * FROM cached_messages WHERE device_id = ? AND chat_jid = ?',
+      `SELECT ${CACHED_MESSAGE_COLUMNS} FROM cached_messages WHERE device_id = ? AND chat_jid = ?`,
       deviceId,
       chatJid,
     );
@@ -1661,14 +1800,14 @@ export function syncAndMergeChatMessages(
     missingRevokedRows =
       hasMoreOlderLivePages && minLiveTs > 0
         ? queryAll<CachedMessageRow>(
-            `SELECT * FROM cached_messages
+            `SELECT ${CACHED_MESSAGE_COLUMNS} FROM cached_messages
              WHERE device_id = ? AND chat_jid = ? AND is_revoked = 1 AND timestamp_ms >= ?`,
             deviceId,
             chatJid,
             minLiveTs,
           )
         : queryAll<CachedMessageRow>(
-            `SELECT * FROM cached_messages
+            `SELECT ${CACHED_MESSAGE_COLUMNS} FROM cached_messages
              WHERE device_id = ? AND chat_jid = ? AND is_revoked = 1
              ORDER BY timestamp_ms DESC LIMIT 50`,
             deviceId,
@@ -1676,7 +1815,7 @@ export function syncAndMergeChatMessages(
           );
   } else if (minLiveTs > 0 && maxLiveTs > 0) {
     missingRevokedRows = queryAll<CachedMessageRow>(
-      `SELECT * FROM cached_messages
+      `SELECT ${CACHED_MESSAGE_COLUMNS} FROM cached_messages
        WHERE device_id = ? AND chat_jid = ? AND is_revoked = 1
          AND timestamp_ms >= ? AND timestamp_ms <= ?`,
       deviceId,

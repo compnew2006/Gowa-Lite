@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import zlib from 'node:zlib';
+import compression from 'compression';
 import dotenv from 'dotenv';
 import express, {type NextFunction, type Request, type Response} from 'express';
 import {cleanupExpiredRecords, closeDatabaseSafely} from './server/db.ts';
@@ -15,120 +15,13 @@ import {registerMiscRoutes} from './server/routes/misc.ts';
 import {registerRoleRoutes} from './server/routes/roles.ts';
 import {registerScheduleRoutes} from './server/routes/schedules.ts';
 import {registerUnifiedInboxRoutes} from './server/routes/unified-inbox.ts';
+import {parseTrustProxySetting} from './server/security.ts';
 import {handleUpstreamGowaEvent} from './server/services/chat-sync.ts';
 import {GowaWsBridge} from './server/ws-bridge.ts';
 
 dotenv.config({quiet: true});
 
 const DB_MAINTENANCE_INTERVAL_MS = 1000 * 60 * 60 * 6; // every 6 hours
-const COMPRESS_MIN_BYTES = 1024;
-const COMPRESSIBLE_MIME_RE =
-  /^(text\/|application\/(json|javascript|ecmascript|xml|wasm)|image\/svg\+xml)/i;
-
-function isCompressibleResponse(res: Response): boolean {
-  if (res.getHeader('Content-Encoding')) return false;
-  const contentType = res.getHeader('Content-Type');
-  const mime = typeof contentType === 'string' ? contentType : String(contentType ?? '');
-  return COMPRESSIBLE_MIME_RE.test(mime);
-}
-
-function createCompressionMiddleware(): express.RequestHandler {
-  return (req, res, next) => {
-    if (req.method === 'HEAD' || req.path === '/ws') {
-      next();
-      return;
-    }
-    const acceptEncoding = String(req.headers['accept-encoding'] ?? '');
-    if (!/\bgzip\b/i.test(acceptEncoding)) {
-      next();
-      return;
-    }
-
-    const originalWrite = res.write.bind(res);
-    const originalEnd = res.end.bind(res);
-    const chunks: Buffer[] = [];
-    let bufferedBytes = 0;
-    let passthrough = false;
-
-    const flushRaw = () => {
-      for (const chunk of chunks) {
-        originalWrite(chunk);
-      }
-      chunks.length = 0;
-      passthrough = true;
-    };
-
-    const normalizeChunk = (chunk: unknown, encoding?: BufferEncoding): Buffer | null => {
-      if (chunk === undefined || chunk === null) return null;
-      if (Buffer.isBuffer(chunk)) return chunk;
-      if (chunk instanceof Uint8Array) return Buffer.from(chunk);
-      return Buffer.from(String(chunk), encoding || 'utf8');
-    };
-
-    res.write = ((chunk: unknown, encodingOrCb?: BufferEncoding | (() => void), cb?: () => void) => {
-      const encoding = typeof encodingOrCb === 'string' ? encodingOrCb : undefined;
-      const callback = typeof encodingOrCb === 'function' ? encodingOrCb : cb;
-
-      if (passthrough) {
-        return encoding
-          ? originalWrite(chunk as string, encoding, callback)
-          : originalWrite(chunk as Buffer, callback);
-      }
-
-      if (!isCompressibleResponse(res)) {
-        flushRaw();
-        return encoding
-          ? originalWrite(chunk as string, encoding, callback)
-          : originalWrite(chunk as Buffer, callback);
-      }
-
-      const buf = normalizeChunk(chunk, encoding);
-      if (buf && buf.length > 0) {
-        chunks.push(buf);
-        bufferedBytes += buf.length;
-      }
-      if (bufferedBytes > 2 * 1024 * 1024) {
-        flushRaw();
-      }
-      if (callback) callback();
-      return true;
-    }) as Response['write'];
-
-    res.end = ((chunk?: unknown, encodingOrCb?: BufferEncoding | (() => void), cb?: () => void) => {
-      const encoding = typeof encodingOrCb === 'string' ? encodingOrCb : undefined;
-      const callback = typeof encodingOrCb === 'function' ? encodingOrCb : cb;
-
-      if (passthrough) {
-        return encoding
-          ? originalEnd(chunk as string, encoding, callback)
-          : originalEnd(chunk as Buffer, callback);
-      }
-
-      const tail = normalizeChunk(chunk, encoding);
-      if (tail && tail.length > 0) {
-        chunks.push(tail);
-        bufferedBytes += tail.length;
-      }
-
-      if (bufferedBytes < COMPRESS_MIN_BYTES || !isCompressibleResponse(res) || res.statusCode === 204 || res.statusCode === 304) {
-        const combined = chunks.length > 0 ? Buffer.concat(chunks) : undefined;
-        chunks.length = 0;
-        return originalEnd(combined, callback);
-      }
-
-      const raw = Buffer.concat(chunks);
-      chunks.length = 0;
-      const gz = zlib.gzipSync(raw, {level: 6});
-      res.removeHeader('Content-Length');
-      res.setHeader('Content-Encoding', 'gzip');
-      res.append('Vary', 'Accept-Encoding');
-      res.setHeader('Content-Length', String(gz.byteLength));
-      return originalEnd(gz, callback);
-    }) as Response['end'];
-
-    next();
-  };
-}
 
 async function startServer(): Promise<void> {
   const app = express();
@@ -142,7 +35,18 @@ async function startServer(): Promise<void> {
   });
 
   app.disable('x-powered-by');
-  app.use(createCompressionMiddleware());
+  app.set('trust proxy', parseTrustProxySetting(process.env.TRUST_PROXY));
+  if (process.env.ENABLE_COMPRESSION !== 'false') {
+    app.use(
+      compression({
+        threshold: 1024,
+        filter: (req, res) => {
+          if (req.path === '/ws' || req.method === 'HEAD') return false;
+          return compression.filter(req, res);
+        },
+      }),
+    );
+  }
   app.use(express.json({limit: '8mb'}));
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -165,7 +69,7 @@ async function startServer(): Promise<void> {
   });
 
   // Catch Express router/parser errors on /api/* (e.g. malformed %E0%A4%A URIError or invalid JSON body)
-  app.use('/api', (err: unknown, _req: Request, res: Response, next: NextFunction) => {
+  app.use('/api', (err: unknown, req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(err);
       return;
@@ -180,9 +84,18 @@ async function startServer(): Promise<void> {
       (('status' in err && (err as {status?: number}).status === 413) ||
         ('type' in err && (err as {type?: string}).type === 'entity.too.large'))
     ) {
+      const errLimit =
+        'limit' in err && typeof (err as {limit?: unknown}).limit === 'number'
+          ? Number((err as {limit?: number}).limit)
+          : null;
+      const maxMb = errLimit
+        ? Math.max(1, Math.round(errLimit / (1024 * 1024)))
+        : req.path.endsWith('/send-media')
+          ? 20
+          : 8;
       res.status(413).json({
         code: 'PAYLOAD_TOO_LARGE',
-        message: 'حجم الملف أو البيانات يتجاوز الحد الأقصى المسموح به (20 ميجابايت)',
+        message: `حجم الملف أو البيانات يتجاوز الحد الأقصى المسموح به (${maxMb} ميجابايت)`,
       });
       return;
     }

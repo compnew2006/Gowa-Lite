@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useRef, useState} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useQuery, useQueryClient} from '@tanstack/react-query';
 import {
   Columns2,
@@ -8,8 +8,9 @@ import {
   X,
 } from 'lucide-react';
 import {useSearchParams} from 'react-router-dom';
-import {listUnifiedChats} from '@/api/client';
-import type {AccountSummary, UnifiedChat} from '@/api/types';
+import {toast} from 'sonner';
+import {bulkUnifiedChatsLifecycle, listUnifiedChats} from '@/api/client';
+import type {AccountSummary, UnifiedChat, UnifiedChatTab} from '@/api/types';
 import {
   GowaSetupNotice,
   isGowaConnectionError,
@@ -70,6 +71,9 @@ function SplitWorkspacePane({
   accounts,
   globalJidAccountsMap,
   canRemove,
+  canViewAll,
+  canAssign,
+  canClose,
   onDeviceIdsChange,
   onRemove,
 }: {
@@ -78,25 +82,77 @@ function SplitWorkspacePane({
   accounts: AccountSummary[];
   globalJidAccountsMap: Map<string, OtherAccountRef[]>;
   canRemove: boolean;
+  canViewAll: boolean;
+  canAssign: boolean;
+  canClose: boolean;
   onDeviceIdsChange: (deviceIds: string[]) => void;
   onRemove: () => void;
 }) {
+  const queryClient = useQueryClient();
   const {t} = useI18n();
   const user = useAuthStore((s) => s.user);
   const canWriteChats = hasUserPermission(user, 'chats:write');
   const [search, setSearch] = useState('');
   const [hasMedia, setHasMedia] = useState(false);
+  const [activeTab, setActiveTab] = useState<UnifiedChatTab>(() =>
+    canViewAll ? 'all' : 'pending',
+  );
+  const [assignedToFilter, setAssignedToFilter] = useState<'all' | 'me'>('all');
+  const [isBulkPending, setIsBulkPending] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [adHocChat, setAdHocChat] = useState<{deviceId: string; jid: string} | null>(null);
   const [newChatOpen, setNewChatOpen] = useState(false);
+
+  useEffect(() => {
+    if (!canViewAll && (activeTab === 'all' || activeTab === 'closed')) {
+      setActiveTab('pending');
+    }
+  }, [activeTab, canViewAll]);
+
+  const effectiveAssignedTo =
+    activeTab === 'me' && canViewAll ? assignedToFilter : undefined;
 
   const paginated = usePaginatedChats({
     deviceIds: pane.deviceIds,
     search,
     hasMedia,
+    tab: activeTab,
+    assignedTo: effectiveAssignedTo,
   });
   const {query, chats, accounts: resolvedAccounts, deviceErrors} = paginated;
   const apiErr = query.isError ? toApiError(query.error) : null;
+
+  const handleBulkLifecycle = useCallback(
+    async (action: 'close' | 'release' | 'reopen', selectedChats: UnifiedChat[]) => {
+      setIsBulkPending(true);
+      try {
+        const res = await bulkUnifiedChatsLifecycle({
+          action,
+          items: selectedChats.map((c) => ({
+            device_id: c.device_id,
+            chat_jid: c.jid,
+            cached_title: chatDisplayName(c),
+          })),
+        });
+        const okCount = res.succeeded.length;
+        const failCount = res.failed.length;
+        if (failCount === 0) {
+          toast.success(t.chats.bulkResultToast(okCount));
+        } else if (okCount > 0) {
+          toast.warning(t.chats.bulkPartialToast(okCount, okCount + failCount));
+        } else {
+          toast.error(res.failed[0]?.message || t.chats.bulkPartialToast(0, failCount));
+        }
+        await queryClient.invalidateQueries({queryKey: ['unified-chats']});
+        void queryClient.invalidateQueries({queryKey: ['chat-lifecycle']});
+      } catch (err) {
+        toast.error(toApiError(err).message);
+      } finally {
+        setIsBulkPending(false);
+      }
+    },
+    [queryClient, t.chats],
+  );
 
   const selectedChat = useMemo<UnifiedChat | null>(() => {
     if (!selectedKey) return null;
@@ -134,7 +190,7 @@ function SplitWorkspacePane({
         {canRemove && (
           <button
             type="button"
-            className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
             onClick={onRemove}
             title={t.chats.removeColumn}
             aria-label={t.chats.removeColumn}
@@ -171,6 +227,13 @@ function SplitWorkspacePane({
             selectedDeviceIds={pane.deviceIds}
             search={search}
             hasMedia={hasMedia}
+            activeTab={activeTab}
+            tabCounts={paginated.tabCounts}
+            canViewAll={canViewAll}
+            canAssign={canAssign}
+            canClose={canClose}
+            assignedToFilter={assignedToFilter}
+            isBulkPending={isBulkPending}
             totalUnread={paginated.totalUnread}
             totalChatsCount={paginated.totalCount}
             hasMore={paginated.hasMore}
@@ -178,6 +241,9 @@ function SplitWorkspacePane({
             isLoading={query.isLoading}
             isFetching={query.isFetching}
             errorMessage={apiErr ? apiErr.message : null}
+            onTabChange={setActiveTab}
+            onAssignedToFilterChange={setAssignedToFilter}
+            onBulkLifecycle={handleBulkLifecycle}
             onSelectedDeviceIdsChange={(ids) => {
               onDeviceIdsChange(ids);
               setSelectedKey(null);
@@ -214,6 +280,9 @@ export default function ChatsPage() {
   const {t} = useI18n();
   const user = useAuthStore((s) => s.user);
   const canWriteChats = hasUserPermission(user, 'chats:write');
+  const canViewAll = hasUserPermission(user, 'chats:view_all');
+  const canAssign = hasUserPermission(user, 'chats:assign');
+  const canClose = hasUserPermission(user, 'chats:close');
   const canViewSettings = hasUserAnyPermission(user, ['settings:read', 'settings:write']);
   const [searchParams] = useSearchParams();
   const searchParamsKey = searchParams.toString();
@@ -223,11 +292,22 @@ export default function ChatsPage() {
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
   const [search, setSearch] = useState('');
   const [hasMedia, setHasMedia] = useState(false);
+  const [activeTab, setActiveTab] = useState<UnifiedChatTab>(() =>
+    canViewAll ? 'all' : 'pending',
+  );
+  const [assignedToFilter, setAssignedToFilter] = useState<'all' | 'me'>('all');
+  const [isBulkPending, setIsBulkPending] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [adHocChat, setAdHocChat] = useState<{deviceId: string; jid: string} | null>(null);
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [mobileShowMessages, setMobileShowMessages] = useState(false);
   const [splitPanes, setSplitPanes] = useState<SplitPaneConfig[]>([]);
+
+  useEffect(() => {
+    if (!canViewAll && (activeTab === 'all' || activeTab === 'closed')) {
+      setActiveTab('pending');
+    }
+  }, [activeTab, canViewAll]);
 
   useEffect(() => {
     if (lastAppliedParamsRef.current === searchParamsKey) return;
@@ -251,10 +331,15 @@ export default function ChatsPage() {
     }
   }, [searchParams, searchParamsKey]);
 
+  const effectiveAssignedTo =
+    activeTab === 'me' && canViewAll ? assignedToFilter : undefined;
+
   const paginated = usePaginatedChats({
     deviceIds: selectedDeviceIds,
     search,
     hasMedia,
+    tab: activeTab,
+    assignedTo: effectiveAssignedTo,
   });
   const {query, chats, accounts, deviceErrors} = paginated;
 
@@ -266,12 +351,45 @@ export default function ChatsPage() {
     queryKey: ['unified-chats', [], '', false],
     queryFn: () => listUnifiedChats({}),
     enabled: hasActiveFilter && !(apiErr && isGowaConnectionError(apiErr)),
-    staleTime: 20_000,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
   const jidAccountsMap = useMemo(
     () => buildJidAccountsMap([...(globalChatsQuery.data?.data ?? []), ...chats]),
     [chats, globalChatsQuery.data?.data],
+  );
+
+  const handleBulkLifecycle = useCallback(
+    async (action: 'close' | 'release' | 'reopen', selectedChats: UnifiedChat[]) => {
+      setIsBulkPending(true);
+      try {
+        const res = await bulkUnifiedChatsLifecycle({
+          action,
+          items: selectedChats.map((c) => ({
+            device_id: c.device_id,
+            chat_jid: c.jid,
+            cached_title: chatDisplayName(c),
+          })),
+        });
+        const okCount = res.succeeded.length;
+        const failCount = res.failed.length;
+        if (failCount === 0) {
+          toast.success(t.chats.bulkResultToast(okCount));
+        } else if (okCount > 0) {
+          toast.warning(t.chats.bulkPartialToast(okCount, okCount + failCount));
+        } else {
+          toast.error(res.failed[0]?.message || t.chats.bulkPartialToast(0, failCount));
+        }
+        await queryClient.invalidateQueries({queryKey: ['unified-chats']});
+        void queryClient.invalidateQueries({queryKey: ['chat-lifecycle']});
+      } catch (err) {
+        toast.error(toApiError(err).message);
+      } finally {
+        setIsBulkPending(false);
+      }
+    },
+    [queryClient, t.chats],
   );
 
   useEffect(() => {
@@ -402,7 +520,7 @@ export default function ChatsPage() {
       title={mode === 'unified' ? t.chats.splitView : t.chats.unifiedView}
       aria-label={mode === 'unified' ? t.chats.splitView : t.chats.unifiedView}
       className={cn(
-        'flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors',
+        'flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-ring',
         mode === 'split'
           ? 'bg-accent text-accent-foreground'
           : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
@@ -454,6 +572,9 @@ export default function ChatsPage() {
               accounts={accounts}
               globalJidAccountsMap={jidAccountsMap}
               canRemove={splitPanes.length > 2}
+              canViewAll={canViewAll}
+              canAssign={canAssign}
+              canClose={canClose}
               onDeviceIdsChange={(deviceIds) => {
                 setSplitPanes((prev) =>
                   prev.map((p) => (p.id === pane.id ? {...p, deviceIds} : p)),
@@ -474,57 +595,67 @@ export default function ChatsPage() {
       <SplitWorkspace
         storageKey={SIDEBAR_STORAGE_KEY}
         showDetailOnMobile={mobileShowMessages}
-      sidebar={
-        <ChatList
-          headerTitle={t.chats.pageTitle}
-          headerActions={modeSwitcher}
-          chats={chats}
-          accounts={accounts}
-          jidAccountsMap={jidAccountsMap}
-          deviceErrors={deviceErrors}
-          selectedKey={selectedKey}
-          selectedDeviceIds={selectedDeviceIds}
-          search={search}
-          hasMedia={hasMedia}
-          totalUnread={paginated.totalUnread}
-          totalChatsCount={paginated.totalCount}
-          hasMore={paginated.hasMore}
-          isLoadingMore={paginated.isLoadingMore}
-          isLoading={query.isLoading}
-          isFetching={query.isFetching}
-          errorMessage={apiErr ? apiErr.message : null}
-          onSelectedDeviceIdsChange={setSelectedDeviceIds}
-          onSearchChange={setSearch}
-          onHasMediaChange={setHasMedia}
-          onRefresh={() => void paginated.refresh()}
-          onLoadMore={() => void paginated.loadMore()}
-          onOpenNewChat={canWriteChats ? () => setNewChatOpen(true) : undefined}
-          onSelect={(chat) => {
-            paginated.markExtraChatRead(chat.device_id, chat.jid);
-            setSelectedKey(chatUniqueKey(chat));
-            setMobileShowMessages(true);
-          }}
-        />
-      }
-      detail={
-        selectedChat ? (
-          <MessageView
-            key={chatUniqueKey(selectedChat)}
-            chat={selectedChat}
-            otherAccounts={getOtherAccountsForChat(
-              jidAccountsMap,
-              selectedChat.device_id,
-              selectedChat.jid,
-            )}
-            onSwitchAccount={(targetDeviceId, jid) => {
-              setAdHocChat({deviceId: targetDeviceId, jid});
-              setSelectedKey(`${targetDeviceId}::${jid}`);
+        sidebar={
+          <ChatList
+            headerTitle={t.chats.pageTitle}
+            headerActions={modeSwitcher}
+            chats={chats}
+            accounts={accounts}
+            jidAccountsMap={jidAccountsMap}
+            deviceErrors={deviceErrors}
+            selectedKey={selectedKey}
+            selectedDeviceIds={selectedDeviceIds}
+            search={search}
+            hasMedia={hasMedia}
+            activeTab={activeTab}
+            tabCounts={paginated.tabCounts}
+            canViewAll={canViewAll}
+            canAssign={canAssign}
+            canClose={canClose}
+            assignedToFilter={assignedToFilter}
+            isBulkPending={isBulkPending}
+            totalUnread={paginated.totalUnread}
+            totalChatsCount={paginated.totalCount}
+            hasMore={paginated.hasMore}
+            isLoadingMore={paginated.isLoadingMore}
+            isLoading={query.isLoading}
+            isFetching={query.isFetching}
+            errorMessage={apiErr ? apiErr.message : null}
+            onTabChange={setActiveTab}
+            onAssignedToFilterChange={setAssignedToFilter}
+            onBulkLifecycle={handleBulkLifecycle}
+            onSelectedDeviceIdsChange={setSelectedDeviceIds}
+            onSearchChange={setSearch}
+            onHasMediaChange={setHasMedia}
+            onRefresh={() => void paginated.refresh()}
+            onLoadMore={() => void paginated.loadMore()}
+            onOpenNewChat={canWriteChats ? () => setNewChatOpen(true) : undefined}
+            onSelect={(chat) => {
+              paginated.markExtraChatRead(chat.device_id, chat.jid);
+              setSelectedKey(chatUniqueKey(chat));
               setMobileShowMessages(true);
             }}
-            onBack={() => setMobileShowMessages(false)}
           />
-        ) : null
-      }
+        }
+        detail={
+          selectedChat ? (
+            <MessageView
+              key={chatUniqueKey(selectedChat)}
+              chat={selectedChat}
+              otherAccounts={getOtherAccountsForChat(
+                jidAccountsMap,
+                selectedChat.device_id,
+                selectedChat.jid,
+              )}
+              onSwitchAccount={(targetDeviceId, jid) => {
+                setAdHocChat({deviceId: targetDeviceId, jid});
+                setSelectedKey(`${targetDeviceId}::${jid}`);
+                setMobileShowMessages(true);
+              }}
+              onBack={() => setMobileShowMessages(false)}
+            />
+          ) : null
+        }
         emptyState={
           <WorkspaceEmptyState
             icon={MessagesSquare}

@@ -246,8 +246,8 @@ export default function RolesPage() {
                     type="button"
                     onClick={() => handleSelectRole(role.id)}
                     className={cn(
-                      'flex w-full cursor-pointer flex-col gap-1 px-4 py-3 text-start transition-colors',
-                      isSelected ? 'bg-secondary/70' : 'hover:bg-muted/40',
+                      'flex w-full cursor-pointer flex-col gap-1 px-4 py-3 text-start transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring',
+                      isSelected ? 'border-s-2 border-primary bg-secondary/70' : 'hover:bg-muted/40',
                     )}
                   >
                     <div className="flex items-center justify-between gap-2">

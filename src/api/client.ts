@@ -2,6 +2,8 @@ import {http, results} from '@/lib/http';
 import type {
   AccountContact,
   AccountSummary,
+  AssignableAccountSummary,
+  AssignableAccountsCatalog,
   AssignableAgent,
   AuthStatus,
   AvatarResponse,
@@ -42,6 +44,7 @@ import type {
   RoleRecord,
   ScheduleList,
   ThemePreference,
+  UnifiedChatTab,
   UnifiedChatsResponse,
   UnifiedGroupsResponse,
   UnifiedStatusesResponse,
@@ -191,6 +194,10 @@ export function listUnifiedAccounts(): Promise<AccountSummary[]> {
   return results(http.get('/unified/accounts'));
 }
 
+export function listAssignableAccounts(): Promise<AssignableAccountsCatalog> {
+  return results(http.get('/users/assignable-accounts'));
+}
+
 export function listDevices(): Promise<RegistryDevice[]> {
   return results(http.get('/devices'));
 }
@@ -257,6 +264,8 @@ export function listUnifiedChats(params: {
   deviceIds?: string[];
   search?: string;
   has_media?: boolean;
+  tab?: UnifiedChatTab;
+  assignedTo?: string | number;
   limit?: number;
   offset?: number;
 }): Promise<UnifiedChatsResponse> {
@@ -266,6 +275,11 @@ export function listUnifiedChats(params: {
         deviceIds: params.deviceIds && params.deviceIds.length > 0 ? params.deviceIds.join(',') : undefined,
         search: params.search || undefined,
         has_media: params.has_media ? 'true' : undefined,
+        tab: params.tab || undefined,
+        assignedTo:
+          params.assignedTo !== undefined && params.assignedTo !== ''
+            ? String(params.assignedTo)
+            : undefined,
         limit: params.limit,
         offset: params.offset,
       },

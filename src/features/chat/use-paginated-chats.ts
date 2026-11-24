@@ -1,7 +1,7 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
 import {listUnifiedChats} from '@/api/client';
-import type {UnifiedChat} from '@/api/types';
+import type {UnifiedChat, UnifiedChatTab} from '@/api/types';
 import {normalizeSearchInput} from '@/lib/phone';
 
 const CHATS_PAGE_SIZE = 100;
@@ -34,13 +34,19 @@ export function usePaginatedChats({
   deviceIds,
   search,
   hasMedia,
+  tab,
+  assignedTo,
 }: {
   deviceIds: string[];
   search: string;
   hasMedia: boolean;
+  tab?: UnifiedChatTab;
+  assignedTo?: string | number;
 }) {
   const normalizedSearch = normalizeSearchInput(search);
-  const filterSignature = `${deviceIds.join(',')}::${normalizedSearch}::${hasMedia ? '1' : '0'}`;
+  const resolvedTab = tab ?? '';
+  const resolvedAssignedTo = assignedTo !== undefined && assignedTo !== '' ? String(assignedTo) : '';
+  const filterSignature = `${deviceIds.join(',')}::${normalizedSearch}::${hasMedia ? '1' : '0'}::${resolvedTab}::${resolvedAssignedTo}`;
 
   const [extraState, setExtraState] = useState<{
     signature: string;
@@ -62,12 +68,14 @@ export function usePaginatedChats({
   }, [filterSignature]);
 
   const query = useQuery({
-    queryKey: ['unified-chats', deviceIds, normalizedSearch, hasMedia],
+    queryKey: ['unified-chats', deviceIds, normalizedSearch, hasMedia, resolvedTab, resolvedAssignedTo],
     queryFn: () =>
       listUnifiedChats({
         deviceIds: deviceIds.length > 0 ? deviceIds : undefined,
         search: normalizedSearch || undefined,
         has_media: hasMedia || undefined,
+        tab,
+        assignedTo: resolvedAssignedTo || undefined,
         limit: CHATS_PAGE_SIZE,
         offset: 0,
       }),
@@ -105,6 +113,8 @@ export function usePaginatedChats({
         deviceIds: deviceIds.length > 0 ? deviceIds : undefined,
         search: normalizedSearch || undefined,
         has_media: hasMedia || undefined,
+        tab,
+        assignedTo: resolvedAssignedTo || undefined,
         limit: CHATS_PAGE_SIZE,
         offset: nextOffset,
       });
@@ -130,7 +140,7 @@ export function usePaginatedChats({
       loadingMoreRef.current = false;
       setIsLoadingMore(false);
     }
-  }, [deviceIds, filterSignature, hasMedia, hasMore, nextOffset, normalizedSearch]);
+  }, [deviceIds, filterSignature, hasMedia, hasMore, nextOffset, normalizedSearch, resolvedAssignedTo, tab]);
 
   const refresh = useCallback(() => {
     setExtraState({signature: filterSignature, chats: []});
@@ -157,6 +167,7 @@ export function usePaginatedChats({
     chats: mergedChats,
     accounts: query.data?.accounts ?? [],
     deviceErrors: query.data?.device_errors ?? [],
+    tabCounts: query.data?.tab_counts,
     totalUnread: query.data?.total_unread,
     totalCount,
     hasMore,

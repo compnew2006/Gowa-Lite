@@ -22,6 +22,7 @@ export type WsEventCode =
   | 'CHAT_LIFECYCLE_UPDATED'
   | 'INBOX_POLICY_UPDATED'
   | 'SCHEDULE_UPDATED'
+  | 'USER_ACCESS_UPDATED'
   | 'CHAT_UPDATED'
   | string;
 

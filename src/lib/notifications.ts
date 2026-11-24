@@ -1,4 +1,5 @@
 import {create} from 'zustand';
+import type {ChatAssignmentSummary, User} from '@/api/types';
 import {extractWsEventTarget, type WsEvent} from '@/lib/events';
 
 const SOUND_STORAGE_KEY = 'gowa-lite:notify-sound';
@@ -180,4 +181,41 @@ export function getBrowserNotificationPermission(): NotificationPermission | 'un
     return 'unsupported';
   }
   return Notification.permission;
+}
+
+export function shouldAlertIncomingChat(params: {
+  user: Pick<User, 'id' | 'role' | 'role_slug' | 'permissions' | 'allowed_device_ids' | 'is_active'> | null | undefined;
+  deviceId: string;
+  chatJid: string;
+  lifecycle?: Pick<ChatAssignmentSummary, 'status' | 'assigned_user_id'> | null;
+}): boolean {
+  const {user, deviceId, chatJid, lifecycle} = params;
+  if (!user || !user.is_active) return false;
+
+  const cleanDevice = deviceId.trim();
+  const cleanJid = chatJid.trim().toLowerCase();
+  if (!cleanDevice || !cleanJid) return false;
+  if (cleanJid.endsWith('@newsletter') || cleanJid === 'status@broadcast') return false;
+
+  const isAdmin = user.role === 'admin' || user.role_slug === 'admin';
+  const perms = user.permissions ?? [];
+  if (!isAdmin && !perms.includes('chats:read')) return false;
+
+  const allowedDevices = user.allowed_device_ids ?? [];
+  if (!isAdmin && allowedDevices.length > 0 && !allowedDevices.includes(cleanDevice)) {
+    return false;
+  }
+
+  const isSupervisor = isAdmin || perms.includes('chats:view_all');
+  if (
+    !isSupervisor &&
+    lifecycle?.status === 'open' &&
+    lifecycle.assigned_user_id !== null &&
+    lifecycle.assigned_user_id !== user.id
+  ) {
+    return false;
+  }
+
+  // Pending, own open, or closed (customer incoming auto-reopens closed -> pending) are alerted
+  return true;
 }

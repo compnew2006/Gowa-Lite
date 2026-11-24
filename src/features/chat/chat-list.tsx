@@ -1,14 +1,33 @@
-import {useEffect, useMemo, useRef, useState, type ReactNode} from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react';
 import {
   ArrowLeftRight,
   Check,
+  CheckCircle2,
+  CheckSquare,
   ChevronDown,
   Loader2,
   MessageSquarePlus,
   RefreshCw,
+  RotateCcw,
   Search,
+  UserMinus,
+  X,
 } from 'lucide-react';
-import type {AccountSummary, UnifiedChat} from '@/api/types';
+import type {
+  AccountSummary,
+  UnifiedChat,
+  UnifiedChatTab,
+  UnifiedTabCounts,
+} from '@/api/types';
 import {ContactAvatar, avatarToneClass} from '@/components/contact-avatar';
 import {chatDisplayName, formatJidPhone} from '@/features/chat/display-name';
 import {
@@ -29,11 +48,11 @@ export function chatUniqueKey(chat: Pick<UnifiedChat, 'device_id' | 'jid'>): str
 }
 
 const ACCOUNT_DOT_TONES = [
-  'bg-emerald-400',
-  'bg-sky-400',
-  'bg-amber-400',
-  'bg-violet-400',
-  'bg-teal-400',
+  'bg-emerald-500',
+  'bg-sky-500',
+  'bg-amber-500',
+  'bg-violet-500',
+  'bg-teal-500',
 ];
 
 export function accountDotTone(deviceId: string): string {
@@ -141,7 +160,7 @@ export function AccountMultiSelect({
           <button
             type="button"
             onClick={() => onChange([])}
-            className="flex w-full cursor-pointer items-center justify-between gap-2 border-b border-border px-3 py-2 text-start text-xs font-medium transition-colors hover:bg-muted/70"
+            className="flex w-full cursor-pointer items-center justify-between gap-2 border-b border-border px-3 py-2 text-start text-xs font-medium transition-colors hover:bg-muted/70 focus-visible:outline-2 focus-visible:outline-ring"
           >
             <span>{t.chats.clearSelectionShowAll}</span>
             {validSelected.length === 0 && <Check className="size-3.5 shrink-0 text-primary" />}
@@ -162,7 +181,7 @@ export function AccountMultiSelect({
                     role="option"
                     aria-selected={checked}
                     onClick={() => toggleDevice(acc.id)}
-                    className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-start text-xs transition-colors hover:bg-muted/70"
+                    className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-start text-xs transition-colors hover:bg-muted/70 focus-visible:outline-2 focus-visible:outline-ring"
                   >
                     <span
                       className={cn(
@@ -193,6 +212,182 @@ export function AccountMultiSelect({
   );
 }
 
+interface ChatListRowProps {
+  chat: UnifiedChat;
+  isSelected: boolean;
+  bulkMode: boolean;
+  isBulkSelected: boolean;
+  currentUserId?: number;
+  otherAccounts: OtherAccountRef[];
+  onToggleBulkItem: (key: string) => void;
+  onSelect: (chat: UnifiedChat) => void;
+}
+
+const ChatListRow = memo(function ChatListRow({
+  chat,
+  isSelected,
+  bulkMode,
+  isBulkSelected,
+  currentUserId,
+  otherAccounts,
+  onToggleBulkItem,
+  onSelect,
+}: ChatListRowProps) {
+  const {lang, t} = useI18n();
+  const key = chatUniqueKey(chat);
+  const name = chatDisplayName(chat);
+  const phone = formatJidPhone(chat.jid);
+  const unreadCount = Math.max(0, chat.unread_count ?? 0);
+  const hasUnread = unreadCount > 0;
+  const timeLabel = isZeroTime(chat.last_message_time)
+    ? ''
+    : formatShortTime(chat.last_message_time, lang);
+
+  const lifecycle = chat.lifecycle;
+  const lcStatus = lifecycle?.status ?? 'pending';
+  const isMine =
+    lcStatus === 'open' && currentUserId !== undefined && lifecycle?.assigned_user_id === currentUserId;
+  const lifecycleLabel =
+    lcStatus === 'closed'
+      ? t.chats.lifecycleClosed
+      : lcStatus === 'open'
+        ? isMine
+          ? t.chats.lifecycleOpenAssignedYou
+          : lifecycle?.assigned_user_name || t.chats.lifecyclePending
+        : t.chats.lifecyclePending;
+  const lifecycleColor =
+    lcStatus === 'closed'
+      ? 'text-muted-foreground'
+      : lcStatus === 'open'
+        ? 'text-emerald-700 dark:text-emerald-400'
+        : 'text-amber-700 dark:text-amber-400';
+
+  return (
+    <li className="chat-list-row">
+      <div
+        className={cn(
+          'flex w-full items-center gap-2 rounded-xl px-2.5 py-2 transition-colors',
+          isSelected ? 'bg-secondary' : 'hover:bg-secondary/60',
+          bulkMode && isBulkSelected && 'bg-primary/10',
+        )}
+      >
+        {bulkMode && (
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={isBulkSelected}
+            aria-label={name}
+            onClick={() => onToggleBulkItem(key)}
+            className={cn(
+              'flex size-5 shrink-0 cursor-pointer items-center justify-center rounded border transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+              isBulkSelected
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-input bg-card text-transparent hover:border-primary/60',
+            )}
+          >
+            <Check className="size-3.5 stroke-[2.5]" />
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={() => (bulkMode ? onToggleBulkItem(key) : onSelect(chat))}
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-start focus-visible:outline-2 focus-visible:outline-ring rounded-lg"
+        >
+          <ContactAvatar
+            deviceId={chat.device_id}
+            jid={chat.jid}
+            name={name}
+            sizeClass="size-11"
+          />
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline justify-between gap-2">
+              <span
+                className={cn(
+                  'truncate text-[14.5px] text-foreground',
+                  hasUnread ? 'font-semibold' : 'font-medium',
+                )}
+              >
+                {name}
+              </span>
+              {timeLabel && (
+                <span
+                  className={cn(
+                    'shrink-0 text-[11px] tabular-nums',
+                    hasUnread ? 'font-semibold text-primary' : 'text-muted-foreground',
+                  )}
+                >
+                  {timeLabel}
+                </span>
+              )}
+            </div>
+
+            <div className="mt-1 flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+              <span
+                title={chat.device_display_name}
+                className="inline-flex min-w-0 max-w-[54%] items-center gap-1.5 font-medium text-foreground/85"
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn('size-2 shrink-0 rounded-full', accountDotTone(chat.device_id))}
+                />
+                <span className="truncate">
+                  {shortAccountWidgetLabel(chat.device_display_name)}
+                </span>
+              </span>
+              <span aria-hidden="true" className="text-border">·</span>
+              <span className={cn('shrink-0 truncate font-medium', lifecycleColor)}>
+                {lifecycleLabel}
+              </span>
+              {phone && (
+                <>
+                  <span aria-hidden="true" className="hidden text-border sm:inline">·</span>
+                  <span
+                    dir="ltr"
+                    className="hidden min-w-0 flex-1 truncate font-mono text-[11px] tabular-nums sm:inline"
+                  >
+                    {phone}
+                  </span>
+                </>
+              )}
+              {hasUnread && (
+                <span
+                  aria-label={t.chats.unreadLabel(unreadCount)}
+                  title={t.chats.unreadLabel(unreadCount)}
+                  className="ms-auto inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground tabular-nums"
+                >
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
+            </div>
+
+            {otherAccounts.length > 0 && (
+              <p
+                title={t.chats.alsoOnOtherAccount(
+                  otherAccounts
+                    .map((a) => shortAccountWidgetLabel(a.device_display_name))
+                    .join('، '),
+                )}
+                className="mt-0.5 flex items-center gap-1.5 truncate text-[11px] font-medium text-amber-700 dark:text-amber-400"
+              >
+                <ArrowLeftRight className="size-3 shrink-0" />
+                <span className="truncate">
+                  {t.chats.alsoOnOtherAccount(
+                    otherAccounts
+                      .map((a) => shortAccountWidgetLabel(a.device_display_name))
+                      .join('، '),
+                  )}
+                </span>
+              </p>
+            )}
+          </div>
+        </button>
+      </div>
+    </li>
+  );
+});
+
 export function ChatList({
   headerTitle,
   headerActions,
@@ -203,6 +398,13 @@ export function ChatList({
   selectedDeviceIds,
   search,
   hasMedia,
+  activeTab,
+  tabCounts,
+  canViewAll = false,
+  canAssign = false,
+  canClose = false,
+  assignedToFilter = 'all',
+  isBulkPending = false,
   totalUnread,
   totalChatsCount,
   hasMore = false,
@@ -210,6 +412,9 @@ export function ChatList({
   isLoading,
   isFetching,
   errorMessage,
+  onTabChange,
+  onAssignedToFilterChange,
+  onBulkLifecycle,
   onSelectedDeviceIdsChange,
   onSearchChange,
   onHasMediaChange,
@@ -228,6 +433,13 @@ export function ChatList({
   selectedDeviceIds: string[];
   search: string;
   hasMedia: boolean;
+  activeTab?: UnifiedChatTab;
+  tabCounts?: UnifiedTabCounts;
+  canViewAll?: boolean;
+  canAssign?: boolean;
+  canClose?: boolean;
+  assignedToFilter?: 'all' | 'me';
+  isBulkPending?: boolean;
   totalUnread?: number;
   totalChatsCount?: number;
   hasMore?: boolean;
@@ -235,6 +447,12 @@ export function ChatList({
   isLoading: boolean;
   isFetching: boolean;
   errorMessage: string | null;
+  onTabChange?: (tab: UnifiedChatTab) => void;
+  onAssignedToFilterChange?: (filter: 'all' | 'me') => void;
+  onBulkLifecycle?: (
+    action: 'close' | 'release' | 'reopen',
+    selectedChats: UnifiedChat[],
+  ) => Promise<void>;
   onSelectedDeviceIdsChange: (deviceIds: string[]) => void;
   onSearchChange: (value: string) => void;
   onHasMediaChange: (value: boolean) => void;
@@ -243,9 +461,25 @@ export function ChatList({
   onOpenNewChat?: () => void;
   onSelect: (chat: UnifiedChat) => void;
 }) {
-  const {lang, t} = useI18n();
+  const {isRtl, t} = useI18n();
   const user = useAuthStore((s) => s.user);
   const [unreadOnly, setUnreadOnly] = useState(false);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkSelectedKeys, setBulkSelectedKeys] = useState<Set<string>>(() => new Set());
+  const tabRefs = useRef<Partial<Record<UnifiedChatTab, HTMLButtonElement | null>>>({});
+
+  const availableTabs = useMemo(() => {
+    const list: Array<{id: UnifiedChatTab; label: string; count?: number}> = [];
+    if (canViewAll) {
+      list.push({id: 'all', label: t.chats.tabAll, count: tabCounts?.all});
+    }
+    list.push({id: 'me', label: t.chats.tabMe, count: tabCounts?.me});
+    list.push({id: 'pending', label: t.chats.tabPending, count: tabCounts?.pending});
+    if (canViewAll) {
+      list.push({id: 'closed', label: t.chats.tabClosed, count: tabCounts?.closed});
+    }
+    return list;
+  }, [canViewAll, t.chats.tabAll, t.chats.tabClosed, t.chats.tabMe, t.chats.tabPending, tabCounts]);
 
   const computedUnreadCount = useMemo(
     () => chats.reduce((sum, chat) => sum + Math.max(0, chat.unread_count ?? 0), 0),
@@ -253,7 +487,7 @@ export function ChatList({
   );
   const totalUnreadCount = typeof totalUnread === 'number' ? totalUnread : computedUnreadCount;
 
-  const isAllActive = !hasMedia && !unreadOnly && selectedDeviceIds.length === 0;
+  const isAllFilterReset = !hasMedia && !unreadOnly && selectedDeviceIds.length === 0;
   const resolvedJidAccountsMap = useMemo(
     () => jidAccountsMap ?? buildJidAccountsMap(chats),
     [chats, jidAccountsMap],
@@ -272,6 +506,55 @@ export function ChatList({
       ),
     );
   }, [chats, search, unreadOnly]);
+
+  useEffect(() => {
+    setBulkSelectedKeys(new Set());
+  }, [activeTab]);
+
+  const canBulk = Boolean(onBulkLifecycle) && (canClose || canAssign);
+
+  const handleToggleBulkItem = useCallback((key: string) => {
+    setBulkSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const selectedBulkChats = useMemo(
+    () => visibleChats.filter((c) => bulkSelectedKeys.has(chatUniqueKey(c))),
+    [bulkSelectedKeys, visibleChats],
+  );
+
+  const handleRunBulk = async (action: 'close' | 'release' | 'reopen') => {
+    if (!onBulkLifecycle || selectedBulkChats.length === 0 || isBulkPending) return;
+    await onBulkLifecycle(action, selectedBulkChats);
+    setBulkSelectedKeys(new Set());
+    setBulkMode(false);
+  };
+
+  const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, currentIndex: number) => {
+    if (availableTabs.length <= 1 || !onTabChange) return;
+    let nextIndex = -1;
+    const prevKey = isRtl ? 'ArrowRight' : 'ArrowLeft';
+    const nextKey = isRtl ? 'ArrowLeft' : 'ArrowRight';
+    if (event.key === nextKey) {
+      nextIndex = (currentIndex + 1) % availableTabs.length;
+    } else if (event.key === prevKey) {
+      nextIndex = (currentIndex - 1 + availableTabs.length) % availableTabs.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = availableTabs.length - 1;
+    }
+    if (nextIndex !== -1) {
+      event.preventDefault();
+      const targetTab = availableTabs[nextIndex];
+      onTabChange(targetTab.id);
+      tabRefs.current[targetTab.id]?.focus();
+    }
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-card">
@@ -292,13 +575,35 @@ export function ChatList({
             )}
           </div>
           <div className="flex items-center gap-1">
+            {canBulk && (
+              <button
+                type="button"
+                onClick={() => {
+                  setBulkMode((prev) => {
+                    if (prev) setBulkSelectedKeys(new Set());
+                    return !prev;
+                  });
+                }}
+                aria-pressed={bulkMode}
+                title={bulkMode ? t.chats.bulkCancelSelect : t.chats.bulkSelectToggle}
+                aria-label={bulkMode ? t.chats.bulkCancelSelect : t.chats.bulkSelectToggle}
+                className={cn(
+                  'flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+                  bulkMode
+                    ? 'bg-accent text-accent-foreground'
+                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                )}
+              >
+                <CheckSquare className="size-4" />
+              </button>
+            )}
             {onOpenNewChat && (
               <button
                 type="button"
                 onClick={onOpenNewChat}
                 title={t.chats.newChatBtn}
                 aria-label={t.chats.newChatBtn}
-                className="flex size-9 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                className="flex size-9 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
               >
                 <MessageSquarePlus className="size-4" />
               </button>
@@ -310,7 +615,7 @@ export function ChatList({
               disabled={isFetching}
               title={t.chats.refreshChatsTitle}
               aria-label={t.chats.refreshChatsTitle}
-              className="flex size-9 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
+              className="flex size-9 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
             >
               <RefreshCw className={cn('size-4', isFetching && 'animate-spin')} />
             </button>
@@ -318,8 +623,8 @@ export function ChatList({
         </div>
       )}
 
-      {/* Search, Isolated User Unread Widget & Filter Strip */}
-      <div className={cn('flex flex-col gap-2.5 px-3 pb-2.5', !headerTitle && 'pt-3')}>
+      {/* Search, Isolated User Unread Widget, Tabs & Filter Strip */}
+      <div className={cn('flex flex-col gap-2 px-3 pb-2', !headerTitle && 'pt-3')}>
         {user && (
           <button
             type="button"
@@ -360,6 +665,79 @@ export function ChatList({
           </button>
         )}
 
+        {activeTab && onTabChange && (
+          <div
+            role="tablist"
+            aria-label={t.chats.tabsLabel}
+            className="grid auto-cols-fr grid-flow-col gap-1 border-b border-border/80 pb-1.5"
+          >
+            {availableTabs.map((tabItem, idx) => {
+              const isActive = activeTab === tabItem.id;
+              return (
+                <button
+                  key={tabItem.id}
+                  ref={(el) => {
+                    tabRefs.current[tabItem.id] = el;
+                  }}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  tabIndex={isActive ? 0 : -1}
+                  onClick={() => onTabChange(tabItem.id)}
+                  onKeyDown={(e) => handleTabKeyDown(e, idx)}
+                  className={cn(
+                    'flex cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+                    isActive
+                      ? 'bg-accent text-accent-foreground font-semibold'
+                      : 'text-muted-foreground hover:bg-secondary/70 hover:text-foreground',
+                  )}
+                >
+                  <span className="truncate">{tabItem.label}</span>
+                  {typeof tabItem.count === 'number' && (
+                    <span
+                      className={cn(
+                        'text-[11px] font-semibold tabular-nums',
+                        isActive ? 'text-accent-foreground' : 'text-muted-foreground',
+                      )}
+                    >
+                      {tabItem.count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {activeTab === 'me' && canViewAll && onAssignedToFilterChange && (
+          <div className="flex items-center gap-1 rounded-lg bg-secondary/60 p-1 text-xs">
+            <button
+              type="button"
+              onClick={() => onAssignedToFilterChange('all')}
+              className={cn(
+                'flex-1 cursor-pointer rounded-md px-2 py-1 font-medium whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+                assignedToFilter === 'all'
+                  ? 'bg-card text-foreground shadow-2xs'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t.chats.meFilterAllAssigned}
+            </button>
+            <button
+              type="button"
+              onClick={() => onAssignedToFilterChange('me')}
+              className={cn(
+                'flex-1 cursor-pointer rounded-md px-2 py-1 font-medium whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+                assignedToFilter === 'me'
+                  ? 'bg-card text-foreground shadow-2xs'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t.chats.meFilterMineOnly}
+            </button>
+          </div>
+        )}
+
         <div className="relative">
           <Search className="pointer-events-none absolute start-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <input
@@ -372,28 +750,30 @@ export function ChatList({
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => {
-              onHasMediaChange(false);
-              setUnreadOnly(false);
-              onSelectedDeviceIdsChange([]);
-            }}
-            className={cn(
-              'h-7 cursor-pointer rounded-full px-3 text-xs font-medium whitespace-nowrap shrink-0 transition-colors',
-              isAllActive
-                ? 'bg-accent text-accent-foreground'
-                : 'bg-secondary text-muted-foreground hover:text-foreground',
-            )}
-          >
-            {t.scheduled.statusAll}
-          </button>
+          {!activeTab && (
+            <button
+              type="button"
+              onClick={() => {
+                onHasMediaChange(false);
+                setUnreadOnly(false);
+                onSelectedDeviceIdsChange([]);
+              }}
+              className={cn(
+                'h-7 cursor-pointer rounded-full px-3 text-xs font-medium whitespace-nowrap shrink-0 transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+                isAllFilterReset
+                  ? 'bg-accent text-accent-foreground'
+                  : 'bg-secondary text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t.scheduled.statusAll}
+            </button>
+          )}
 
           <button
             type="button"
             onClick={() => setUnreadOnly((prev) => !prev)}
             className={cn(
-              'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full px-3 text-xs font-medium whitespace-nowrap shrink-0 transition-colors',
+              'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full px-3 text-xs font-medium whitespace-nowrap shrink-0 transition-colors focus-visible:outline-2 focus-visible:outline-ring',
               unreadOnly
                 ? 'bg-accent text-accent-foreground'
                 : 'bg-secondary text-muted-foreground hover:text-foreground',
@@ -411,7 +791,7 @@ export function ChatList({
             type="button"
             onClick={() => onHasMediaChange(!hasMedia)}
             className={cn(
-              'h-7 cursor-pointer rounded-full px-3 text-xs font-medium whitespace-nowrap shrink-0 transition-colors',
+              'h-7 cursor-pointer rounded-full px-3 text-xs font-medium whitespace-nowrap shrink-0 transition-colors focus-visible:outline-2 focus-visible:outline-ring',
               hasMedia
                 ? 'bg-accent text-accent-foreground'
                 : 'bg-secondary text-muted-foreground hover:text-foreground',
@@ -429,13 +809,35 @@ export function ChatList({
 
           {!headerTitle && (
             <div className="ms-auto flex items-center gap-1">
+              {canBulk && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBulkMode((prev) => {
+                      if (prev) setBulkSelectedKeys(new Set());
+                      return !prev;
+                    });
+                  }}
+                  aria-pressed={bulkMode}
+                  title={bulkMode ? t.chats.bulkCancelSelect : t.chats.bulkSelectToggle}
+                  aria-label={bulkMode ? t.chats.bulkCancelSelect : t.chats.bulkSelectToggle}
+                  className={cn(
+                    'flex size-7 cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+                    bulkMode
+                      ? 'bg-accent text-accent-foreground'
+                      : 'bg-secondary text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  <CheckSquare className="size-3.5" />
+                </button>
+              )}
               {onOpenNewChat && (
                 <button
                   type="button"
                   onClick={onOpenNewChat}
                   title={t.chats.newChatBtn}
                   aria-label={t.chats.newChatBtn}
-                  className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground"
+                  className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
                 >
                   <MessageSquarePlus className="size-3.5" />
                 </button>
@@ -446,13 +848,78 @@ export function ChatList({
                 disabled={isFetching}
                 title={t.chats.refreshChatsTitle}
                 aria-label={t.chats.refreshChatsTitle}
-                className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-secondary text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
               >
                 <RefreshCw className={cn('size-3.5', isFetching && 'animate-spin')} />
               </button>
             </div>
           )}
         </div>
+
+        {bulkMode && (
+          <div className="flex flex-wrap items-center justify-between gap-1.5 rounded-lg border border-border bg-secondary/70 px-2.5 py-2 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-foreground tabular-nums">
+                {t.chats.bulkSelectedCount(selectedBulkChats.length)}
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  setBulkSelectedKeys(new Set(visibleChats.map((c) => chatUniqueKey(c))))
+                }
+                className="cursor-pointer font-medium text-primary hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+              >
+                {t.chats.bulkSelectAllVisible}
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-1">
+              {canClose && activeTab !== 'closed' && (
+                <button
+                  type="button"
+                  disabled={selectedBulkChats.length === 0 || isBulkPending}
+                  onClick={() => void handleRunBulk('close')}
+                  className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border border-border bg-card px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-ring whitespace-nowrap"
+                >
+                  <CheckCircle2 className="size-3" />
+                  <span>{t.chats.bulkCloseBtn}</span>
+                </button>
+              )}
+              {canAssign && (activeTab === 'me' || activeTab === 'all') && (
+                <button
+                  type="button"
+                  disabled={selectedBulkChats.length === 0 || isBulkPending}
+                  onClick={() => void handleRunBulk('release')}
+                  className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border border-border bg-card px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-ring whitespace-nowrap"
+                >
+                  <UserMinus className="size-3" />
+                  <span>{t.chats.bulkReleaseBtn}</span>
+                </button>
+              )}
+              {canClose && activeTab === 'closed' && (
+                <button
+                  type="button"
+                  disabled={selectedBulkChats.length === 0 || isBulkPending}
+                  onClick={() => void handleRunBulk('reopen')}
+                  className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border border-border bg-card px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-ring whitespace-nowrap"
+                >
+                  <RotateCcw className="size-3" />
+                  <span>{t.chats.bulkReopenBtn}</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setBulkMode(false);
+                  setBulkSelectedKeys(new Set());
+                }}
+                aria-label={t.chats.bulkCancelSelect}
+                className="flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Chat Rows */}
@@ -472,108 +939,22 @@ export function ChatList({
           <ul className="space-y-0.5">
             {visibleChats.map((chat) => {
               const key = chatUniqueKey(chat);
-              const isSelected = selectedKey === key;
-              const name = chatDisplayName(chat);
-              const phone = formatJidPhone(chat.jid);
-              const unreadCount = Math.max(0, chat.unread_count ?? 0);
-              const hasUnread = unreadCount > 0;
-              const otherAccounts = getOtherAccountsForChat(
-                resolvedJidAccountsMap,
-                chat.device_id,
-                chat.jid,
-              );
-              const timeLabel = isZeroTime(chat.last_message_time)
-                ? ''
-                : formatShortTime(chat.last_message_time, lang);
-
               return (
-                <li key={key}>
-                  <button
-                    type="button"
-                    onClick={() => onSelect(chat)}
-                    className={cn(
-                      'flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-start transition-colors',
-                      isSelected ? 'bg-secondary' : 'hover:bg-secondary/60',
-                    )}
-                  >
-                    <ContactAvatar
-                      deviceId={chat.device_id}
-                      jid={chat.jid}
-                      name={name}
-                      sizeClass="size-11"
-                    />
-
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span
-                          className={cn(
-                            'truncate text-[14.5px] text-foreground',
-                            hasUnread ? 'font-semibold' : 'font-medium',
-                          )}
-                        >
-                          {name}
-                        </span>
-                        {timeLabel && (
-                          <span
-                            className={cn(
-                              'shrink-0 text-[11px] tabular-nums',
-                              hasUnread ? 'font-semibold text-primary' : 'text-muted-foreground',
-                            )}
-                          >
-                            {timeLabel}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                        <span
-                          title={chat.device_display_name}
-                          className="inline-flex min-w-0 max-w-[72%] items-center gap-1.5 rounded-md border border-border/80 bg-background/70 px-2 py-0.5 text-[11px] font-medium text-foreground/90"
-                        >
-                          <span
-                            aria-hidden="true"
-                            className={cn('size-1.5 shrink-0 rounded-full', accountDotTone(chat.device_id))}
-                          />
-                          <span className="truncate">
-                            {shortAccountWidgetLabel(chat.device_display_name)}
-                          </span>
-                        </span>
-                        <span dir="ltr" className="min-w-0 flex-1 truncate font-mono text-[11px] tabular-nums">
-                          {phone}
-                        </span>
-                        {hasUnread && (
-                          <span
-                            aria-label={t.chats.unreadLabel(unreadCount)}
-                            title={t.chats.unreadLabel(unreadCount)}
-                            className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground tabular-nums"
-                          >
-                            {unreadCount > 99 ? '99+' : unreadCount}
-                          </span>
-                        )}
-                      </div>
-
-                      {otherAccounts.length > 0 && (
-                        <p
-                          title={t.chats.alsoOnOtherAccount(
-                            otherAccounts
-                              .map((a) => shortAccountWidgetLabel(a.device_display_name))
-                              .join('، '),
-                          )}
-                          className="mt-1 flex items-center gap-1.5 truncate text-[11px] font-medium text-amber-700 dark:text-amber-400"
-                        >
-                          <ArrowLeftRight className="size-3 shrink-0" />
-                          <span className="truncate">
-                            {t.chats.alsoOnOtherAccount(
-                              otherAccounts
-                                .map((a) => shortAccountWidgetLabel(a.device_display_name))
-                                .join('، '),
-                            )}
-                          </span>
-                        </p>
-                      )}
-                    </div>
-                  </button>
-                </li>
+                <ChatListRow
+                  key={key}
+                  chat={chat}
+                  isSelected={selectedKey === key}
+                  bulkMode={bulkMode}
+                  isBulkSelected={bulkSelectedKeys.has(key)}
+                  currentUserId={user?.id}
+                  otherAccounts={getOtherAccountsForChat(
+                    resolvedJidAccountsMap,
+                    chat.device_id,
+                    chat.jid,
+                  )}
+                  onToggleBulkItem={handleToggleBulkItem}
+                  onSelect={onSelect}
+                />
               );
             })}
           </ul>

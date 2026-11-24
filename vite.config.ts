@@ -53,6 +53,9 @@ export default defineConfig(() => {
             ) {
               return 'ui-vendor';
             }
+            if (p.includes('/node_modules/axios/')) {
+              return 'http-vendor';
+            }
             return undefined;
           },
         },

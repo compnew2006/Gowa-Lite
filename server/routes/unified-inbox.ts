@@ -46,13 +46,11 @@ import {
   hasPermission,
   isAdminSubject,
 } from '../rbac.ts';
-import {decodeRouteParam} from '../security.ts';
+import {buildSafeMediaHeaders, decodeRouteParam} from '../security.ts';
 import {
   inferForwardMimeType,
   isNewsletterJid,
-  isStatusBroadcastJid,
   MAX_MEDIA_UPLOAD_BYTES,
-  matchesUnifiedChatSearch,
   normalizePhoneQueryForGowa,
   normalizeSearchQuery,
   normalizeWhatsAppJid,
@@ -69,10 +67,28 @@ import {
 } from '../services/schedule-service.ts';
 import {
   enforceInboxPolicyBeforeSend,
-  getChatLifecycleMap,
-  handleIncomingCustomerMessageLifecycle,
+  listAssignmentsForDevices,
+  type ChatAssignmentInfo,
 } from '../services/chat-lifecycle.ts';
+import {
+  computeUnifiedTabCounts,
+  enrichUnifiedChatsWithUnreadAndLifecycle,
+  fetchRemoteChatsForDevices,
+  paginateUnifiedChats,
+  parseUnifiedChatsQuery,
+  refreshAssignmentsAfterRemoteFetch,
+  runInitialUnreadCatchup,
+  type RemoteUnifiedChat,
+} from '../services/unified-chats-service.ts';
 import type {AuthedRequest} from '../types.ts';
+import {
+  conversationNoteCreateSchema,
+  conversationNotePatchSchema,
+  parsePositiveIntId,
+  parseSchema,
+  reactionBodySchema,
+  sendTextMessageSchema,
+} from '../validation/schemas.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
 
 const AVATAR_OK_TTL_MS = 1000 * 60 * 60 * 24;
@@ -97,330 +113,126 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     requireAuth,
     requirePermission('chats', 'read'),
     async (req: AuthedRequest, res) => {
-      const filterDeviceId = typeof req.query.deviceId === 'string' ? req.query.deviceId.trim() : '';
-      const filterDeviceIdsRaw =
-        typeof req.query.deviceIds === 'string' ? req.query.deviceIds.trim() : '';
-      const rawSearch = typeof req.query.search === 'string' ? req.query.search : '';
-      const search = normalizePhoneQueryForGowa(rawSearch);
-      const hasMedia = req.query.has_media === 'true';
-      const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 100);
-      const offset = Math.max(Number(req.query.offset) || 0, 0);
-
-      const selectedDeviceSet = new Set<string>();
-      if (filterDeviceIdsRaw) {
-        for (const part of filterDeviceIdsRaw.split(',')) {
-          const clean = part.trim();
-          if (clean) selectedDeviceSet.add(clean);
-        }
-      }
-      if (filterDeviceId) {
-        selectedDeviceSet.add(filterDeviceId);
-      }
-
-      for (const requestedId of selectedDeviceSet) {
-        if (!hasDeviceAccess(req.user!, requestedId)) {
-          res.status(403).json({
-            code: 'DEVICE_FORBIDDEN',
-            message: 'غير مصرح لك بالوصول إلى حساب واتساب هذا',
-          });
-          return;
-        }
-      }
-
       try {
+        const query = parseUnifiedChatsQuery(req.query as Record<string, unknown>, req.user!);
         const aliases = getAccountAliases();
         const allDevices = (await gowaFetch<GowaDevice[]>('/devices', {timeoutMs: 10_000})) ?? [];
         const devices = filterAllowedDevices(req.user!, allDevices);
-        const accountMap = new Map<string, {device: GowaDevice; displayName: string}>();
+        const deviceInfoMap = new Map<string, {device: GowaDevice; displayName: string}>();
         for (const dev of devices) {
-          accountMap.set(dev.id, {
-            device: dev,
-            displayName: resolveAccountDisplayName(dev, aliases),
-          });
+          deviceInfoMap.set(dev.id, {device: dev, displayName: resolveAccountDisplayName(dev, aliases)});
         }
 
         const targetDevices =
-          selectedDeviceSet.size > 0
-            ? devices.filter((d) => selectedDeviceSet.has(d.id))
+          query.selectedDeviceSet.size > 0
+            ? devices.filter((d) => query.selectedDeviceSet.has(d.id))
             : devices;
+        const targetDeviceIds = targetDevices.map((d) => d.id);
 
-      const deviceErrors: Array<{device_id: string; display_name: string; message: string}> = [];
-      const allChats: Array<
-        GowaChatInfo & {
-          device_id: string;
-          device_display_name: string;
-          device_state: GowaDevice['state'];
-        }
-      > = [];
-      let totalRemoteChats = 0;
-      let anyDeviceHasMore = false;
+        const skipRemoteScan =
+          query.offset > 0 &&
+          !query.isSearchMode &&
+          !query.hasMedia &&
+          (query.requestedTab === 'closed' || query.requestedTab === 'me');
 
-      await Promise.all(
-        targetDevices.map(async (dev) => {
-          const displayName = resolveAccountDisplayName(dev, aliases);
-          if (dev.state !== 'logged_in' && dev.state !== 'connected') {
-            return;
-          }
-          try {
-            if (!rawSearch.trim()) {
-              const response = await gowaFetch<{data: GowaChatInfo[]; pagination: GowaPagination}>(
-                '/chats',
-                {
-                  deviceId: dev.id,
-                  query: {
-                    limit,
-                    offset,
-                    has_media: hasMedia ? true : undefined,
-                  },
-                },
-              );
-              const items = response?.data ?? [];
-              let excludedSkipped = 0;
-              let addedCount = 0;
-              for (const chat of items) {
-                if (isNewsletterJid(chat.jid) || isStatusBroadcastJid(chat.jid)) {
-                  excludedSkipped += 1;
-                  continue;
-                }
-                addedCount += 1;
-                allChats.push({
-                  ...chat,
-                  device_id: dev.id,
-                  device_display_name: displayName,
-                  device_state: dev.state,
-                });
-              }
-              const devTotal =
-                typeof response?.pagination?.total === 'number' && response.pagination.total > 0
-                  ? Math.max(addedCount, response.pagination.total - excludedSkipped)
-                  : addedCount;
-              totalRemoteChats += devTotal;
-              const rawTotal = response?.pagination?.total ?? 0;
-              const deviceHasMore =
-                rawTotal > 0 ? offset + items.length < rawTotal : items.length >= limit;
-              if (deviceHasMore) {
-                anyDeviceHasMore = true;
-              }
-              return;
-            }
+        let assignmentsMap: Map<string, ChatAssignmentInfo> = skipRemoteScan
+          ? new Map()
+          : listAssignmentsForDevices(targetDeviceIds);
 
-            const byJid = new Map<string, GowaChatInfo>();
-            const directHitJids = new Set<string>();
-            const PAGE_LIMIT = 100;
-            const MAX_SCAN_CHATS = 1000;
+        let allChats: RemoteUnifiedChat[] = [];
+        let totalRemoteChats = 0;
+        let anyDeviceHasMore = false;
+        let deviceErrors: Array<{device_id: string; display_name: string; message: string}> = [];
 
-            const [directSearchRes, contactsRes] = await Promise.all([
-              search
-                ? gowaFetch<{data: GowaChatInfo[]; pagination: GowaPagination}>('/chats', {
-                    deviceId: dev.id,
-                    query: {
-                      limit: 100,
-                      offset: 0,
-                      search,
-                      has_media: hasMedia ? true : undefined,
-                    },
-                  }).catch(() => null)
-                : Promise.resolve(null),
-              gowaFetch<{data?: Array<{jid?: string; name?: string}>} | null>('/user/my/contacts', {
-                deviceId: dev.id,
-                timeoutMs: 4_000,
-              }).catch(() => null),
-            ]);
-
-            for (const chat of directSearchRes?.data ?? []) {
-              byJid.set(chat.jid, chat);
-              directHitJids.add(chat.jid);
-            }
-
-            const contactNameByJid = new Map<string, string>();
-            for (const c of contactsRes?.data ?? []) {
-              if (c.jid && c.name) {
-                contactNameByJid.set(c.jid, c.name);
-              }
-            }
-
-            for (let scanOffset = 0; scanOffset < MAX_SCAN_CHATS; scanOffset += PAGE_LIMIT) {
-              const page = await gowaFetch<{data: GowaChatInfo[]; pagination: GowaPagination}>(
-                '/chats',
-                {
-                  deviceId: dev.id,
-                  query: {
-                    limit: PAGE_LIMIT,
-                    offset: scanOffset,
-                    has_media: hasMedia ? true : undefined,
-                  },
-                },
-              );
-              const items = page?.data ?? [];
-              for (const chat of items) {
-                if (!byJid.has(chat.jid)) {
-                  byJid.set(chat.jid, chat);
-                }
-              }
-              const total = page?.pagination?.total ?? 0;
-              if (items.length < PAGE_LIMIT || (total > 0 && scanOffset + items.length >= total)) {
-                break;
-              }
-            }
-
-            for (const chat of byJid.values()) {
-              if (isNewsletterJid(chat.jid) || isStatusBroadcastJid(chat.jid)) continue;
-              const contactName = contactNameByJid.get(chat.jid);
-              if (
-                directHitJids.has(chat.jid) ||
-                matchesUnifiedChatSearch(chat, displayName, rawSearch, contactName)
-              ) {
-                allChats.push({
-                  ...chat,
-                  name: chat.name?.trim() || contactName || chat.name,
-                  device_id: dev.id,
-                  device_display_name: displayName,
-                  device_state: dev.state,
-                });
-              }
-            }
-          } catch (err) {
-            const msg = err instanceof GowaError ? err.message : 'تعذر جلب المحادثات';
-            deviceErrors.push({
-              device_id: dev.id,
-              display_name: displayName,
-              message: msg,
-            });
-          }
-        }),
-      );
-
-      allChats.sort((a, b) => {
-        const ta = new Date(a.last_message_time).getTime();
-        const tb = new Date(b.last_message_time).getTime();
-        const validA = Number.isNaN(ta) || ta <= 0 ? 0 : ta;
-        const validB = Number.isNaN(tb) || tb <= 0 ? 0 : tb;
-        return validB - validA;
-      });
-
-      const isSearchMode = Boolean(rawSearch.trim());
-      const pagedChats = isSearchMode ? allChats.slice(offset, offset + limit) : allChats;
-      const totalAvailable = isSearchMode
-        ? allChats.length
-        : Math.max(totalRemoteChats, offset + pagedChats.length);
-      const hasMore = isSearchMode
-        ? offset + pagedChats.length < allChats.length
-        : anyDeviceHasMore;
-
-      if (offset === 0 && pagedChats.length > 0) {
-        const pendingCatchups = syncChatWatermarks(
-          pagedChats.map((c) => ({
-            device_id: c.device_id,
-            chat_jid: c.jid,
-            last_message_time: c.last_message_time,
-          })),
-        );
-        if (pendingCatchups.length > 0) {
-          const onlineDeviceSet = new Set(
-            devices
-              .filter((d) => d.state === 'logged_in' || d.state === 'connected')
-              .map((d) => d.id),
-          );
-          const targetCatchups = pendingCatchups
-            .filter((item) => onlineDeviceSet.has(item.device_id) && hasDeviceAccess(req.user!, item.device_id))
-            .slice(0, 10);
-
-          await Promise.all(
-            targetCatchups.map(async (changed) => {
-              try {
-                const latest = await gowaFetch<{data: GowaMessageInfo[]}>(
-                  `/chat/${encodeURIComponent(changed.chat_jid)}/messages`,
-                  {
-                    deviceId: changed.device_id,
-                    query: {limit: 15, offset: 0},
-                    timeoutMs: 3_500,
-                  },
-                );
-                if (latest?.data?.length) {
-                  upsertCachedMessages(changed.device_id, changed.chat_jid, latest.data, {
-                    markUnreadCandidate: true,
-                    minUnreadTimestampMs: changed.prev_last_message_ms,
-                  });
-                  let latestCustomerMs = 0;
-                  for (const msg of latest.data) {
-                    if (msg.is_from_me) continue;
-                    const ms = parseTimestampMs(msg.timestamp);
-                    if (ms > changed.prev_last_message_ms && ms > latestCustomerMs) {
-                      latestCustomerMs = ms;
-                    }
-                  }
-                  if (latestCustomerMs > 0) {
-                    const reopenEvent = handleIncomingCustomerMessageLifecycle(
-                      changed.device_id,
-                      changed.chat_jid,
-                      latestCustomerMs,
-                    );
-                    if (reopenEvent) {
-                      wsBridge.broadcast(reopenEvent);
-                    }
-                  }
-                }
-                clearChatCatchup(changed.device_id, changed.chat_jid);
-              } catch {
-                // Keep needs_catchup = 1 so the next poll automatically retries
-              }
-            }),
+        if (!skipRemoteScan) {
+          const remote = await fetchRemoteChatsForDevices({targetDevices, aliases, query});
+          allChats = remote.allChats;
+          totalRemoteChats = remote.totalRemoteChats;
+          anyDeviceHasMore = remote.anyDeviceHasMore;
+          deviceErrors = remote.deviceErrors;
+          assignmentsMap = refreshAssignmentsAfterRemoteFetch(
+            allChats,
+            assignmentsMap,
+            targetDeviceIds,
           );
         }
+
+        const remoteByKey = new Map<string, RemoteUnifiedChat>();
+        for (const chat of allChats) {
+          remoteByKey.set(`${chat.device_id}::${chat.jid}`, chat);
+        }
+
+        const effectiveMeOwnerId = query.isSupervisor
+          ? query.assignedFilterUserId === req.user!.id || typeof query.assignedFilterUserId === 'number'
+            ? query.assignedFilterUserId
+            : null
+          : req.user!.id;
+
+        const tabCounts = computeUnifiedTabCounts({
+          targetDeviceIds,
+          allChats,
+          assignmentsMap,
+          remoteByKey,
+          totalRemoteChats,
+          anyDeviceHasMore,
+          skipRemoteScan,
+          effectiveMeOwnerId,
+          query,
+        });
+
+        const {pagedChats, totalAvailable, hasMore} = paginateUnifiedChats({
+          query,
+          userId: req.user!.id,
+          targetDeviceIds,
+          deviceInfoMap,
+          allChats,
+          remoteByKey,
+          assignmentsMap,
+          tabCounts,
+          totalRemoteChats,
+          anyDeviceHasMore,
+          effectiveMeOwnerId,
+        });
+
+        if (query.offset === 0 && query.requestedTab !== 'closed' && pagedChats.length > 0) {
+          await runInitialUnreadCatchup({pagedChats, devices, user: req.user!, wsBridge});
+        }
+
+        const {enrichedChats, totalUnread} = enrichUnifiedChatsWithUnreadAndLifecycle({
+          user: req.user!,
+          pagedChats,
+          assignmentsMap,
+        });
+
+        res.json({
+          code: 'SUCCESS',
+          message: 'ok',
+          results: {
+            data: enrichedChats,
+            total: enrichedChats.length,
+            pagination: {
+              limit: query.limit,
+              offset: query.offset,
+              total: totalAvailable,
+              has_more: hasMore,
+              next_offset: query.offset + query.limit,
+            },
+            tab_counts: tabCounts,
+            total_unread: totalUnread,
+            accounts: devices.map((d) => ({
+              id: d.id,
+              display_name: resolveAccountDisplayName(d, aliases),
+              phone_number: d.phone_number ?? null,
+              state: d.state,
+            })),
+            device_errors: deviceErrors,
+          },
+        });
+      } catch (err) {
+        handleRouteError(res, err);
       }
-
-      const chatKeys = pagedChats.map((c) => ({device_id: c.device_id, chat_jid: c.jid}));
-      const unreadByChat = getUnreadCountsForUser(req.user!, chatKeys);
-      const lifecycleByChat = getChatLifecycleMap(chatKeys);
-
-      let totalUnread = 0;
-      const enrichedChats = pagedChats.map((chat) => {
-        const key = `${chat.device_id}::${chat.jid}`;
-        const unreadCount = unreadByChat.get(key) ?? 0;
-        const assignment = lifecycleByChat.get(key);
-        totalUnread += unreadCount;
-        return {
-          ...chat,
-          unread_count: unreadCount,
-          lifecycle: {
-            status: assignment?.status ?? 'pending',
-            assigned_user_id: assignment?.assigned_user_id ?? null,
-            assigned_user_name: assignment?.assigned_user_name ?? null,
-            closed_by_id: assignment?.closed_by_id ?? null,
-            closed_by_name: assignment?.closed_by_name ?? null,
-            closed_at: assignment?.closed_at ?? null,
-            close_reason: assignment?.close_reason ?? '',
-          },
-        };
-      });
-
-      res.json({
-        code: 'SUCCESS',
-        message: 'ok',
-        results: {
-          data: enrichedChats,
-          total: enrichedChats.length,
-          pagination: {
-            limit,
-            offset,
-            total: totalAvailable,
-            has_more: hasMore,
-            next_offset: offset + limit,
-          },
-          total_unread: totalUnread,
-          accounts: devices.map((d) => ({
-            id: d.id,
-            display_name: resolveAccountDisplayName(d, aliases),
-            phone_number: d.phone_number ?? null,
-            state: d.state,
-          })),
-          device_errors: deviceErrors,
-        },
-      });
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  });
+    },
+  );
 
   router.post(
     '/api/unified/chats/:deviceId/:jid/read',
@@ -528,21 +340,12 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     requirePermission('chats', 'write'),
     requireDeviceParamAccess,
     async (req: AuthedRequest, res) => {
-      const deviceId = decodeRouteParam(req.params.deviceId);
-      const chatJid = decodeRouteParam(req.params.jid);
-      const body = req.body as {message?: unknown; reply_message_id?: unknown};
-      const message = typeof body.message === 'string' ? body.message.trim() : '';
-      const replyMessageId =
-        typeof body.reply_message_id === 'string' && body.reply_message_id.trim()
-          ? body.reply_message_id.trim()
-          : undefined;
-
-      if (!message) {
-        res.status(400).json({code: 'VALIDATION_ERROR', message: 'نص الرسالة مطلوب'});
-        return;
-      }
-
       try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const parsed = parseSchema(sendTextMessageSchema, req.body ?? {});
+        const message = parsed.message;
+        const replyMessageId = parsed.reply_message_id || undefined;
         const status = await gowaFetch<GowaDeviceStatus>(
           `/devices/${encodeURIComponent(deviceId)}/status`,
         );
@@ -721,18 +524,16 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     requirePermission('chats', 'write'),
     requireDeviceParamAccess,
     async (req, res) => {
-      const deviceId = decodeRouteParam(req.params.deviceId);
-      const chatJid = decodeRouteParam(req.params.jid);
-      const messageId = decodeRouteParam(req.params.messageId);
-      const body = req.body as {emoji?: unknown};
-      const emoji = typeof body.emoji === 'string' ? body.emoji.trim() : '';
-
-      if (!messageId) {
-        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الرسالة مطلوب'});
-        return;
-      }
-
       try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const messageId = decodeRouteParam(req.params.messageId);
+        const {emoji} = parseSchema(reactionBodySchema, req.body ?? {});
+
+        if (!messageId) {
+          res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الرسالة مطلوب'});
+          return;
+        }
         const status = await gowaFetch<GowaDeviceStatus>(
           `/devices/${encodeURIComponent(deviceId)}/status`,
         );
@@ -1039,31 +840,17 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     requirePermission('notes', 'write'),
     requireDeviceParamAccess,
     (req: AuthedRequest, res) => {
-      const deviceId = decodeRouteParam(req.params.deviceId);
-      const chatJid = decodeRouteParam(req.params.jid);
-      const body = req.body as {content?: unknown; is_pinned?: unknown};
-      const content = typeof body.content === 'string' ? body.content.trim() : '';
-      const isPinned = body.is_pinned === true;
-
-      if (!content) {
-        res.status(400).json({code: 'VALIDATION_ERROR', message: 'نص الملاحظة مطلوب'});
-        return;
-      }
-      if (content.length > 4000) {
-        res
-          .status(400)
-          .json({code: 'VALIDATION_ERROR', message: 'الملاحظة طويلة جدًا (الحد الأقصى 4000 حرف)'});
-        return;
-      }
-
       try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const parsed = parseSchema(conversationNoteCreateSchema, req.body ?? {});
         const note = createConversationNote({
           deviceId,
           chatJid,
           createdById: req.user!.id,
           createdByName: req.user!.display_name,
-          content,
-          isPinned,
+          content: parsed.content,
+          isPinned: parsed.is_pinned === true,
         });
         wsBridge.broadcast({
           code: 'CONVERSATION_NOTE_UPDATED',
@@ -1084,54 +871,31 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     requirePermission('notes', 'write'),
     requireDeviceParamAccess,
     (req: AuthedRequest, res) => {
-      const deviceId = decodeRouteParam(req.params.deviceId);
-      const chatJid = decodeRouteParam(req.params.jid);
-      const noteId = Number(req.params.noteId);
-      if (!Number.isInteger(noteId) || noteId <= 0) {
-        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الملاحظة غير صالح'});
-        return;
-      }
-
-      const existing = getConversationNoteById(noteId, deviceId, chatJid);
-      if (!existing) {
-        res.status(404).json({code: 'NOT_FOUND', message: 'الملاحظة غير موجودة'});
-        return;
-      }
-
-      const body = req.body as {content?: unknown; is_pinned?: unknown};
-      const hasContent = body.content !== undefined;
-      const hasPin = typeof body.is_pinned === 'boolean';
-      if (!hasContent && !hasPin) {
-        res.status(400).json({code: 'VALIDATION_ERROR', message: 'لا توجد تعديلات لحفظها'});
-        return;
-      }
-
-      const canModerateNotes =
-        isAdminSubject(req.user!) || hasPermission(req.user!, 'notes', 'delete');
-      if (hasContent && existing.created_by_id !== req.user!.id && !canModerateNotes) {
-        res.status(403).json({code: 'FORBIDDEN', message: 'يمكنك تعديل ملاحظاتك فقط'});
-        return;
-      }
-
-      let nextContent: string | undefined;
-      if (hasContent) {
-        nextContent = typeof body.content === 'string' ? body.content.trim() : '';
-        if (!nextContent) {
-          res.status(400).json({code: 'VALIDATION_ERROR', message: 'نص الملاحظة مطلوب'});
-          return;
-        }
-        if (nextContent.length > 4000) {
-          res
-            .status(400)
-            .json({code: 'VALIDATION_ERROR', message: 'الملاحظة طويلة جدًا (الحد الأقصى 4000 حرف)'});
-          return;
-        }
-      }
-
       try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const noteId = parsePositiveIntId(req.params.noteId, 'معرّف الملاحظة');
+
+        const existing = getConversationNoteById(noteId, deviceId, chatJid);
+        if (!existing) {
+          res.status(404).json({code: 'NOT_FOUND', message: 'الملاحظة غير موجودة'});
+          return;
+        }
+
+        const parsed = parseSchema(conversationNotePatchSchema, req.body ?? {});
+        const hasContent = parsed.content !== undefined;
+        const hasPin = typeof parsed.is_pinned === 'boolean';
+
+        const canModerateNotes =
+          isAdminSubject(req.user!) || hasPermission(req.user!, 'notes', 'delete');
+        if (hasContent && existing.created_by_id !== req.user!.id && !canModerateNotes) {
+          res.status(403).json({code: 'FORBIDDEN', message: 'يمكنك تعديل ملاحظاتك فقط'});
+          return;
+        }
+
         const updated = updateConversationNote(noteId, deviceId, chatJid, {
-          content: nextContent,
-          is_pinned: hasPin ? Boolean(body.is_pinned) : undefined,
+          content: parsed.content,
+          is_pinned: hasPin ? Boolean(parsed.is_pinned) : undefined,
         });
         wsBridge.broadcast({
           code: 'CONVERSATION_NOTE_UPDATED',
@@ -1152,13 +916,10 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     requireAnyPermission(['notes:write', 'notes:delete']),
     requireDeviceParamAccess,
     (req: AuthedRequest, res) => {
-      const deviceId = decodeRouteParam(req.params.deviceId);
-      const chatJid = decodeRouteParam(req.params.jid);
-      const noteId = Number(req.params.noteId);
-      if (!Number.isInteger(noteId) || noteId <= 0) {
-        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الملاحظة غير صالح'});
-        return;
-      }
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        const chatJid = decodeRouteParam(req.params.jid);
+        const noteId = parsePositiveIntId(req.params.noteId, 'معرّف الملاحظة');
 
       const existing = getConversationNoteById(noteId, deviceId, chatJid);
       if (!existing) {
@@ -1172,20 +933,19 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
         return;
       }
 
-      try {
-        deleteConversationNote(noteId, deviceId, chatJid);
-        wsBridge.broadcast({
-          code: 'CONVERSATION_NOTE_UPDATED',
-          message: 'deleted',
-          device_id: deviceId,
-          result: {chat_jid: chatJid, note_id: noteId},
-        });
-        res.json({code: 'SUCCESS', message: 'تم حذف الملاحظة'});
-      } catch (err) {
-        handleRouteError(res, err);
-      }
-    },
-  );
+      deleteConversationNote(noteId, deviceId, chatJid);
+      wsBridge.broadcast({
+        code: 'CONVERSATION_NOTE_UPDATED',
+        message: 'deleted',
+        device_id: deviceId,
+        result: {chat_jid: chatJid, note_id: noteId},
+      });
+      res.json({code: 'SUCCESS', message: 'تم حذف الملاحظة'});
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  },
+);
 
   // In-Chat Scheduled Messages
   router.get(
@@ -1370,16 +1130,21 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     '/api/unified/media/file',
     requireAuth,
     requireAnyPermission(['chats:read', 'misc:status.read', 'misc:channels.manage', 'groups:read']),
-    async (req, res) => {
+    async (req: AuthedRequest, res) => {
       const filePath = typeof req.query.path === 'string' ? req.query.path : '';
+      const deviceId = typeof req.query.deviceId === 'string' ? req.query.deviceId.trim() : '';
       try {
+        if (!deviceId) {
+          res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الحساب مطلوب'});
+          return;
+        }
+        assertDeviceAccess(req.user, deviceId);
         const asset = await gowaFetchBinary(filePath);
+        const safeHeaders = buildSafeMediaHeaders(asset.contentType, asset.filename);
         res.setHeader('Content-Type', asset.contentType);
-        if (asset.filename) {
-          res.setHeader(
-            'Content-Disposition',
-            `inline; filename="${asset.filename.replace(/["\r\n]/g, '')}"`,
-          );
+        res.setHeader('Content-Disposition', safeHeaders.disposition);
+        if (safeHeaders.csp) {
+          res.setHeader('Content-Security-Policy', safeHeaders.csp);
         }
         res.setHeader('Cache-Control', 'private, max-age=300');
         res.send(asset.buffer);

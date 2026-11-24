@@ -76,12 +76,59 @@ export function decodeRouteParam(value: string): string {
   }
 }
 
-export function getClientIp(req: Pick<Request, 'headers' | 'socket'>): string {
-  const forwardedFor = req.headers['x-forwarded-for'];
-  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-    return forwardedFor.split(',')[0].trim();
+export function parseTrustProxySetting(rawValue: string | undefined): boolean | number | string {
+  const clean = (rawValue ?? '').trim();
+  if (!clean || clean.toLowerCase() === 'false') return false;
+  if (clean.toLowerCase() === 'true') return true;
+  if (/^\d+$/.test(clean)) return Number(clean);
+  return clean;
+}
+
+export function getClientIp(req: Pick<Request, 'ip' | 'socket'>): string {
+  if (typeof req.ip === 'string' && req.ip.trim()) {
+    return req.ip.trim();
   }
   return req.socket?.remoteAddress || 'unknown';
+}
+
+const SAFE_INLINE_MEDIA_TYPES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'image/avif',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'audio/mpeg',
+  'audio/ogg',
+  'audio/wav',
+  'audio/mp4',
+  'audio/aac',
+  'application/pdf',
+]);
+
+export function isSafeInlineMediaType(contentType: string): boolean {
+  const baseMime = contentType.split(';')[0].trim().toLowerCase();
+  return SAFE_INLINE_MEDIA_TYPES.has(baseMime);
+}
+
+export function buildSafeMediaHeaders(
+  contentType: string,
+  filename?: string,
+): {disposition: string; csp?: string} {
+  const safeInline = isSafeInlineMediaType(contentType);
+  const sanitizedFilename = filename
+    ? filename.replace(/["\r\n\\/]/g, '_')
+    : undefined;
+  const dispositionType = safeInline ? 'inline' : 'attachment';
+  const disposition = sanitizedFilename
+    ? `${dispositionType}; filename="${sanitizedFilename}"`
+    : dispositionType;
+  return safeInline
+    ? {disposition}
+    : {disposition, csp: "default-src 'none'; sandbox"};
 }
 
 interface RateBucket {
@@ -93,15 +140,52 @@ export class AuthRateLimiter {
   private readonly windowMs: number;
   private readonly maxPerUserKey: number;
   private readonly maxPerIp: number;
+  private readonly maxBuckets: number;
+  private operationsSinceSweep = 0;
 
   constructor(options?: {
     windowMs?: number;
     maxPerUserKey?: number;
     maxPerIp?: number;
+    maxBuckets?: number;
   }) {
     this.windowMs = options?.windowMs ?? 15 * 60_000;
     this.maxPerUserKey = options?.maxPerUserKey ?? 10;
     this.maxPerIp = options?.maxPerIp ?? 25;
+    this.maxBuckets = Math.max(10, options?.maxBuckets ?? 10_000);
+  }
+
+  get bucketCount(): number {
+    return this.buckets.size;
+  }
+
+  private sweepExpired(nowMs: number): void {
+    const cutoff = nowMs - this.windowMs;
+    for (const [key, bucket] of this.buckets.entries()) {
+      const recent = bucket.failures.filter((ts) => ts > cutoff);
+      if (recent.length === 0) {
+        this.buckets.delete(key);
+      } else {
+        bucket.failures = recent;
+      }
+    }
+  }
+
+  private setBucketBounded(key: string, failures: number[], nowMs: number): void {
+    if (this.buckets.has(key)) {
+      this.buckets.delete(key);
+    }
+    this.operationsSinceSweep += 1;
+    if (this.buckets.size >= this.maxBuckets || this.operationsSinceSweep >= 500) {
+      this.operationsSinceSweep = 0;
+      this.sweepExpired(nowMs);
+    }
+    while (this.buckets.size >= this.maxBuckets) {
+      const oldestKey = this.buckets.keys().next().value;
+      if (!oldestKey) break;
+      this.buckets.delete(oldestKey);
+    }
+    this.buckets.set(key, {failures});
   }
 
   private prune(key: string, nowMs: number): number[] {
@@ -148,14 +232,14 @@ export class AuthRateLimiter {
   recordFailure(ip: string, username?: string, nowMs = Date.now()): void {
     const ipList = this.prune(`ip:${ip}`, nowMs);
     ipList.push(nowMs);
-    this.buckets.set(`ip:${ip}`, {failures: ipList});
+    this.setBucketBounded(`ip:${ip}`, ipList, nowMs);
 
     const cleanUser = username?.trim().toLowerCase();
     if (cleanUser) {
       const userKey = `user:${ip}:${cleanUser}`;
       const userList = this.prune(userKey, nowMs);
       userList.push(nowMs);
-      this.buckets.set(userKey, {failures: userList});
+      this.setBucketBounded(userKey, userList, nowMs);
     }
   }
 
@@ -166,3 +250,4 @@ export class AuthRateLimiter {
     }
   }
 }
+

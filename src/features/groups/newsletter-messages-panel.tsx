@@ -148,7 +148,7 @@ export function NewsletterMessagesPanel({
         toast.error(t.chats.mediaUnavailable);
         return;
       }
-      const proxyUrl = `/api/unified/media/file?path=${encodeURIComponent(rawPath)}`;
+      const proxyUrl = `/api/unified/media/file?deviceId=${encodeURIComponent(deviceId)}&path=${encodeURIComponent(rawPath)}`;
       const blobUrl = await fetchAuthorizedBlobUrl(proxyUrl);
       const a = document.createElement('a');
       a.href = blobUrl;

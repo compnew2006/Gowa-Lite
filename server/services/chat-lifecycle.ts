@@ -1,3 +1,4 @@
+import type {SQLInputValue} from 'node:sqlite';
 import {
   db,
   getSetting,
@@ -129,6 +130,20 @@ const VALID_UNASSIGNED_POLICIES = new Set<UnassignedReplyPolicy>([
   'require_claim',
 ]);
 const VALID_CLOSED_POLICIES = new Set<ClosedReplyPolicy>(['block', 'reopen_and_claim']);
+
+function queryAll<T extends object>(sql: string, ...params: SQLInputValue[]): T[] {
+  return db.prepare(sql).all(...params) as T[];
+}
+
+function queryOne<T extends object>(sql: string, ...params: SQLInputValue[]): T | undefined {
+  return db.prepare(sql).get(...params) as T | undefined;
+}
+
+const LIFECYCLE_EVENT_COLUMNS = `
+  id, device_id, chat_jid, event_type,
+  actor_user_id, actor_name, target_user_id, target_name,
+  note, created_at, created_at_ms
+`;
 
 const ASSIGNMENT_SELECT_SQL = `
   SELECT ca.device_id,
@@ -339,9 +354,13 @@ function insertLifecycleEvent(params: {
       nowIso,
       nowMs,
     );
-  const row = db
-    .prepare('SELECT * FROM chat_lifecycle_events WHERE id = ?')
-    .get(Number(info.lastInsertRowid)) as unknown as LifecycleEventRow;
+  const row = queryOne<LifecycleEventRow>(
+    `SELECT ${LIFECYCLE_EVENT_COLUMNS} FROM chat_lifecycle_events WHERE id = ?`,
+    Number(info.lastInsertRowid),
+  );
+  if (!row) {
+    throw new Error('Failed to load inserted chat lifecycle event');
+  }
   return {
     id: row.id,
     device_id: row.device_id,
@@ -441,6 +460,24 @@ export function getChatLifecycleState(deviceIdRaw: string, chatJidRaw: string): 
   return readAssignmentInternal(deviceId, chatJid) ?? defaultAssignment(deviceId, chatJid);
 }
 
+export type UnifiedChatTab = 'all' | 'me' | 'pending' | 'closed';
+
+export interface UnifiedTabCounts {
+  all: number;
+  me: number;
+  pending: number;
+  closed: number;
+}
+
+export interface DbLifecycleChatEntry {
+  jid: string;
+  name: string;
+  last_message_time: string;
+  last_activity_ms: number;
+  device_id: string;
+  assignment: ChatAssignmentInfo;
+}
+
 export function getChatLifecycleMap(
   chats: Array<{device_id: string; chat_jid: string}>,
 ): Map<string, ChatAssignmentInfo> {
@@ -452,9 +489,10 @@ export function getChatLifecycleMap(
 
   const requestedKeys = new Set(chats.map((c) => `${c.device_id}::${c.chat_jid}`));
   const placeholders = deviceIds.map(() => '?').join(', ');
-  const rows = db
-    .prepare(`${ASSIGNMENT_SELECT_SQL} WHERE ca.device_id IN (${placeholders})`)
-    .all(...deviceIds) as unknown as AssignmentJoinRow[];
+  const rows = queryAll<AssignmentJoinRow>(
+    `${ASSIGNMENT_SELECT_SQL} WHERE ca.device_id IN (${placeholders})`,
+    ...deviceIds,
+  );
 
   for (const row of rows) {
     const key = `${row.device_id}::${row.chat_jid}`;
@@ -465,6 +503,215 @@ export function getChatLifecycleMap(
   return out;
 }
 
+export function listAssignmentsForDevices(deviceIds: string[]): Map<string, ChatAssignmentInfo> {
+  const out = new Map<string, ChatAssignmentInfo>();
+  const cleanIds = Array.from(new Set(deviceIds.map((d) => d.trim()).filter(Boolean)));
+  if (cleanIds.length === 0) return out;
+
+  const placeholders = cleanIds.map(() => '?').join(', ');
+  const rows = queryAll<AssignmentJoinRow>(
+    `${ASSIGNMENT_SELECT_SQL} WHERE ca.device_id IN (${placeholders})`,
+    ...cleanIds,
+  );
+
+  for (const row of rows) {
+    out.set(`${row.device_id}::${row.chat_jid}`, hydrateAssignmentRow(row));
+  }
+  return out;
+}
+
+export function getAssignmentStatsForDevices(
+  deviceIds: string[],
+  meOwnerUserId: number | null,
+): {allOpen: number; closed: number; meOpen: number} {
+  const cleanIds = Array.from(new Set(deviceIds.map((d) => d.trim()).filter(Boolean)));
+  if (cleanIds.length === 0) return {allOpen: 0, closed: 0, meOpen: 0};
+
+  const placeholders = cleanIds.map(() => '?').join(', ');
+  const rows = queryAll<{
+    status: ChatLifecycleStatus;
+    assigned_user_id: number | null;
+    total: number;
+  }>(
+    `SELECT status, assigned_user_id, COUNT(*) AS total
+     FROM chat_assignments
+     WHERE device_id IN (${placeholders})
+       AND LOWER(chat_jid) <> 'status@broadcast'
+       AND LOWER(chat_jid) NOT LIKE '%@newsletter'
+     GROUP BY status, assigned_user_id`,
+    ...cleanIds,
+  );
+
+  let allOpen = 0;
+  let closed = 0;
+  let meOpen = 0;
+  for (const row of rows) {
+    const count = Number(row.total) || 0;
+    if (row.status === 'closed') {
+      closed += count;
+    } else if (row.status === 'open' && row.assigned_user_id !== null) {
+      allOpen += count;
+      if (meOwnerUserId === null || row.assigned_user_id === meOwnerUserId) {
+        meOpen += count;
+      }
+    }
+  }
+  return {allOpen, closed, meOpen};
+}
+
+export function syncAssignmentMetadataFromChats(
+  chats: Array<{device_id: string; chat_jid: string; name?: string; last_message_time?: string}>,
+  existingMap?: Map<string, ChatAssignmentInfo>,
+): void {
+  if (chats.length === 0) return;
+  const map = existingMap ?? getChatLifecycleMap(chats);
+  const toUpdate: Array<{device_id: string; chat_jid: string; title: string; activityMs: number}> = [];
+
+  for (const item of chats) {
+    const existing = map.get(`${item.device_id}::${item.chat_jid}`);
+    if (!existing) continue;
+    const incomingTitle = (item.name ?? '').trim();
+    const incomingMs = item.last_message_time ? parseTimestampMs(item.last_message_time) : 0;
+    const needsTitle = !existing.cached_title && Boolean(incomingTitle);
+    const needsTime = incomingMs > existing.last_activity_ms;
+    if (needsTitle || needsTime) {
+      toUpdate.push({
+        device_id: item.device_id,
+        chat_jid: item.chat_jid,
+        title: incomingTitle,
+        activityMs: incomingMs,
+      });
+    }
+  }
+
+  if (toUpdate.length === 0) return;
+
+  withImmediateTransaction(() => {
+    const stmt = db.prepare(`
+      UPDATE chat_assignments
+      SET cached_title = CASE WHEN cached_title = '' AND ? <> '' THEN ? ELSE cached_title END,
+          last_activity_ms = MAX(last_activity_ms, ?)
+      WHERE device_id = ? AND chat_jid = ?
+    `);
+    for (const row of toUpdate) {
+      stmt.run(row.title, row.title, row.activityMs, row.device_id, row.chat_jid);
+    }
+  });
+}
+
+export function listDbChatsByLifecycleStatus(params: {
+  deviceIds: string[];
+  status: 'closed' | 'open';
+  assignedUserId?: number | null;
+  limit?: number;
+  offset?: number;
+}): DbLifecycleChatEntry[] {
+  const cleanIds = Array.from(new Set(params.deviceIds.map((d) => d.trim()).filter(Boolean)));
+  if (cleanIds.length === 0) return [];
+
+  const placeholders = cleanIds.map(() => '?').join(', ');
+  const args: Array<string | number> = [params.status, ...cleanIds];
+  let ownerClause = '';
+  if (params.status === 'open') {
+    ownerClause = ' AND ca.assigned_user_id IS NOT NULL';
+    if (typeof params.assignedUserId === 'number' && params.assignedUserId > 0) {
+      ownerClause += ' AND ca.assigned_user_id = ?';
+      args.push(params.assignedUserId);
+    }
+  }
+
+  let limitClause = '';
+  if (typeof params.limit === 'number' && params.limit > 0) {
+    limitClause = ' LIMIT ? OFFSET ?';
+    args.push(Math.floor(params.limit), Math.max(0, Math.floor(params.offset ?? 0)));
+  }
+
+  const rows = queryAll<
+    AssignmentJoinRow & {
+      sync_last_time: string | null;
+      sync_last_ms: number | null;
+      cached_sender_name: string | null;
+      cached_max_ms: number | null;
+    }
+  >(
+    `SELECT ca.device_id,
+            ca.chat_jid,
+            ca.status,
+            ca.assigned_user_id,
+            ua.display_name AS assigned_user_name,
+            ca.assigned_at,
+            ca.claimed_at,
+            ca.closed_by_id,
+            uc.display_name AS closed_by_name,
+            ca.closed_at,
+            ca.close_reason,
+            ca.cached_title,
+            ca.last_activity_ms,
+            ca.updated_at,
+            css.last_message_time AS sync_last_time,
+            css.last_message_ms AS sync_last_ms,
+            CASE WHEN ca.cached_title = '' THEN (
+              SELECT cm.sender_display_name
+              FROM cached_messages cm
+              WHERE cm.device_id = ca.device_id
+                AND cm.chat_jid = ca.chat_jid
+                AND cm.is_from_me = 0
+                AND cm.sender_display_name <> ''
+              ORDER BY cm.timestamp_ms DESC, cm.seq DESC
+              LIMIT 1
+            ) ELSE NULL END AS cached_sender_name,
+            CASE WHEN ca.last_activity_ms <= 0 THEN (
+              SELECT MAX(cm.timestamp_ms)
+              FROM cached_messages cm
+              WHERE cm.device_id = ca.device_id
+                AND cm.chat_jid = ca.chat_jid
+            ) ELSE NULL END AS cached_max_ms
+     FROM chat_assignments ca
+     LEFT JOIN users ua ON ua.id = ca.assigned_user_id
+     LEFT JOIN users uc ON uc.id = ca.closed_by_id
+     LEFT JOIN chat_sync_state css ON css.device_id = ca.device_id AND css.chat_jid = ca.chat_jid
+     WHERE ca.status = ?
+       AND ca.device_id IN (${placeholders})
+       AND LOWER(ca.chat_jid) <> 'status@broadcast'
+       AND LOWER(ca.chat_jid) NOT LIKE '%@newsletter'${ownerClause}
+     ORDER BY MAX(ca.last_activity_ms, COALESCE(css.last_message_ms, 0)) DESC, ca.updated_at DESC${limitClause}`,
+    ...args,
+  );
+
+  return rows
+    .filter((row) => !isStatusBroadcastJid(row.chat_jid) && !isNewsletterJid(row.chat_jid))
+    .map((row) => {
+      const assignment = hydrateAssignmentRow(row);
+      const effectiveMs = Math.max(
+        assignment.last_activity_ms,
+        Number(row.sync_last_ms) || 0,
+        Number(row.cached_max_ms) || 0,
+        assignment.closed_at ? parseTimestampMs(assignment.closed_at) : 0,
+        assignment.updated_at || 0,
+      );
+      const lastMessageTime =
+        (row.sync_last_time && row.sync_last_time.trim()) ||
+        (effectiveMs > 0 ? new Date(effectiveMs).toISOString() : '') ||
+        assignment.closed_at ||
+        '';
+      const fallbackPhone = row.chat_jid.split('@')[0]?.split(':')[0] || row.chat_jid;
+      const resolvedName =
+        assignment.cached_title ||
+        (row.cached_sender_name && row.cached_sender_name.trim()) ||
+        fallbackPhone;
+
+      return {
+        jid: row.chat_jid,
+        name: resolvedName,
+        last_message_time: lastMessageTime,
+        last_activity_ms: effectiveMs,
+        device_id: row.device_id,
+        assignment,
+      };
+    })
+    .sort((a, b) => b.last_activity_ms - a.last_activity_ms);
+}
+
 export function listChatLifecycleEvents(
   deviceIdRaw: string,
   chatJidRaw: string,
@@ -472,14 +719,15 @@ export function listChatLifecycleEvents(
 ): ChatLifecycleEvent[] {
   const {deviceId, chatJid} = normalizeLifecycleTarget(deviceIdRaw, chatJidRaw);
   const safeLimit = Math.min(Math.max(limit, 1), 300);
-  const rows = db
-    .prepare(
-      `SELECT * FROM chat_lifecycle_events
-       WHERE device_id = ? AND chat_jid = ?
-       ORDER BY id DESC
-       LIMIT ?`,
-    )
-    .all(deviceId, chatJid, safeLimit) as unknown as LifecycleEventRow[];
+  const rows = queryAll<LifecycleEventRow>(
+    `SELECT ${LIFECYCLE_EVENT_COLUMNS} FROM chat_lifecycle_events
+     WHERE device_id = ? AND chat_jid = ?
+     ORDER BY id DESC
+     LIMIT ?`,
+    deviceId,
+    chatJid,
+    safeLimit,
+  );
 
   return rows.reverse().map((row) => ({
     id: row.id,

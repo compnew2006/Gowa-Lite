@@ -18,7 +18,8 @@ import {
 } from 'lucide-react';
 import {NavLink, Outlet, useLocation, useNavigate} from 'react-router-dom';
 import {toast} from 'sonner';
-import {listUnifiedChats, logoutUser, updateMyTheme} from '@/api/client';
+import {getAuthStatus, listUnifiedChats, logoutUser, updateMyTheme} from '@/api/client';
+import type {ChatAssignmentSummary, User} from '@/api/types';
 import {LanguageToggle} from '@/components/language-toggle';
 import {Button} from '@/components/ui/button';
 import {NotificationControls} from '@/features/notifications/notification-controls';
@@ -29,6 +30,7 @@ import {
   formatUnreadTabTitle,
   getBrowserNotificationPermission,
   playIncomingMessageChime,
+  shouldAlertIncomingChat,
   useNotificationPrefsStore,
 } from '@/lib/notifications';
 import {cn} from '@/lib/utils';
@@ -49,6 +51,9 @@ export function AppShell() {
   const browserEnabled = useNotificationPrefsStore((s) => s.browserEnabled);
   const [mobileOpen, setMobileOpen] = useState(false);
   const notifiedIdsRef = useRef<Set<string>>(new Set());
+  const lifecycleMapRef = useRef<Map<string, Pick<ChatAssignmentSummary, 'status' | 'assigned_user_id'>>>(
+    new Map(),
+  );
 
   const canReadChats = hasUserPermission(user, 'chats:read');
 
@@ -57,10 +62,25 @@ export function AppShell() {
     queryFn: () => listUnifiedChats({}),
     enabled: Boolean(user) && canReadChats,
     refetchInterval: 30_000,
-    staleTime: 20_000,
+    staleTime: 25_000,
   });
   const totalUnread = unreadQuery.data?.total_unread ?? 0;
   const accounts = unreadQuery.data?.accounts ?? [];
+
+  useEffect(() => {
+    const rows = unreadQuery.data?.data;
+    if (!rows) return;
+    const next = new Map<string, Pick<ChatAssignmentSummary, 'status' | 'assigned_user_id'>>();
+    for (const chat of rows) {
+      if (chat.lifecycle) {
+        next.set(`${chat.device_id}::${chat.jid}`, {
+          status: chat.lifecycle.status,
+          assigned_user_id: chat.lifecycle.assigned_user_id,
+        });
+      }
+    }
+    lifecycleMapRef.current = next;
+  }, [unreadQuery.data]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -75,11 +95,50 @@ export function AppShell() {
     if (!user) return;
     return onWsEvent((event) => {
       const code = (event.code || '').toUpperCase();
+      if (code === 'USER_ACCESS_UPDATED') {
+        const payloadUser =
+          event.result && typeof event.result === 'object'
+            ? (event.result as {user?: User}).user
+            : undefined;
+        if (payloadUser && payloadUser.id === user.id) {
+          useAuthStore.getState().setUser(payloadUser);
+        } else {
+          void getAuthStatus().then((status) => {
+            if (status.authenticated && status.user) {
+              useAuthStore.getState().setUser(status.user);
+            }
+          });
+        }
+        void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+        void queryClient.invalidateQueries({queryKey: ['unified-accounts']});
+        void queryClient.invalidateQueries({queryKey: ['unified-accounts-assign']});
+        void queryClient.invalidateQueries({queryKey: ['devices']});
+        void queryClient.invalidateQueries({queryKey: ['misc-statuses']});
+        void queryClient.invalidateQueries({queryKey: ['groups']});
+        void queryClient.invalidateQueries({queryKey: ['schedules']});
+        return;
+      }
+
+      if (code === 'CHAT_LIFECYCLE_UPDATED' && event.result && typeof event.result === 'object') {
+        const payload = event.result as {
+          device_id?: string;
+          chat_jid?: string;
+          assignment?: {status?: ChatAssignmentSummary['status']; assigned_user_id?: number | null};
+        };
+        if (payload.device_id && payload.chat_jid && payload.assignment?.status) {
+          lifecycleMapRef.current.set(`${payload.device_id}::${payload.chat_jid}`, {
+            status: payload.assignment.status,
+            assigned_user_id: payload.assignment.assigned_user_id ?? null,
+          });
+        }
+      }
+
       if (
         !location.pathname.startsWith('/chats') &&
         (code === 'MESSAGE_RECEIVED' ||
           code === 'MESSAGE' ||
           code === 'CHAT_UPDATED' ||
+          code === 'CHAT_LIFECYCLE_UPDATED' ||
           code === 'MESSAGE_REVOKED' ||
           code === 'MESSAGE.REVOKED' ||
           code === 'MESSAGE_DELETED' ||
@@ -90,6 +149,19 @@ export function AppShell() {
 
       const alert = extractIncomingAlertData(event);
       if (!alert) return;
+
+      const chatKey = `${alert.deviceId}::${alert.chatJid}`;
+      const lifecycle = lifecycleMapRef.current.get(chatKey) ?? null;
+      if (
+        !shouldAlertIncomingChat({
+          user,
+          deviceId: alert.deviceId,
+          chatJid: alert.chatJid,
+          lifecycle,
+        })
+      ) {
+        return;
+      }
 
       const dedupeKey = `${alert.deviceId}::${alert.messageId}`;
       if (notifiedIdsRef.current.has(dedupeKey)) return;

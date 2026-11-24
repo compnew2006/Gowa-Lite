@@ -1,4 +1,6 @@
 import dns from 'node:dns/promises';
+import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import {getGowaConfig, type GowaConfig} from './db.ts';
 import {GowaError} from './errors.ts';
@@ -102,6 +104,41 @@ export interface GowaDownloadedMedia {
   file_size: number;
 }
 
+const BLOCKED_METADATA_HOSTS = new Set([
+  'metadata.google.internal',
+  'metadata.goog',
+  'metadata.azure.internal',
+  '100.100.100.200',
+  'fd00:ec2::254',
+]);
+
+function isMetadataOrLinkLocalHost(hostname: string): boolean {
+  const clean = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (!clean) return true;
+  if (BLOCKED_METADATA_HOSTS.has(clean)) return true;
+  const normalized = clean.startsWith('::ffff:') ? clean.slice(7) : clean;
+  const family = net.isIP(normalized);
+  if (family === 4) {
+    const parts = normalized.split('.').map((n) => Number(n));
+    if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n))) return true;
+    const [a, b] = parts;
+    if (a === 0 || (a === 169 && b === 254)) return true;
+    return false;
+  }
+  if (family === 6) {
+    if (normalized === '::') return true;
+    if (
+      normalized.startsWith('fe8') ||
+      normalized.startsWith('fe9') ||
+      normalized.startsWith('fea') ||
+      normalized.startsWith('feb')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function validateGowaUrl(rawUrl: string): string {
   const trimmed = rawUrl.trim().replace(/\/+$/, '');
   if (!trimmed) {
@@ -116,8 +153,19 @@ export function validateGowaUrl(rawUrl: string): string {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new GowaError(400, 'INVALID_GOWA_URL', 'يجب أن يبدأ العنوان بـ http:// أو https://');
   }
-  if (parsed.hostname === '169.254.169.254' || parsed.hostname === 'metadata.google.internal') {
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (isMetadataOrLinkLocalHost(hostname)) {
     throw new GowaError(400, 'INVALID_GOWA_URL', 'عنوان الخادم غير مسموح به');
+  }
+  if (process.env.BLOCK_PRIVATE_GOWA_URL === 'true') {
+    if (
+      hostname === 'localhost' ||
+      hostname.endsWith('.local') ||
+      hostname.endsWith('.internal') ||
+      (net.isIP(hostname) !== 0 && isPrivateIpAddress(hostname))
+    ) {
+      throw new GowaError(400, 'INVALID_GOWA_URL', 'لا يُسمح بعناوين الشبكة الداخلية في هذا الوضع');
+    }
   }
   return trimmed;
 }
@@ -444,7 +492,15 @@ function isPrivateIpAddress(ip: string): boolean {
   return true;
 }
 
-async function assertPublicHttpUrl(rawUrl: string): Promise<URL> {
+interface PinnedPublicTarget {
+  url: URL;
+  pinnedAddress?: {
+    address: string;
+    family: 4 | 6;
+  };
+}
+
+async function assertPublicHttpUrl(rawUrl: string): Promise<PinnedPublicTarget> {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -455,68 +511,155 @@ async function assertPublicHttpUrl(rawUrl: string): Promise<URL> {
     throw new GowaError(400, 'INVALID_AVATAR_URL', 'بروتوكول رابط الصورة غير مسموح به');
   }
   const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
-  if (!hostname || hostname === 'localhost' || hostname.endsWith('.local')) {
+  if (!hostname || hostname === 'localhost' || hostname.endsWith('.local') || isMetadataOrLinkLocalHost(hostname)) {
     throw new GowaError(400, 'INVALID_AVATAR_URL', 'مضيف رابط الصورة غير مسموح به');
   }
-  if (net.isIP(hostname)) {
+  const ipFamily = net.isIP(hostname);
+  if (ipFamily) {
     if (isPrivateIpAddress(hostname)) {
       throw new GowaError(400, 'INVALID_AVATAR_URL', 'عنوان الشبكة غير مسموح به');
     }
-    return parsed;
+    return {
+      url: parsed,
+      pinnedAddress: {address: hostname, family: ipFamily as 4 | 6},
+    };
   }
   const resolved = await dns.lookup(hostname, {all: true});
   if (resolved.length === 0 || resolved.some((entry) => isPrivateIpAddress(entry.address))) {
     throw new GowaError(400, 'INVALID_AVATAR_URL', 'عنوان الشبكة غير مسموح به');
   }
-  return parsed;
+  const first = resolved[0];
+  return {
+    url: parsed,
+    pinnedAddress: {
+      address: first.address,
+      family: (first.family === 6 ? 6 : 4) as 4 | 6,
+    },
+  };
 }
 
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 
+function fetchPinnedUrlOnce(target: PinnedPublicTarget): Promise<{
+  status: number;
+  headers: http.IncomingHttpHeaders;
+  buffer: Buffer;
+}> {
+  const {url, pinnedAddress} = target;
+  const isHttps = url.protocol === 'https:';
+  const transport = isHttps ? https : http;
+  const hostname = url.hostname.replace(/^\[|\]$/g, '');
+
+  return new Promise((resolve, reject) => {
+    const req = transport.request(
+      url,
+      {
+        method: 'GET',
+        timeout: 8_000,
+        servername: isHttps && !net.isIP(hostname) ? hostname : undefined,
+        lookup: pinnedAddress
+          ? ((_host, options, callback) => {
+              if (options && typeof options === 'object' && 'all' in options && options.all) {
+                (callback as (err: NodeJS.ErrnoException | null, addresses: Array<{address: string; family: number}>) => void)(
+                  null,
+                  [{address: pinnedAddress.address, family: pinnedAddress.family}],
+                );
+                return;
+              }
+              (callback as (err: NodeJS.ErrnoException | null, address: string, family: number) => void)(
+                null,
+                pinnedAddress.address,
+                pinnedAddress.family,
+              );
+            }) as http.RequestOptions['lookup']
+          : undefined,
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        const contentLength = Number(res.headers['content-length'] || 0);
+        if (Number.isFinite(contentLength) && contentLength > MAX_AVATAR_BYTES) {
+          res.resume();
+          reject(new GowaError(502, 'AVATAR_TOO_LARGE', 'حجم الصورة يتجاوز الحد المسموح به'));
+          return;
+        }
+        const chunks: Buffer[] = [];
+        let receivedBytes = 0;
+        res.on('data', (chunk: Buffer) => {
+          receivedBytes += chunk.byteLength;
+          if (receivedBytes > MAX_AVATAR_BYTES) {
+            res.destroy();
+            reject(new GowaError(502, 'AVATAR_TOO_LARGE', 'حجم الصورة يتجاوز الحد المسموح به'));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on('end', () => {
+          resolve({
+            status,
+            headers: res.headers,
+            buffer: Buffer.concat(chunks),
+          });
+        });
+        res.on('error', (err) => reject(err));
+      },
+    );
+
+    req.on('timeout', () => {
+      req.destroy(new GowaError(502, 'AVATAR_FETCH_FAILED', 'انتهت مهلة تحميل الصورة الشخصية'));
+    });
+    req.on('error', (err) => {
+      if (err instanceof GowaError) {
+        reject(err);
+      } else {
+        reject(new GowaError(502, 'AVATAR_FETCH_FAILED', 'تعذر تنزيل الصورة الشخصية'));
+      }
+    });
+    req.end();
+  });
+}
+
 export async function fetchPublicAvatarImage(
   rawUrl: string,
 ): Promise<{buffer: Buffer; contentType: string}> {
-  let currentUrl = await assertPublicHttpUrl(rawUrl);
-  let response: Response | null = null;
+  let currentTarget = await assertPublicHttpUrl(rawUrl);
+  let response: {
+    status: number;
+    headers: http.IncomingHttpHeaders;
+    buffer: Buffer;
+  } | null = null;
 
   for (let hop = 0; hop < 3; hop += 1) {
-    const res = await fetch(currentUrl.toString(), {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(8_000),
-    });
+    const res = await fetchPinnedUrlOnce(currentTarget);
     if (res.status >= 300 && res.status < 400) {
-      const loc = res.headers.get('location');
+      const locHeader = res.headers.location;
+      const loc = Array.isArray(locHeader) ? locHeader[0] : locHeader;
       if (!loc) {
         throw new GowaError(502, 'AVATAR_FETCH_FAILED', 'تعذر تتبع رابط الصورة');
       }
-      currentUrl = await assertPublicHttpUrl(new URL(loc, currentUrl).toString());
+      currentTarget = await assertPublicHttpUrl(new URL(loc, currentTarget.url).toString());
       continue;
     }
     response = res;
     break;
   }
 
-  if (!response || !response.ok) {
+  if (!response || response.status < 200 || response.status >= 300) {
     throw new GowaError(502, 'AVATAR_FETCH_FAILED', 'تعذر تنزيل الصورة الشخصية');
   }
 
-  const contentType = (response.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
+  const rawType = response.headers['content-type'];
+  const headerType = Array.isArray(rawType) ? rawType[0] : rawType;
+  const contentType = (headerType || 'image/jpeg').split(';')[0].trim();
   if (!contentType.startsWith('image/')) {
     throw new GowaError(502, 'AVATAR_INVALID_TYPE', 'الاستجابة ليست صورة صالحة');
   }
 
-  const contentLength = Number(response.headers.get('content-length') || 0);
-  if (Number.isFinite(contentLength) && contentLength > MAX_AVATAR_BYTES) {
-    throw new GowaError(502, 'AVATAR_TOO_LARGE', 'حجم الصورة يتجاوز الحد المسموح به');
-  }
-
-  const arrayBuffer = await response.arrayBuffer();
-  if (arrayBuffer.byteLength === 0 || arrayBuffer.byteLength > MAX_AVATAR_BYTES) {
+  if (response.buffer.byteLength === 0 || response.buffer.byteLength > MAX_AVATAR_BYTES) {
     throw new GowaError(502, 'AVATAR_INVALID_SIZE', 'حجم الصورة غير صالح');
   }
 
   return {
-    buffer: Buffer.from(arrayBuffer),
+    buffer: response.buffer,
     contentType,
   };
 }

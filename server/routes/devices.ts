@@ -1,6 +1,7 @@
 import type {Router} from 'express';
-import {getAccountAliases, setAccountAlias} from '../db.ts';
+import {getAccountAliases, listKnownDeviceIds, setAccountAlias} from '../db.ts';
 import {
+  GowaError,
   gowaFetch,
   gowaFetchBinary,
   type GowaDevice,
@@ -17,7 +18,7 @@ import {
   requirePermission,
 } from '../middleware/auth.ts';
 import {filterAllowedDevices} from '../rbac.ts';
-import {decodeRouteParam} from '../security.ts';
+import {buildSafeMediaHeaders, decodeRouteParam} from '../security.ts';
 import {resolveAccountDisplayName} from '../services/chat-sync.ts';
 import type {AuthedRequest} from '../types.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
@@ -56,6 +57,74 @@ export function registerDeviceRoutes(wsBridge: GowaWsBridge): Router {
       } catch (err) {
         handleRouteError(res, err);
       }
+    },
+  );
+
+  router.get(
+    '/api/users/assignable-accounts',
+    requireAuth,
+    requireAnyPermission(['users:read', 'users:write', 'accounts:assign']),
+    async (req: AuthedRequest, res) => {
+      const aliases = getAccountAliases();
+      const knownIds = listKnownDeviceIds();
+      let liveDevices: GowaDevice[] = [];
+      let gowaReachable = false;
+      let errorMessage: string | undefined;
+
+      try {
+        liveDevices = (await gowaFetch<GowaDevice[]>('/devices', {timeoutMs: 5_000})) ?? [];
+        gowaReachable = true;
+      } catch (err) {
+        errorMessage =
+          err instanceof GowaError ? err.message : 'تعذر الاتصال بخادم gowa حاليًا';
+      }
+
+      const byId = new Map<
+        string,
+        {
+          id: string;
+          display_name: string;
+          phone_number: string | null;
+          state: GowaDevice['state'];
+          jid: string | null;
+          source: 'live' | 'cached';
+        }
+      >();
+
+      for (const dev of liveDevices) {
+        byId.set(dev.id, {
+          id: dev.id,
+          display_name: resolveAccountDisplayName(dev, aliases),
+          phone_number: dev.phone_number ?? null,
+          state: dev.state,
+          jid: dev.jid ?? null,
+          source: 'live',
+        });
+      }
+
+      for (const id of knownIds) {
+        if (!byId.has(id)) {
+          byId.set(id, {
+            id,
+            display_name: aliases[id] ?? id,
+            phone_number: null,
+            state: 'disconnected',
+            jid: null,
+            source: 'cached',
+          });
+        }
+      }
+
+      const accounts = filterAllowedDevices(req.user!, Array.from(byId.values()));
+      res.json({
+        code: 'SUCCESS',
+        message: 'ok',
+        results: {
+          gowa_reachable: gowaReachable,
+          error_message: errorMessage,
+          accounts,
+        },
+      });
     },
   );
 
@@ -260,7 +329,12 @@ export function registerDeviceRoutes(wsBridge: GowaWsBridge): Router {
         const deviceId = decodeRouteParam(req.params.id);
         assertDeviceAccess(req.user, deviceId);
         const asset = await gowaFetchBinary(qrPath);
+        const safeHeaders = buildSafeMediaHeaders(asset.contentType, asset.filename);
         res.setHeader('Content-Type', asset.contentType);
+        res.setHeader('Content-Disposition', safeHeaders.disposition);
+        if (safeHeaders.csp) {
+          res.setHeader('Content-Security-Policy', safeHeaders.csp);
+        }
         res.setHeader('Cache-Control', 'no-store');
         res.send(asset.buffer);
       } catch (err) {

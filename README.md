@@ -6,7 +6,7 @@
 
 ## المتطلبات
 
-- **Node.js `>= 22.6`** (تم التحقق على `v22.23.5` لتشغيل `node server.ts` مباشرة عبر Type Stripping واستخدام `node:sqlite`).
+- **Node.js `>= 22.18`** (تم التحقق على `v22.23.5` لتشغيل `node server.ts` مباشرة عبر Type Stripping واستخدام `node:sqlite`).
 - **npm** لتثبيت الاعتماديات وبناء الواجهة.
 - خادم **GOWA** متاح عبر HTTP/HTTPS وWebSocket للربط الفعلي مع أجهزة واتساب.
 
@@ -22,6 +22,10 @@
 | `NODE_ENV` | `development` | اضبطه إلى `production` لتقديم حزمة `dist/` الساكنة بدل خادم Vite التطويري. |
 | `ADMIN_PASSCODE` | *(فارغ)* | رمز مرور اختياري لتخطي معالج الإعداد الأولي (`/api/auth/setup`) وتفعيل الدخول الفوري لحساب `admin`. عند ضبطه يُغلق `/api/auth/setup` برمز `403`. |
 | `GOWA_LITE_DB_PATH` | `./gowa-lite.db` | مسار ملف قاعدة بيانات SQLite (مفيد لعزل قاعدة البيانات في مجلد دائم أو أثناء الاختبار). |
+| `GOWA_SETTINGS_SECRET` | *(تلقائي)* | سر تشفير كلمة مرور GOWA في SQLite (`AES-256-GCM`). إذا تُرك فارغًا، ينشئ الخادم مفتاحًا عشوائيًا في `${GOWA_LITE_DB_PATH}.key` بصلاحية `0600`. |
+| `TRUST_PROXY` | `false` | إعداد `trust proxy` في Express (`false`، `true`، عدد القفزات مثل `1`، أو نطاق IP). اضبطه عند التشغيل خلف Nginx/Cloudflare حتى يقرأ `AuthRateLimiter` عنوان العميل الحقيقي من `X-Forwarded-For` بأمان. |
+| `BLOCK_PRIVATE_GOWA_URL` | `false` | اضبطه إلى `true` في البيئات العامة لمنع استخدام عناوين الشبكة الداخلية (`localhost` وRFC1918) كعنوان خادم GOWA (عناوين Cloud Metadata وLink-Local محجوبة دائمًا). |
+| `ENABLE_COMPRESSION` | `true` | تفعيل ضغط الاستجابات غير المتزامن (`gzip`/`deflate`) لطلبات HTTP الأكبر من 1KB. |
 | `GOWA_URL` | *(فارغ)* | رابط خادم GOWA الافتراضي (يمكن ضبطه أو تغييره من واجهة الإعدادات، وتُقدَّم إعدادات الواجهة المحفوظة عليه). |
 | `GOWA_USERNAME` | *(فارغ)* | اسم مستخدم Basic Auth لخادم GOWA الافتراضي. |
 | `GOWA_PASSWORD` | *(فارغ)* | كلمة مرور Basic Auth لخادم GOWA الافتراضي. |
@@ -51,24 +55,28 @@ NODE_ENV=production PORT=3000 node server.ts
 NODE_ENV=production npm start
 ```
 
-> عند ضبط `NODE_ENV=production` يقدّم الخادم واجهة `dist/` المقسّمة إلى حزم منفصلة (`React.lazy` + `manualChunks`) مع ضغط `gzip` والتخزين المؤقت الدائم لملفات `dist/assets/*`، وإبقاء جميع مسارات `/api/*` وجسر `/ws` على نفس المنفذ.
+> عند ضبط `NODE_ENV=production` يقدّم الخادم واجهة `dist/` المقسّمة إلى حزم منفصلة (`React.lazy` + `manualChunks`) مع ضغط غير متزامن (`compression`) والتخزين المؤقت الدائم لملفات `dist/assets/*`، وإبقاء جميع مسارات `/api/*` وجسر `/ws` على نفس المنفذ.
 
-### 4. الفحص النوعي والاختبارات الآلية
+### 4. الفحص النوعي والاختبارات الآلية والفحص الحي
 ```bash
 npm run lint
 npm test
+npm run verify:live
 ```
 
 ---
 
 ## النسخ الاحتياطي والاستعادة (`gowa-lite.db`)
 
-تعمل قاعدة البيانات في وضع **SQLite WAL** (`PRAGMA journal_mode = WAL;`)، ما يعني وجود ثلاثة ملفات مرتبطة أثناء التشغيل:
+تعمل قاعدة البيانات في وضع **SQLite WAL** (`PRAGMA journal_mode = WAL;`)، ما يعني وجود ثلاثة ملفات مرتبطة أثناء التشغيل، بالإضافة إلى ملف مفتاح التشفير إذا لم يُضبط `GOWA_SETTINGS_SECRET`:
 - `gowa-lite.db` (قاعدة البيانات الرئيسية)
 - `gowa-lite.db-wal` (سجل الكتابة المسبق النشط)
 - `gowa-lite.db-shm` (الذاكرة المشتركة لفهرس WAL)
+- `gowa-lite.db.key` (مفتاح التشفير التلقائي لكلمة مرور GOWA في جدول `settings`)
 
-> تحذير: نسخ `gowa-lite.db` وحده أثناء تشغيل الخادم دون دمج `-wal` قد ينتج نسخة غير متسقة أو ناقصة أحدث الجلسات والملاحظات.
+> تحذير:
+> 1. نسخ `gowa-lite.db` وحده أثناء تشغيل الخادم دون دمج `-wal` قد ينتج نسخة غير متسقة أو ناقصة أحدث الجلسات والملاحظات.
+> 2. إذا لم تضبط `GOWA_SETTINGS_SECRET`، احتفظ بنسخة من `gowa-lite.db.key` في مكان آمن بجانب النسخة الاحتياطية حتى يمكن فك تشفير كلمة مرور GOWA بعد الاستعادة.
 
 ### الطريقة الآمنة للنسخ الاحتياطي (أثناء التشغيل أو التوقف)
 
@@ -83,10 +91,10 @@ db.exec("VACUUM INTO \"./gowa-lite.backup.db\"");
 
 **الخيار ب — إيقاف الخادم ثم نسخ الملفات:**
 1. أوقف عملية `node server.ts` (`SIGTERM` يغلق الجسر والخادم بانتظام).
-2. انسخ `gowa-lite.db` مع `gowa-lite.db-wal` و`gowa-lite.db-shm` (إن وُجدت) إلى موقع النسخ الاحتياطي.
+2. انسخ `gowa-lite.db` مع `gowa-lite.db-wal` و`gowa-lite.db-shm` و`gowa-lite.db.key` (إن وُجدت) إلى موقع النسخ الاحتياطي.
 
 ### الاستعادة
 1. أوقف الخادم تمامًا.
 2. احذف أي بقايا قديمة لـ `gowa-lite.db-wal` و`gowa-lite.db-shm` إذا كانت النسخة مأخوذة عبر `VACUUM INTO`.
-3. انسخ ملف النسخة الاحتياطية إلى المسار المحدد في `GOWA_LITE_DB_PATH` (أو `./gowa-lite.db`).
+3. انسخ ملف النسخة الاحتياطية (وملف `.key` إن استُخدم) إلى المسار المحدد في `GOWA_LITE_DB_PATH` (أو `./gowa-lite.db`).
 4. أعد تشغيل الخادم وتأكد من `/api/auth/status`.

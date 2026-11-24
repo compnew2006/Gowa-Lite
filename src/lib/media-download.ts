@@ -1,4 +1,4 @@
-import {Zip, ZipPassThrough} from 'fflate';
+import type {Zip} from 'fflate';
 import type {MessageInfo} from '@/api/types';
 
 export const DOWNLOADABLE_MEDIA_TYPES = new Set([
@@ -182,16 +182,20 @@ export function formatZipArchiveName(date = new Date()): string {
 }
 
 /**
- * Incremental zero-compression (STORE) ZIP builder using fflate.
+ * Incremental zero-compression (STORE) ZIP builder using fflate (lazy-loaded on demand).
  * Media attachments (JPEG, MP4, PDF, OGG, WebP) are already compressed, so STORE
  * avoids CPU overhead while streaming bytes immediately into final chunks.
  */
 export class StreamingZipBuilder {
   private readonly usedNames = new Set<string>();
   private readonly chunks: ArrayBuffer[] = [];
+  private readonly pendingEntries: Array<{name: string; data: Uint8Array}> = [];
   private readonly donePromise: Promise<Blob>;
-  private readonly zip: Zip;
+  private readonly readyPromise: Promise<void>;
+  private zip: Zip | null = null;
+  private zipPassThroughCtor: (typeof import('fflate'))['ZipPassThrough'] | null = null;
   private finished = false;
+  private aborted = false;
   private entryCount = 0;
 
   constructor() {
@@ -202,20 +206,34 @@ export class StreamingZipBuilder {
       rejectDone = reject;
     });
 
-    this.zip = new Zip((err, chunk, final) => {
-      if (err) {
+    this.readyPromise = import('fflate')
+      .then((fflate) => {
+        if (this.aborted) return;
+        this.zipPassThroughCtor = fflate.ZipPassThrough;
+        this.zip = new fflate.Zip((err, chunk, final) => {
+          if (err) {
+            rejectDone(err);
+            return;
+          }
+          if (chunk.byteLength > 0) {
+            const copy = new Uint8Array(chunk.byteLength);
+            copy.set(chunk);
+            this.chunks.push(copy.buffer);
+          }
+          if (final) {
+            resolveDone(new Blob(this.chunks, {type: 'application/zip'}));
+          }
+        });
+        for (const pending of this.pendingEntries) {
+          const entry = new fflate.ZipPassThrough(pending.name);
+          this.zip.add(entry);
+          entry.push(pending.data, true);
+        }
+        this.pendingEntries.length = 0;
+      })
+      .catch((err) => {
         rejectDone(err);
-        return;
-      }
-      if (chunk.byteLength > 0) {
-        const copy = new Uint8Array(chunk.byteLength);
-        copy.set(chunk);
-        this.chunks.push(copy.buffer);
-      }
-      if (final) {
-        resolveDone(new Blob(this.chunks, {type: 'application/zip'}));
-      }
-    });
+      });
   }
 
   get count(): number {
@@ -227,25 +245,32 @@ export class StreamingZipBuilder {
       throw new Error('ZIP archive already finalized');
     }
     const entryName = buildUniqueEntryName(rawFilename, this.usedNames);
-    const entry = new ZipPassThrough(entryName);
-    this.zip.add(entry);
-    entry.push(data, true);
+    if (this.zip && this.zipPassThroughCtor) {
+      const entry = new this.zipPassThroughCtor(entryName);
+      this.zip.add(entry);
+      entry.push(data, true);
+    } else {
+      this.pendingEntries.push({name: entryName, data});
+    }
     this.entryCount += 1;
     return entryName;
   }
 
   async finalize(): Promise<Blob> {
+    await this.readyPromise;
     if (!this.finished) {
       this.finished = true;
-      this.zip.end();
+      this.zip?.end();
     }
     return this.donePromise;
   }
 
   abort(): void {
+    this.aborted = true;
     this.finished = true;
+    this.pendingEntries.length = 0;
     this.chunks.length = 0;
-    this.zip.terminate();
+    this.zip?.terminate();
   }
 }
 

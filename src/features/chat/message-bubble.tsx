@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useRef, useState} from 'react';
+import {memo, useEffect, useMemo, useRef, useState} from 'react';
 import {Ban, Check, CheckCheck, Copy, Forward, Reply, SmilePlus, Trash2} from 'lucide-react';
 import {toast} from 'sonner';
 import type {MessageInfo} from '@/api/types';
@@ -179,7 +179,7 @@ function MessageBubbleActions({
               aria-label={t.chats.addReaction}
               aria-expanded={isReactionPickerOpen}
               className={cn(
-                'flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40',
+                'flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-40',
                 isReactionPickerOpen && 'bg-secondary text-foreground',
               )}
             >
@@ -203,7 +203,7 @@ function MessageBubbleActions({
                       onCloseReactionPicker();
                     }}
                     className={cn(
-                      'flex size-8 cursor-pointer items-center justify-center rounded-full text-base transition-transform hover:scale-115 hover:bg-muted',
+                      'flex size-8 cursor-pointer items-center justify-center rounded-full text-base transition-transform hover:scale-115 hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring',
                       myReactionEmoji === emoji && 'bg-primary/15 ring-1 ring-primary/50',
                     )}
                   >
@@ -220,7 +220,7 @@ function MessageBubbleActions({
             onClick={() => onReply(message)}
             title={isDeviceReady ? t.chats.reply : t.chats.accountCurrentlyOffline}
             aria-label={t.chats.reply}
-            className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Reply className="size-3.5" />
           </button>
@@ -233,7 +233,7 @@ function MessageBubbleActions({
           onClick={onCopy}
           title={t.chats.copyText}
           aria-label={t.chats.copyText}
-          className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground"
+          className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
         >
           {copied ? <Check className="size-3.5 text-primary" /> : <Copy className="size-3.5" />}
         </button>
@@ -245,7 +245,7 @@ function MessageBubbleActions({
           onClick={() => onForward(message)}
           title={t.chats.forwardMessage}
           aria-label={t.chats.forwardMessage}
-          className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground"
+          className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
         >
           <Forward className="size-3.5" />
         </button>
@@ -258,7 +258,7 @@ function MessageBubbleActions({
           onClick={() => onRevoke(message)}
           title={isDeviceReady ? t.chats.revokeMessage : t.chats.accountCurrentlyOffline}
           aria-label={t.chats.revokeMessage}
-          className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-destructive/15 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-destructive/15 hover:text-destructive focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Trash2 className="size-3.5" />
         </button>
@@ -267,7 +267,7 @@ function MessageBubbleActions({
   );
 }
 
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
   quoted,
   deviceId,
@@ -339,7 +339,7 @@ export function MessageBubble({
         onToggleSelect(message.id, event.shiftKey);
       }}
       className={cn(
-        'group w-full px-4 sm:px-8 lg:px-14 transition-colors',
+        'message-row group w-full px-4 sm:px-8 lg:px-14 transition-colors',
         isSelectable && 'cursor-pointer py-0.5',
         isSelectable &&
           (isSelected ? 'bg-primary/10' : 'hover:bg-black/5 dark:hover:bg-white/5'),
@@ -359,7 +359,7 @@ export function MessageBubble({
             aria-label={message.filename || message.media_type}
             onClick={(event) => onToggleSelect(message.id, event.shiftKey)}
             className={cn(
-              'mb-1 flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md border transition-colors self-center',
+              'mb-1 flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md border transition-colors self-center focus-visible:outline-2 focus-visible:outline-ring',
               isOut ? 'ltr:order-last rtl:order-first' : 'ltr:order-first rtl:order-last',
               isSelected
                 ? 'border-primary bg-primary text-primary-foreground shadow-xs'
@@ -441,4 +441,4 @@ export function MessageBubble({
       </div>
     </div>
   );
-}
+});

@@ -44,6 +44,17 @@ import {
 } from '../rbac.ts';
 import {AuthRateLimiter, canReuseSavedGowaCredentials, getClientIp} from '../security.ts';
 import type {AuthedRequest} from '../types.ts';
+import {
+  createUserSchema,
+  loginAuthSchema,
+  parsePositiveIntId,
+  parseSchema,
+  setupAuthSchema,
+  testGowaSettingsSchema,
+  updateGowaSettingsSchema,
+  updatePreferencesSchema,
+  updateUserSchema,
+} from '../validation/schemas.ts';
 import {issueWsTicket, type GowaWsBridge} from '../ws-bridge.ts';
 
 export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
@@ -93,49 +104,25 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
       return;
     }
 
-    const body = req.body as {
-      display_name?: unknown;
-      username?: unknown;
-      password?: unknown;
-      gowa_url?: unknown;
-      gowa_username?: unknown;
-      gowa_password?: unknown;
-    };
-
-    const displayName = typeof body.display_name === 'string' ? body.display_name.trim() : '';
-    const username = typeof body.username === 'string' ? body.username.trim() : '';
-    const password = typeof body.password === 'string' ? body.password : '';
-    const gowaUrl = typeof body.gowa_url === 'string' ? body.gowa_url.trim() : '';
-    const gowaUsername = typeof body.gowa_username === 'string' ? body.gowa_username.trim() : '';
-    const gowaPassword = typeof body.gowa_password === 'string' ? body.gowa_password : '';
-
-    if (displayName.length < 2) {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'يرجى إدخال اسم المسؤول الكامل'});
-      return;
-    }
-    if (!/^[a-zA-Z0-9._-]{3,32}$/.test(username)) {
-      res.status(400).json({
-        code: 'VALIDATION_ERROR',
-        message: 'اسم الدخول يجب أن يكون بين 3 و 32 حرفًا إنجليزيًا أو رقمًا',
-      });
-      return;
-    }
-    if (password.length < 8) {
-      res.status(400).json({
-        code: 'VALIDATION_ERROR',
-        message: 'كلمة المرور يجب أن لا تقل عن 8 أحرف',
-      });
-      return;
-    }
-
-    if (gowaUrl) {
-      try {
-        validateGowaUrl(gowaUrl);
-      } catch (err) {
-        handleRouteError(res, err);
-        return;
+    let parsedSetup;
+    try {
+      parsedSetup = parseSchema(setupAuthSchema, req.body ?? {});
+      if (parsedSetup.gowa_url) {
+        validateGowaUrl(parsedSetup.gowa_url);
       }
+    } catch (err) {
+      handleRouteError(res, err);
+      return;
     }
+
+    const {
+      display_name: displayName,
+      username,
+      password,
+      gowa_url: gowaUrl,
+      gowa_username: gowaUsername,
+      gowa_password: gowaPassword,
+    } = parsedSetup;
 
     const passwordHashOverride = await hashPasswordAsync(password);
 
@@ -192,12 +179,11 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
   });
 
   router.post('/api/auth/login', async (req, res) => {
-    const body = req.body as {username?: unknown; password?: unknown};
-    const username = typeof body.username === 'string' ? body.username.trim() : '';
-    const password = typeof body.password === 'string' ? body.password : '';
+    const rawBody = (req.body ?? {}) as {username?: unknown};
+    const rawUsername = typeof rawBody.username === 'string' ? rawBody.username.trim() : '';
     const clientIp = getClientIp(req);
 
-    const limitStatus = authRateLimiter.check(clientIp, username);
+    const limitStatus = authRateLimiter.check(clientIp, rawUsername);
     if (!limitStatus.allowed) {
       res.setHeader('Retry-After', String(limitStatus.retryAfterSec));
       res.status(429).json({
@@ -207,8 +193,14 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
       return;
     }
 
-    if (!username || !password) {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'يرجى إدخال اسم الدخول وكلمة المرور'});
+    let username: string;
+    let password: string;
+    try {
+      const parsed = parseSchema(loginAuthSchema, req.body ?? {});
+      username = parsed.username;
+      password = parsed.password;
+    } catch (err) {
+      handleRouteError(res, err);
       return;
     }
 
@@ -261,33 +253,18 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
   });
 
   router.put('/api/me/preferences', requireAuth, (req: AuthedRequest, res) => {
-    const body = req.body as {theme?: unknown; language?: unknown};
-    const patch: {theme?: ThemePreference; language?: LanguagePreference} = {};
+    try {
+      const parsed = parseSchema(updatePreferencesSchema, req.body ?? {});
+      const patch: {theme?: ThemePreference; language?: LanguagePreference} = {};
+      if (parsed.theme !== undefined) patch.theme = parsed.theme;
+      if (parsed.language !== undefined) patch.language = parsed.language;
 
-    if (body.theme !== undefined) {
-      if (body.theme !== 'light' && body.theme !== 'dark' && body.theme !== 'system') {
-        res.status(400).json({code: 'VALIDATION_ERROR', message: 'قيمة السمة غير صالحة'});
-        return;
-      }
-      patch.theme = body.theme;
+      setUserPreferences(req.user!.id, patch);
+      const updated = getUserById(req.user!.id);
+      res.json({code: 'SUCCESS', message: 'تم حفظ التفضيلات', results: updated});
+    } catch (err) {
+      handleRouteError(res, err);
     }
-
-    if (body.language !== undefined) {
-      if (body.language !== 'ar' && body.language !== 'en') {
-        res.status(400).json({code: 'VALIDATION_ERROR', message: 'قيمة اللغة غير صالحة'});
-        return;
-      }
-      patch.language = body.language;
-    }
-
-    if (patch.theme === undefined && patch.language === undefined) {
-      res.status(400).json({code: 'VALIDATION_ERROR', message: 'يرجى تحديد تفضيل للتحديث'});
-      return;
-    }
-
-    setUserPreferences(req.user!.id, patch);
-    const updated = getUserById(req.user!.id);
-    res.json({code: 'SUCCESS', message: 'تم حفظ التفضيلات', results: updated});
   });
 
   router.post('/api/auth/ws-ticket', requireAuth, (req: AuthedRequest, res) => {
@@ -304,36 +281,14 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
     requireAuth,
     requirePermission('users', 'write'),
     async (req: AuthedRequest, res) => {
-      const body = req.body as {
-        username?: unknown;
-        display_name?: unknown;
-        password?: unknown;
-        role?: unknown;
-        role_id?: unknown;
-        allowed_device_ids?: unknown;
-      };
-      const username = typeof body.username === 'string' ? body.username.trim() : '';
-      const displayName = typeof body.display_name === 'string' ? body.display_name.trim() : '';
-      const password = typeof body.password === 'string' ? body.password : '';
-
-      if (displayName.length < 2) {
-        res.status(400).json({code: 'VALIDATION_ERROR', message: 'الاسم الكامل مطلوب'});
+      let body;
+      try {
+        body = parseSchema(createUserSchema, req.body ?? {});
+      } catch (err) {
+        handleRouteError(res, err);
         return;
       }
-      if (!/^[a-zA-Z0-9._-]{3,32}$/.test(username)) {
-        res.status(400).json({
-          code: 'VALIDATION_ERROR',
-          message: 'اسم الدخول يجب أن يكون بين 3 و 32 حرفًا إنجليزيًا أو رقمًا',
-        });
-        return;
-      }
-      if (password.length < 8) {
-        res.status(400).json({
-          code: 'VALIDATION_ERROR',
-          message: 'كلمة المرور يجب أن لا تقل عن 8 أحرف',
-        });
-        return;
-      }
+      const {username, display_name: displayName, password} = body;
 
       let targetRoleId: number | undefined;
       if (body.role_id !== undefined) {
@@ -422,9 +377,13 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
     requireAuth,
     requirePermission('users', 'write'),
     async (req: AuthedRequest, res) => {
-      const targetId = Number(req.params.id);
-      if (!Number.isInteger(targetId) || targetId <= 0) {
-        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف المستخدم غير صالح'});
+      let targetId: number;
+      let body;
+      try {
+        targetId = parsePositiveIntId(req.params.id, 'معرّف المستخدم');
+        body = parseSchema(updateUserSchema, req.body ?? {});
+      } catch (err) {
+        handleRouteError(res, err);
         return;
       }
       const existing = getUserById(targetId);
@@ -432,15 +391,6 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
         res.status(404).json({code: 'NOT_FOUND', message: 'المستخدم غير موجود'});
         return;
       }
-
-      const body = req.body as {
-        display_name?: unknown;
-        role?: unknown;
-        role_id?: unknown;
-        allowed_device_ids?: unknown;
-        is_active?: unknown;
-        password?: unknown;
-      };
 
       if (!isAdminSubject(req.user!) && existing.role_slug === 'admin') {
         res.status(403).json({
@@ -566,6 +516,13 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
         is_active: nextActive,
         password,
       });
+      if (updated) {
+        wsBridge.sendToUser(targetId, {
+          code: 'USER_ACCESS_UPDATED',
+          message: 'updated',
+          result: {user: updated},
+        });
+      }
       res.json({code: 'SUCCESS', message: 'تم تحديث بيانات المستخدم', results: updated});
     },
   );
@@ -622,48 +579,42 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
   });
 
   router.put('/api/settings/gowa', requireAuth, requirePermission('settings', 'write'), (req, res) => {
-    const body = req.body as {
-      gowa_url?: unknown;
-      gowa_username?: unknown;
-      gowa_password?: unknown;
-      clear_password?: unknown;
-    };
-    const rawUrl = typeof body.gowa_url === 'string' ? body.gowa_url.trim() : '';
-    const username = typeof body.gowa_username === 'string' ? body.gowa_username.trim() : '';
-    const clearPassword = body.clear_password === true;
-    const password =
-      clearPassword
-        ? ''
-        : typeof body.gowa_password === 'string' && body.gowa_password.length > 0
-          ? body.gowa_password
-          : undefined;
+    try {
+      const body = parseSchema(updateGowaSettingsSchema, req.body ?? {});
+      const rawUrl = body.gowa_url;
+      const username = body.gowa_username;
+      const clearPassword = body.clear_password === true;
+      const password =
+        clearPassword
+          ? ''
+          : typeof body.gowa_password === 'string' && body.gowa_password.length > 0
+            ? body.gowa_password
+            : undefined;
 
-    if (rawUrl) {
-      try {
+      if (rawUrl) {
         validateGowaUrl(rawUrl);
-      } catch (err) {
-        handleRouteError(res, err);
-        return;
       }
+
+      setGowaConfig({
+        url: rawUrl,
+        username,
+        password,
+      });
+      wsBridge.resetAndReconnect();
+
+      const updated = getGowaConfig();
+      res.json({
+        code: 'SUCCESS',
+        message: 'تم حفظ إعدادات خادم gowa',
+        results: {
+          gowa_url: updated.url,
+          gowa_username: updated.username,
+          has_password: Boolean(updated.password),
+        },
+      });
+    } catch (err) {
+      handleRouteError(res, err);
     }
-
-    setGowaConfig({
-      url: rawUrl,
-      username,
-      password,
-    });
-    wsBridge.resetAndReconnect();
-
-    const updated = getGowaConfig();
-    res.json({
-      code: 'SUCCESS',
-      message: 'تم حفظ إعدادات خادم gowa',
-      results: {
-        gowa_url: updated.url,
-        gowa_username: updated.username,
-        has_password: Boolean(updated.password),
-      },
-    });
   });
 
   router.post(
@@ -671,38 +622,35 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
     requireAuth,
     requirePermission('settings', 'write'),
     async (req, res) => {
-      const body = req.body as {
-        gowa_url?: unknown;
-        gowa_username?: unknown;
-        gowa_password?: unknown;
-      };
-      const saved = getGowaConfig();
-      const url =
-        typeof body.gowa_url === 'string' && body.gowa_url.trim()
-          ? body.gowa_url.trim()
-          : saved.url;
-      const canReuseCreds = canReuseSavedGowaCredentials(url, saved.url);
-      const username =
-        typeof body.gowa_username === 'string'
-          ? body.gowa_username.trim()
-          : canReuseCreds
-            ? saved.username
-            : '';
-      const password =
-        typeof body.gowa_password === 'string' && body.gowa_password.length > 0
-          ? body.gowa_password
-          : canReuseCreds
-            ? saved.password
-            : '';
+      try {
+        const body = parseSchema(testGowaSettingsSchema, req.body ?? {});
+        const saved = getGowaConfig();
+        const url = body.gowa_url && body.gowa_url.length > 0 ? body.gowa_url : saved.url;
+        const canReuseCreds = canReuseSavedGowaCredentials(url, saved.url);
+        const username =
+          body.gowa_username !== undefined
+            ? body.gowa_username
+            : canReuseCreds
+              ? saved.username
+              : '';
+        const password =
+          typeof body.gowa_password === 'string' && body.gowa_password.length > 0
+            ? body.gowa_password
+            : canReuseCreds
+              ? saved.password
+              : '';
 
-      const result = await probeGowa({url, username, password});
-      res.json({
-        code: result.ok ? 'SUCCESS' : result.code || 'FAILED',
-        message: result.ok
-          ? `تم الاتصال بنجاح (${result.devicesCount} حساب)`
-          : result.error || 'فشل الاتصال',
-        results: result,
-      });
+        const result = await probeGowa({url, username, password});
+        res.json({
+          code: result.ok ? 'SUCCESS' : result.code || 'FAILED',
+          message: result.ok
+            ? `تم الاتصال بنجاح (${result.devicesCount} حساب)`
+            : result.error || 'فشل الاتصال',
+          results: result,
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
     },
   );
 

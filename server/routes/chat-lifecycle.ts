@@ -24,6 +24,7 @@ import {
   updateInboxPolicy,
 } from '../services/chat-lifecycle.ts';
 import type {AuthedRequest} from '../types.ts';
+import {lifecycleActionBodySchema, parseSchema} from '../validation/schemas.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
 
 export function registerChatLifecycleRoutes(wsBridge: GowaWsBridge): Router {
@@ -177,9 +178,9 @@ export function registerChatLifecycleRoutes(wsBridge: GowaWsBridge): Router {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
-        const body = (req.body ?? {}) as {cached_title?: unknown};
+        const body = parseSchema(lifecycleActionBodySchema, req.body ?? {});
         const result = claimChat(req.user!, deviceId, chatJid, {
-          cachedTitle: typeof body.cached_title === 'string' ? body.cached_title : undefined,
+          cachedTitle: body.cached_title,
         });
         wsBridge.broadcast(buildLifecycleWsPayload(result.assignment, result.event));
         res.json({
@@ -202,11 +203,7 @@ export function registerChatLifecycleRoutes(wsBridge: GowaWsBridge): Router {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
-        const body = (req.body ?? {}) as {
-          assigned_user_id?: unknown;
-          note?: unknown;
-          cached_title?: unknown;
-        };
+        const body = parseSchema(lifecycleActionBodySchema, req.body ?? {});
 
         let assignedUserId: number | null;
         if (body.assigned_user_id === null || body.assigned_user_id === undefined) {
@@ -221,8 +218,8 @@ export function registerChatLifecycleRoutes(wsBridge: GowaWsBridge): Router {
         }
 
         const result = assignChat(req.user!, deviceId, chatJid, assignedUserId, {
-          note: typeof body.note === 'string' ? body.note : undefined,
-          cachedTitle: typeof body.cached_title === 'string' ? body.cached_title : undefined,
+          note: body.note,
+          cachedTitle: body.cached_title,
         });
         if (result.event) {
           wsBridge.broadcast(buildLifecycleWsPayload(result.assignment, result.event));
@@ -247,10 +244,10 @@ export function registerChatLifecycleRoutes(wsBridge: GowaWsBridge): Router {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
-        const body = (req.body ?? {}) as {note?: unknown; cached_title?: unknown};
+        const body = parseSchema(lifecycleActionBodySchema, req.body ?? {});
         const result = releaseChat(req.user!, deviceId, chatJid, {
-          note: typeof body.note === 'string' ? body.note : undefined,
-          cachedTitle: typeof body.cached_title === 'string' ? body.cached_title : undefined,
+          note: body.note,
+          cachedTitle: body.cached_title,
         });
         if (result.event) {
           wsBridge.broadcast(buildLifecycleWsPayload(result.assignment, result.event));
@@ -275,10 +272,10 @@ export function registerChatLifecycleRoutes(wsBridge: GowaWsBridge): Router {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
-        const body = (req.body ?? {}) as {reason?: unknown; cached_title?: unknown};
+        const body = parseSchema(lifecycleActionBodySchema, req.body ?? {});
         const result = closeChat(req.user!, deviceId, chatJid, {
-          reason: typeof body.reason === 'string' ? body.reason : undefined,
-          cachedTitle: typeof body.cached_title === 'string' ? body.cached_title : undefined,
+          reason: body.reason,
+          cachedTitle: body.cached_title,
         });
         if (result.event) {
           wsBridge.broadcast(buildLifecycleWsPayload(result.assignment, result.event));
@@ -303,15 +300,11 @@ export function registerChatLifecycleRoutes(wsBridge: GowaWsBridge): Router {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
-        const body = (req.body ?? {}) as {
-          assign_to_self?: unknown;
-          note?: unknown;
-          cached_title?: unknown;
-        };
+        const body = parseSchema(lifecycleActionBodySchema, req.body ?? {});
         const result = reopenChat(req.user!, deviceId, chatJid, {
           assignToSelf: body.assign_to_self === true,
-          note: typeof body.note === 'string' ? body.note : undefined,
-          cachedTitle: typeof body.cached_title === 'string' ? body.cached_title : undefined,
+          note: body.note,
+          cachedTitle: body.cached_title,
         });
         if (result.event) {
           wsBridge.broadcast(buildLifecycleWsPayload(result.assignment, result.event));

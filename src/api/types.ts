@@ -110,6 +110,17 @@ export interface AccountSummary {
   state: DeviceState;
 }
 
+export interface AssignableAccountSummary extends AccountSummary {
+  jid?: string | null;
+  source?: 'live' | 'cached';
+}
+
+export interface AssignableAccountsCatalog {
+  gowa_reachable: boolean;
+  error_message?: string;
+  accounts: AssignableAccountSummary[];
+}
+
 export interface LoginQr {
   device_id: string;
   qr_link: string;
@@ -186,10 +197,20 @@ export interface UnifiedChatsPagination {
   next_offset?: number;
 }
 
+export type UnifiedChatTab = 'all' | 'me' | 'pending' | 'closed';
+
+export interface UnifiedTabCounts {
+  all: number;
+  me: number;
+  pending: number;
+  closed: number;
+}
+
 export interface UnifiedChatsResponse {
   data: UnifiedChat[];
   total: number;
   pagination?: UnifiedChatsPagination;
+  tab_counts?: UnifiedTabCounts;
   total_unread?: number;
   accounts: AccountSummary[];
   device_errors: Array<{

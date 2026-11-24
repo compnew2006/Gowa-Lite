@@ -102,7 +102,7 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     let createdUrl = '';
     setBlobError(null);
 
-    const url = `/api/unified/media/file?path=${encodeURIComponent(resolvedPath)}`;
+    const url = `/api/unified/media/file?deviceId=${encodeURIComponent(deviceId)}&path=${encodeURIComponent(resolvedPath)}`;
     void fetchAuthorizedBlobUrl(url)
       .then((objectUrl) => {
         if (!active) {
@@ -120,7 +120,7 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
       active = false;
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [resolvedPath]);
+  }, [resolvedPath, deviceId]);
 
   const isImage = isImageAttachment(message, query.data?.filename);
   const label =

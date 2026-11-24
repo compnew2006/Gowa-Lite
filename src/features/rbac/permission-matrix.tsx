@@ -171,7 +171,7 @@ export function PermissionMatrix({
                         if (el) el.indeterminate = someSelected;
                       }}
                       onChange={() => toggleGroup(keys)}
-                      className="size-4 shrink-0 cursor-pointer accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+                      className="size-4 shrink-0 cursor-pointer accent-primary focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-50"
                     />
                     <button
                       type="button"
@@ -181,7 +181,7 @@ export function PermissionMatrix({
                           [group.resource]: !prev[group.resource],
                         }))
                       }
-                      className="flex min-w-0 cursor-pointer items-center gap-1.5 text-start text-sm font-semibold text-foreground"
+                      className="flex min-w-0 cursor-pointer items-center gap-1.5 rounded-sm text-start text-sm font-semibold text-foreground focus-visible:outline-2 focus-visible:outline-ring"
                     >
                       {isCollapsed ? (
                         isRtl ? (
@@ -227,7 +227,7 @@ export function PermissionMatrix({
                             checked={checked}
                             disabled={disabled}
                             onChange={() => toggleKey(key)}
-                            className="mt-0.5 size-4 shrink-0 accent-primary disabled:cursor-not-allowed"
+                            className="mt-0.5 size-4 shrink-0 accent-primary focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed"
                           />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">

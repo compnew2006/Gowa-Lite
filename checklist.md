@@ -1,9 +1,9 @@
 # قائمة المراجعة والتطوير — gowa-lite
 
-> المرجع الهندسي المعتمد: `affaan-m/ECC` (`skills/coding-standards/SKILL.md` — commit `d29cf651c795869f733669c33e3d33dfd8307d10`)
+> المرجع الهندسي المعتمد: `affaan-m/ECC` (`skills/coding-standards/SKILL.md` — commit `4adeee6732a12d1540f49a4d50a38ce8c97f9a53`)
 > المرجع الوظيفي: `compnew2006/gowa-ui` | مرجع التصميم: `pbakaus/impeccable` (`v4.10.0`)
 > تاريخ الإنشاء: `2026-11-23` | تاريخ التحديث: `2026-11-24`
-> الحالة الحالية: **39/45 بندًا مكتملًا** — المتبقي هو التحقق الحي أمام خادم GOWA (`PROD-03`) ومراحل التطوير 6–7 (`5` بنود).
+> الحالة الحالية: **54/55 بندًا مكتملًا** — المتبقي هو التحقق الحي أمام خادم GOWA (`PROD-03`) فقط.
 
 ---
 
@@ -11,29 +11,14 @@
 
 ### التحقق الإنتاجي الحي
 
-- [ ] **PROD-03 (`P2`)**: التحقق التكاملي الحي أمام خادم GOWA حقيقي (دعم `PATCH /send/schedules/:id`، وأحداث `MESSAGE_REVOKED`، وتحديث العداد اللحظي). *يتطلب `GOWA_URL` متصلًا.*
-
-### خارطة التطوير الجديدة
-
-> المرجع التفصيلي: `plan.md`
-
-#### المرحلة السادسة: تبويبات `All - Me - Pending - Closed` والعدادات الخادمية في `/chats`
-
-- [ ] **CHAT-TABS-01 (`P0`)**: تحديث `GET /api/unified/chats` لدعم `tab=all|me|pending|closed` وإرجاع `tab_counts` الدقيقة من الخادم مع ترقيم خادمي مباشر لتبويب `closed` من `chat_assignments` وإثراء العناوين والتوقيت من الكاش.
-- [ ] **CHAT-TABS-02 (`P1`)**: إضافة شريط التبويبات الأربعة (`role="tablist"` + تنقل الأسهم + `tabular-nums`) في `ChatList` مع تمييز سلوك `Me` للمشرفين عن الوكيل، وإظهار المالك/الحالة بنمط `Zero-Pill`، ودعم التحديد الجماعي للإغلاق/التحرير.
-- [ ] **CHAT-TABS-03 (`P2`)**: تضييق تنبيهات الصوت والمتصفح في `notifications.ts` لتصل للوكيل فقط على الحسابات المسموحة والمحادثات المتاحة له (`pending` أو مسندة إليه).
-
-#### المرحلة السابعة: صقل الواجهة (`Impeccable`) والاختبارات الشاملة
-
-- [ ] **DESIGN-IMPECCABLE-01 (`P1`)**: مراجعة وصقل شاشات `/settings/roles` و`/settings/users` و`/chats` وفق قواعد `pbakaus/impeccable` (`mode-operate` و`craft-floor`): التباين WCAG AA، `Zero-Pill`، حالة التركيز والتحميل والفراغ، ودعم RTL/LTR الكامل.
-- [ ] **TEST-PHASE5-01 (`P0`)**: كتابة اختبارات شاملة في `tests/phase5.test.ts` (الصلاحيات، تقييد الحسابات، التسابق `409 Conflict` في `Claim`، الترقيم في `Closed`، وإعادة فتح العميل التلقائية) والتحقق من `npm test` و`tsc --noEmit` و`npm run build`.
+- [ ] **PROD-03 (`P2`)**: التحقق التكاملي الحي أمام خادم GOWA حقيقي (دعم `PATCH /send/schedules/:id`، وأحداث `MESSAGE_REVOKED`، وتحديث العداد اللحظي). *يتطلب `GOWA_URL` متصلًا — متاح عبر `npm run verify:live`.*
 
 ---
 
 ## سجل الأعمال المكتملة
 
 <details>
-<summary>عرض تفاصيل المراحل المكتملة (`39/39`)</summary>
+<summary>عرض تفاصيل المراحل المكتملة (`54/54`)</summary>
 
 ### المرحلة الأساسية 1: الاحتواء الأمني، تثبيت الجلسة، إصلاح محرك المزامنة/غير المقروء/المجدولة، وتحديث شريط المحادثات (`12/12`)
 
@@ -111,5 +96,29 @@
 - [x] **LIFECYCLE-01 (`P0`)**: إنشاء جدولي `chat_assignments` و`chat_lifecycle_events` في `SQLite` وخدمة `server/services/chat-lifecycle.ts` مع معاملات `BEGIN IMMEDIATE` للاستلام الذري (`409 Conflict` عند التسابق)، إعادة تعيين المحادثات المفتوحة للانتظار عند حذف الوكيل (`deleteUser`)، وإعادة الفتح التلقائي للمحادثات المغلقة عند ورود رسالة من العميل.
 - [x] **LIFECYCLE-02 (`P0`)**: إضافة مسارات الخادم `claim`, `assign`, `release`, `close`, `reopen`, `bulk-lifecycle`, `assignable-agents` (مع عداد المحادثات المفتوحة لكل وكيل)، وسياسة الصندوق (`/api/settings/inbox-policy`) المفروضة على الإرسال (`/send`, `/send-media`) مع بث أحداث `CHAT_LIFECYCLE_UPDATED` و`INBOX_POLICY_UPDATED` عبر WebSocket (`tests/phase5-lifecycle.test.ts`).
 - [x] **LIFECYCLE-03 (`P1`)**: بناء مكون `AssignChatDialog` الموحد، أزرار ومؤشر دورة الحياة في `MessageViewHeader`، قفل المرسل في `MessageComposer` مع أزرار التعافي، بطاقة إعدادات سياسة الصندوق في `/settings`، وعرض أحداث النظام الزمنية مدمجة بالترتيب الزمني داخل `MessageView`.
+
+### المرحلة السادسة: تبويبات `All - Me - Pending - Closed` والعدادات الخادمية في `/chats` (`3/3`)
+
+- [x] **CHAT-TABS-01 (`P0`)**: تحديث `GET /api/unified/chats` لدعم `tab=all|me|pending|closed` وإرجاع `tab_counts` الدقيقة من الخادم مع ترقيم SQLite مباشر لتبويب `closed` من `chat_assignments` وإثراء العناوين والتوقيت من الكاش (`server/routes/unified-inbox.ts`, `server/services/chat-lifecycle.ts`, `server/db.ts`).
+- [x] **CHAT-TABS-02 (`P1`)**: إضافة شريط التبويبات الأربعة (`role="tablist"` + تنقل الأسهم RTL/LTR + `tabular-nums`) في `ChatList` مع تمييز سلوك `Me` للمشرفين عن الوكيل، وإظهار المالك/الحالة بنمط `Zero-Pill`، ودعم التحديد الجماعي للإغلاق/التحرير/إعادة الفتح (`src/features/chat/chat-list.tsx`, `src/pages/chats.tsx`, `src/features/chat/use-paginated-chats.ts`, `src/lib/i18n.ts`).
+- [x] **CHAT-TABS-03 (`P2`)**: تضييق تنبيهات الصوت والمتصفح في `notifications.ts` (`shouldAlertIncomingChat`) و`AppShell` لتصل للوكيل فقط على الحسابات المسموحة والمحادثات المتاحة له (`pending` أو مسندة إليه أو المعاد فتحها تلقائيًا) (`src/lib/notifications.ts`, `src/components/layout/app-shell.tsx`).
+
+### المرحلة السابعة: صقل الواجهة (`Impeccable`) والاختبارات الشاملة (`2/2`)
+
+- [x] **DESIGN-IMPECCABLE-01 (`P1`)**: مراجعة وصقل شاشات `/settings/roles` و`/settings/users` و`/chats` وفق قواعد `pbakaus/impeccable`: `Zero-Pill`، حالات `focus-visible` على جميع الضوابط والأزرار، دعم RTL/LTR، وتحسين سرعة التحميل والعرض (`src/index.css`, `src/lib/media-download.ts`, `vite.config.ts`, `src/pages/roles.tsx`, `src/pages/users.tsx`, `src/features/rbac/permission-matrix.tsx`, `src/features/chat/message-bubble.tsx`, `src/features/chat/message-view-header.tsx`).
+- [x] **TEST-PHASE5-01 (`P0`)**: كتابة اختبارات شاملة في `tests/phase5.test.ts` (الأدوار المخصصة ومنع تصعيد الصلاحيات، تقييد الحسابات، التسابق `409 Conflict` في `Claim`، الترقيم والبحث في `Closed` بدون طلب GOWA، إعادة فتح العميل التلقائية، وتصفية التنبيهات) والتحقق من `npm test` و`tsc --noEmit` و`npm run build`.
+
+### المرحلة الثامنة: التحصين الأمني، الأداء الإنتاجي، جودة الكود، ونظافة الاعتماديات (`9/9`)
+
+- [x] **SEC-01 (`P0`)**: إزالة `gowa-lite.db*` و`bun.lock` من تتبع Git عبر `git rm --cached` وإضافة قواعد الحجب في `.gitignore`، وتشفير `gowa_password` في `SQLite` عبر `AES-256-GCM` (`enc:v1:...`) مع ترحيل تلقائي للقيم النصية القديمة وإدارة المفتاح عبر `GOWA_SETTINGS_SECRET` أو ملف `${dbPath}.key` بصلاحية `0o600` (`server/db.ts`, `.gitignore`, `.env.example`).
+- [x] **SEC-02 (`P0`)**: ضبط `trust proxy` عبر `TRUST_PROXY` (`parseTrustProxySetting`) وقراءة IP الحقيقي في `getClientIp(req)` بدل الترويسة العمياء `X-Forwarded-For`، وتقييد ذاكرة `AuthRateLimiter` بحد `maxBuckets` مع التنظيف الدوري وإخلاء الأقدم لمنع استهلاك الذاكرة (`server/security.ts`, `server.ts`).
+- [x] **SEC-03 (`P0`)**: فرض تمرير والتحقق من `deviceId` (`assertDeviceAccess`) على `/api/unified/media/file` وتحديث مستدعياته في الواجهة، وتطبيق `buildSafeMediaHeaders` (`Content-Disposition: attachment` + `Content-Security-Policy: default-src 'none'; sandbox` لأنواع MIME غير المدرجة في القائمة البيضاء مثل SVG/HTML) على مساري الوسائط و`/api/devices/:id/qr-image` (`server/security.ts`, `server/routes/unified-inbox.ts`, `server/routes/devices.ts`, `src/features/chat/*`, `src/features/groups/newsletter-messages-panel.tsx`).
+- [x] **SEC-04 (`P0`)**: تحصين `validateGowaUrl` لحجب عناوين Cloud Metadata وLink-Local دائمًا وحظر عناوين الشبكة الداخلية عند تفعيل `BLOCK_PRIVATE_GOWA_URL=true`، وإصلاح ثغرة DNS Rebinding TOCTOU في `fetchPublicAvatarImage` بتثبيت الـ IP المفحوص داخل `http.request`/`https.request` مع حد أقصى `2MB` وتمرير SNI (`server/gowa-client.ts`).
+- [x] **PERF-01 (`P1`)**: استبدال `zlib.gzipSync` المتزامن بوسيط `compression` غير المتزامن (مع `ENABLE_COMPRESSION` وحد `1024B`)، وجعل رسالة خطأ `413` تحسب الحد الأقصى ديناميكيًا (`20 ميجابايت` لمسار `/send-media` و`8 ميجابايت` لبقية مسارات JSON) (`server.ts`, `package.json`).
+- [x] **PERF-02 (`P1`)**: تقليل استعلامات `GET /api/unified/chats` في تبويبي `me`/`closed` عبر `getAssignmentStatsForDevices`، وإصلاح حساب `tab_counts.pending` عند المسح الجزئي حتى لا يتأثر بعدد المحادثات المغلقة المؤرشفة، وإضافة ذاكرة مستخدمين مفهرسة بالنسخة (`getUserCacheVersion`) في `GowaWsBridge`، وزيادة `staleTime` لاستعلام `globalChatsQuery` في `chats.tsx` (`server/services/chat-lifecycle.ts`, `server/services/unified-chats-service.ts`, `server/ws-bridge.ts`, `src/pages/chats.tsx`).
+- [x] **REL-02 (`P1`)**: إصلاح صمت إعادة الاتصال عند `upstream.on('error')` في `GowaWsBridge` باستدعاء `scheduleReconnect(deviceId)` قبل الإنهاء، وتسجيل تحذير عند إطارات JSON التالفة، وإضافة `PRAGMA busy_timeout = 5000;` في `server/db.ts`.
+- [x] **ARCH-03 (`P1`)**: إزالة آخر استعلامَي `SELECT *` وتقليص التحويلات القسرية في `chat-lifecycle.ts` و`db.ts`، وتفكيك `GET /api/unified/chats` إلى دوال مركّزة في `server/services/unified-chats-service.ts`، وتغطية مدخلات المسارات الحساسة بـ `Zod` في `server/validation/schemas.ts` (`auth.ts`, `roles.ts`, `chat-lifecycle.ts`, `unified-inbox.ts`).
+- [x] **OPS-01 (`P1`)**: ضبط `engines.node >= 22.18.0` وتنظيم `devDependencies` وحذف `vite-plugin-singlefile` وتوليد `package-lock.json`، وتحديث `README.md` بالمتطلبات والمتغيرات وأمن المفتاح، وإضافة `scripts/verify-live-gowa.ts` (`npm run verify:live`) واختبارات `tests/phase8-hardening.test.ts` (`package.json`, `README.md`, `tests/phase8-hardening.test.ts`, `scripts/verify-live-gowa.ts`).
+- [x] **USER-ACCOUNTS-01 (`P1`)**: إصلاح وترقية تخصيص حسابات واتساب المسموح بمشاهدة رسائلها في `/#/settings/users` بمنهجية TDD: تتبّع صريح لوضع التقييد (`all` / `specific`) لمنع التراجع الصامت لكل الحسابات، كتالوج حسابات مرن (`GET /api/users/assignable-accounts`) يدمج أجهزة GOWA الحية مع المعرّفات المحفوظة محليًا عند انقطاع الاتصال، حوار تخصيص مباشر من صف المستخدم مع بحث وإضافة يدوية، وبث `USER_ACCESS_UPDATED` فوري لتحديث الجلسات المفتوحة (`server/db.ts`, `server/ws-bridge.ts`, `server/routes/devices.ts`, `server/routes/auth.ts`, `src/features/users/*`, `src/pages/users.tsx`, `src/components/layout/app-shell.tsx`, `tests/phase9-user-accounts.test.ts`).
 
 </details>

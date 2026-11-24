@@ -1,12 +1,12 @@
 import {useMemo, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
-import {Loader2, Pencil, Plus, Search, Trash2} from 'lucide-react';
+import {Loader2, Pencil, Plus, Search, Smartphone, Trash2} from 'lucide-react';
 import {toast} from 'sonner';
 import {
   createUser,
   deleteUser,
+  listAssignableAccounts,
   listRoles,
-  listUnifiedAccounts,
   listUsers,
   updateUser,
 } from '@/api/client';
@@ -17,115 +17,16 @@ import {Dialog} from '@/components/ui/dialog';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
 import {Switch} from '@/components/ui/switch';
+import {
+  summarizeAssignedAccounts,
+  validateDeviceAccessSelection,
+  type DeviceAccessMode,
+} from '@/features/users/device-access-helpers';
+import {DeviceAccessSelector} from '@/features/users/device-access-selector';
 import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {hasUserPermission, isAdminUser, useAuthStore} from '@/stores/auth';
-
-function DeviceAccessSelector({
-  idPrefix,
-  accounts,
-  selectedIds,
-  onChange,
-  disabled,
-}: {
-  idPrefix: string;
-  accounts: Array<{id: string; display_name: string; phone_number: string | null}>;
-  selectedIds: string[];
-  onChange: (next: string[]) => void;
-  disabled?: boolean;
-}) {
-  const {t} = useI18n();
-  const isAll = selectedIds.length === 0;
-
-  const knownIds = new Set(accounts.map((a) => a.id));
-  const extraIds = selectedIds.filter((id) => !knownIds.has(id));
-  const combinedAccounts = [
-    ...accounts,
-    ...extraIds.map((id) => ({id, display_name: id, phone_number: null})),
-  ];
-
-  const toggleMode = (allMode: boolean) => {
-    if (disabled) return;
-    if (allMode) {
-      onChange([]);
-    } else if (combinedAccounts.length > 0) {
-      onChange([combinedAccounts[0].id]);
-    }
-  };
-
-  const toggleAccount = (accountId: string) => {
-    if (disabled) return;
-    const exists = selectedIds.includes(accountId);
-    const next = exists
-      ? selectedIds.filter((id) => id !== accountId)
-      : [...selectedIds, accountId];
-    onChange(next);
-  };
-
-  return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/20 p-3">
-      <span className="text-xs font-medium text-foreground">{t.users.deviceAccessLabel}</span>
-
-      <div className="flex flex-col gap-1.5 text-xs">
-        <label className="flex cursor-pointer items-center gap-2">
-          <input
-            type="radio"
-            name={`${idPrefix}-device-mode`}
-            checked={isAll}
-            disabled={disabled}
-            onChange={() => toggleMode(true)}
-            className="accent-primary"
-          />
-          <span className="font-medium text-foreground">{t.users.deviceAccessAllOption}</span>
-        </label>
-        <p className="ps-5 text-[11px] text-muted-foreground">{t.users.deviceAccessAllHint}</p>
-
-        <label className="mt-1 flex cursor-pointer items-center gap-2">
-          <input
-            type="radio"
-            name={`${idPrefix}-device-mode`}
-            checked={!isAll}
-            disabled={disabled || combinedAccounts.length === 0}
-            onChange={() => toggleMode(false)}
-            className="accent-primary"
-          />
-          <span className="font-medium text-foreground">{t.users.deviceAccessSpecificOption}</span>
-        </label>
-      </div>
-
-      {combinedAccounts.length === 0 ? (
-        <p className="text-[11px] text-muted-foreground">{t.users.deviceAccessNoAccounts}</p>
-      ) : (
-        <div className="mt-1 grid max-h-40 gap-1.5 overflow-y-auto border-t border-border pt-2">
-          {combinedAccounts.map((acc) => {
-            const checked = !isAll && selectedIds.includes(acc.id);
-            return (
-              <label
-                key={acc.id}
-                className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2 py-1 text-xs hover:bg-muted/40"
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    disabled={disabled}
-                    onChange={() => toggleAccount(acc.id)}
-                    className="size-3.5 shrink-0 accent-primary"
-                  />
-                  <span className="truncate font-medium text-foreground">{acc.display_name}</span>
-                </span>
-                <span dir="ltr" className="shrink-0 font-mono text-[11px] text-muted-foreground">
-                  {acc.phone_number || acc.id}
-                </span>
-              </label>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export default function UsersPage() {
   const queryClient = useQueryClient();
@@ -145,14 +46,23 @@ export default function UsersPage() {
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newRoleId, setNewRoleId] = useState<number | ''>('');
+  const [newDeviceMode, setNewDeviceMode] = useState<DeviceAccessMode>('all');
   const [newDeviceIds, setNewDeviceIds] = useState<string[]>([]);
+  const [createTriedSubmit, setCreateTriedSubmit] = useState(false);
 
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editName, setEditName] = useState('');
   const [editRoleId, setEditRoleId] = useState<number | ''>('');
+  const [editDeviceMode, setEditDeviceMode] = useState<DeviceAccessMode>('all');
   const [editDeviceIds, setEditDeviceIds] = useState<string[]>([]);
   const [editActive, setEditActive] = useState(true);
   const [editPassword, setEditPassword] = useState('');
+  const [editTriedSubmit, setEditTriedSubmit] = useState(false);
+
+  const [managingAccountsUser, setManagingAccountsUser] = useState<User | null>(null);
+  const [quickDeviceMode, setQuickDeviceMode] = useState<DeviceAccessMode>('all');
+  const [quickDeviceIds, setQuickDeviceIds] = useState<string[]>([]);
+  const [quickTriedSubmit, setQuickTriedSubmit] = useState(false);
 
   const [deletingUser, setDeletingUser] = useState<User | null>(null);
 
@@ -168,13 +78,15 @@ export default function UsersPage() {
 
   const accountsQuery = useQuery({
     queryKey: ['unified-accounts-assign'],
-    queryFn: listUnifiedAccounts,
-    enabled: canAssignDevices,
+    queryFn: listAssignableAccounts,
     retry: false,
   });
 
   const roles = useMemo(() => rolesQuery.data ?? [], [rolesQuery.data]);
-  const accounts = useMemo(() => accountsQuery.data ?? [], [accountsQuery.data]);
+  const accountsCatalog = accountsQuery.data;
+  const accounts = useMemo(() => accountsCatalog?.accounts ?? [], [accountsCatalog?.accounts]);
+  const gowaReachable = accountsCatalog?.gowa_reachable ?? true;
+
   const currentUserPermsSet = useMemo(
     () => new Set(currentUser?.permissions ?? []),
     [currentUser?.permissions],
@@ -225,13 +137,13 @@ export default function UsersPage() {
   const selectedEditRole = roles.find((r) => r.id === editRoleId);
 
   const createMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (resolvedDeviceIds: string[]) =>
       createUser({
         display_name: newName.trim(),
         username: newUsername.trim(),
         password: newPassword,
         role_id: typeof newRoleId === 'number' ? newRoleId : undefined,
-        ...(canAssignDevices ? {allowed_device_ids: newDeviceIds} : {}),
+        ...(canAssignDevices ? {allowed_device_ids: resolvedDeviceIds} : {}),
       }),
     onSuccess: () => {
       toast.success(t.users.createdToast);
@@ -241,19 +153,21 @@ export default function UsersPage() {
       setNewUsername('');
       setNewPassword('');
       setNewRoleId(defaultRoleId);
+      setNewDeviceMode('all');
       setNewDeviceIds([]);
+      setCreateTriedSubmit(false);
       setCreateOpen(false);
     },
     onError: (err) => toast.error(toApiError(err).message),
   });
 
   const updateMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: (resolvedDeviceIds: string[]) => {
       if (!editingUser) throw new Error('No user selected');
       return updateUser(editingUser.id, {
         display_name: editName.trim(),
         role_id: typeof editRoleId === 'number' ? editRoleId : undefined,
-        ...(canAssignDevices ? {allowed_device_ids: editDeviceIds} : {}),
+        ...(canAssignDevices ? {allowed_device_ids: resolvedDeviceIds} : {}),
         is_active: editActive,
         password: editPassword || undefined,
       });
@@ -262,7 +176,25 @@ export default function UsersPage() {
       toast.success(t.users.updatedToast);
       void queryClient.invalidateQueries({queryKey: ['users']});
       void queryClient.invalidateQueries({queryKey: ['roles']});
+      setEditTriedSubmit(false);
       setEditingUser(null);
+    },
+    onError: (err) => toast.error(toApiError(err).message),
+  });
+
+  const manageAccountsMutation = useMutation({
+    mutationFn: (resolvedDeviceIds: string[]) => {
+      if (!managingAccountsUser) throw new Error('No user selected');
+      return updateUser(managingAccountsUser.id, {
+        allowed_device_ids: resolvedDeviceIds,
+      });
+    },
+    onSuccess: () => {
+      toast.success(t.users.accountsUpdatedToast);
+      void queryClient.invalidateQueries({queryKey: ['users']});
+      void queryClient.invalidateQueries({queryKey: ['unified-accounts-assign']});
+      setQuickTriedSubmit(false);
+      setManagingAccountsUser(null);
     },
     onError: (err) => toast.error(toApiError(err).message),
   });
@@ -283,25 +215,79 @@ export default function UsersPage() {
     setNewUsername('');
     setNewPassword('');
     setNewRoleId(defaultRoleId);
+    setNewDeviceMode('all');
     setNewDeviceIds([]);
+    setCreateTriedSubmit(false);
     setCreateOpen(true);
   };
 
   const openEdit = (u: User) => {
+    const initialIds = u.allowed_device_ids ?? [];
     setEditingUser(u);
     setEditName(u.display_name);
     setEditRoleId(u.role_id);
-    setEditDeviceIds(u.allowed_device_ids ?? []);
+    setEditDeviceMode(initialIds.length > 0 ? 'specific' : 'all');
+    setEditDeviceIds(initialIds);
     setEditActive(u.is_active);
     setEditPassword('');
+    setEditTriedSubmit(false);
   };
 
-  const formatAccountsSummary = (deviceIds: string[]) => {
-    if (!deviceIds || deviceIds.length === 0) return t.users.allAccountsAccess;
-    if (deviceIds.length <= 2) {
-      return deviceIds.map((id) => accountNameMap.get(id) ?? id).join(' · ');
+  const openManageAccounts = (u: User) => {
+    const initialIds = u.allowed_device_ids ?? [];
+    setManagingAccountsUser(u);
+    setQuickDeviceMode(initialIds.length > 0 ? 'specific' : 'all');
+    setQuickDeviceIds(initialIds);
+    setQuickTriedSubmit(false);
+  };
+
+  const handleCreateSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    setCreateTriedSubmit(true);
+    if (!canAssignDevices) {
+      createMutation.mutate([]);
+      return;
     }
-    return t.users.restrictedAccountsCount(deviceIds.length);
+    const validation = validateDeviceAccessSelection(newDeviceMode, newDeviceIds);
+    if (!validation.ok) {
+      toast.error(t.users.deviceAccessSelectPrompt);
+      return;
+    }
+    createMutation.mutate(validation.deviceIds);
+  };
+
+  const handleEditSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    setEditTriedSubmit(true);
+    if (!canAssignDevices) {
+      updateMutation.mutate([]);
+      return;
+    }
+    const validation = validateDeviceAccessSelection(editDeviceMode, editDeviceIds);
+    if (!validation.ok) {
+      toast.error(t.users.deviceAccessSelectPrompt);
+      return;
+    }
+    updateMutation.mutate(validation.deviceIds);
+  };
+
+  const handleManageAccountsSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    setQuickTriedSubmit(true);
+    const validation = validateDeviceAccessSelection(quickDeviceMode, quickDeviceIds);
+    if (!validation.ok) {
+      toast.error(t.users.deviceAccessSelectPrompt);
+      return;
+    }
+    manageAccountsMutation.mutate(validation.deviceIds);
+  };
+
+  const formatAccountsSummary = (deviceIds: string[]) =>
+    summarizeAssignedAccounts(deviceIds, accountNameMap, t.users.allAccountsAccess, 2);
+
+  const formatAccountsFullTooltip = (deviceIds: string[]) => {
+    if (!deviceIds || deviceIds.length === 0) return t.users.allAccountsAccess;
+    return deviceIds.map((id) => accountNameMap.get(id) ?? id).join(' · ');
   };
 
   return (
@@ -341,7 +327,7 @@ export default function UsersPage() {
           aria-label={t.users.colRole}
           value={roleFilter}
           onChange={(e) => setRoleFilter(e.target.value)}
-          className="h-9 rounded-lg border border-input bg-card px-3 text-xs text-foreground"
+          className="h-9 rounded-lg border border-input bg-card px-3 text-xs text-foreground focus-visible:outline-2 focus-visible:outline-ring"
         >
           <option value="all">{t.users.filterAllRoles}</option>
           {roles.map((r) => (
@@ -355,7 +341,7 @@ export default function UsersPage() {
           aria-label={t.users.colStatus}
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as 'all' | 'active' | 'disabled')}
-          className="h-9 rounded-lg border border-input bg-card px-3 text-xs text-foreground"
+          className="h-9 rounded-lg border border-input bg-card px-3 text-xs text-foreground focus-visible:outline-2 focus-visible:outline-ring"
         >
           <option value="all">{t.users.filterAllStatus}</option>
           <option value="active">{t.users.active}</option>
@@ -398,69 +384,98 @@ export default function UsersPage() {
                 </td>
               </tr>
             ) : (
-              filteredUsers.map((u) => (
-                <tr key={u.id} className="hover:bg-muted/35">
-                  <td className="px-4 py-3 font-medium text-foreground">
-                    {u.display_name}
-                    {u.id === currentUser?.id && (
-                      <span className="ms-1.5 text-xs text-muted-foreground">{t.users.youBadge}</span>
-                    )}
-                  </td>
-                  <td dir="ltr" className="px-4 py-3 text-start font-mono text-xs text-muted-foreground">
-                    {u.username}
-                  </td>
-                  <td className="px-4 py-3 text-xs font-medium text-foreground">
-                    {formatRoleLabel(u.role_slug, u.role_name)}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground">
-                    {formatAccountsSummary(u.allowed_device_ids)}
-                  </td>
-                  <td className="px-4 py-3 text-xs">
-                    <span
-                      className={
-                        u.is_active
-                          ? 'font-medium text-emerald-700 dark:text-emerald-400'
-                          : 'font-medium text-destructive'
-                      }
-                    >
-                      {u.is_active ? t.users.active : t.users.disabled}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground tabular-nums">
-                    {formatDate(u.created_at, lang)}
-                  </td>
-                  {(canWrite || canDelete) && (
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1">
-                        {canWrite && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => openEdit(u)}
-                            title={t.editAction}
-                            aria-label={`${t.editAction} ${u.display_name}`}
-                          >
-                            <Pencil className="size-4" />
-                          </Button>
-                        )}
-                        {canDelete && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            disabled={u.id === currentUser?.id || (u.role_slug === 'admin' && !isCurrentAdmin)}
-                            onClick={() => setDeletingUser(u)}
-                            title={t.deleteAction}
-                            aria-label={`${t.deleteAction} ${u.display_name}`}
-                            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                          >
-                            <Trash2 className="size-4" />
-                          </Button>
-                        )}
-                      </div>
+              filteredUsers.map((u) => {
+                const accountsSummary = formatAccountsSummary(u.allowed_device_ids);
+                const fullTooltip = formatAccountsFullTooltip(u.allowed_device_ids);
+                return (
+                  <tr key={u.id} className="hover:bg-muted/35">
+                    <td className="px-4 py-3 font-medium text-foreground">
+                      {u.display_name}
+                      {u.id === currentUser?.id && (
+                        <span className="ms-1.5 text-xs text-muted-foreground">{t.users.youBadge}</span>
+                      )}
                     </td>
-                  )}
-                </tr>
-              ))
+                    <td dir="ltr" className="px-4 py-3 text-start font-mono text-xs text-muted-foreground">
+                      {u.username}
+                    </td>
+                    <td className="px-4 py-3 text-xs font-medium text-foreground">
+                      {formatRoleLabel(u.role_slug, u.role_name)}
+                    </td>
+                    <td className="px-4 py-3 text-xs">
+                      {canWrite && canAssignDevices ? (
+                        <button
+                          type="button"
+                          onClick={() => openManageAccounts(u)}
+                          title={fullTooltip}
+                          className="inline-flex max-w-64 items-center gap-1.5 truncate rounded-md px-2 py-1 text-start text-xs font-medium text-foreground underline decoration-border underline-offset-4 transition-colors hover:bg-muted hover:decoration-primary focus-visible:outline-2 focus-visible:outline-ring"
+                        >
+                          <Smartphone className="size-3.5 shrink-0 text-muted-foreground" />
+                          <span className="truncate">{accountsSummary}</span>
+                        </button>
+                      ) : (
+                        <span title={fullTooltip} className="text-muted-foreground">
+                          {accountsSummary}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-xs">
+                      <span
+                        className={
+                          u.is_active
+                            ? 'font-medium text-emerald-700 dark:text-emerald-400'
+                            : 'font-medium text-destructive'
+                        }
+                      >
+                        {u.is_active ? t.users.active : t.users.disabled}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground tabular-nums">
+                      {formatDate(u.created_at, lang)}
+                    </td>
+                    {(canWrite || canDelete) && (
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1">
+                          {canWrite && canAssignDevices && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => openManageAccounts(u)}
+                              title={t.users.manageAccountsAction}
+                              aria-label={`${t.users.manageAccountsAction} ${u.display_name}`}
+                            >
+                              <Smartphone className="size-4" />
+                            </Button>
+                          )}
+                          {canWrite && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => openEdit(u)}
+                              title={t.editAction}
+                              aria-label={`${t.editAction} ${u.display_name}`}
+                            >
+                              <Pencil className="size-4" />
+                            </Button>
+                          )}
+                          {canDelete && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              disabled={u.id === currentUser?.id || (u.role_slug === 'admin' && !isCurrentAdmin)}
+                              onClick={() => setDeletingUser(u)}
+                              title={t.deleteAction}
+                              aria-label={`${t.deleteAction} ${u.display_name}`}
+                              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            >
+                              <Trash2 className="size-4" />
+                            </Button>
+                          )}
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
@@ -474,10 +489,7 @@ export default function UsersPage() {
         className="sm:max-w-lg"
       >
         <form
-          onSubmit={(e: FormEvent) => {
-            e.preventDefault();
-            createMutation.mutate();
-          }}
+          onSubmit={handleCreateSubmit}
           className="flex max-h-[78vh] flex-col gap-4 overflow-y-auto pe-1"
         >
           <div className="grid gap-3 sm:grid-cols-2">
@@ -524,7 +536,7 @@ export default function UsersPage() {
               id="new-user-role"
               value={newRoleId}
               onChange={(e) => setNewRoleId(e.target.value ? Number(e.target.value) : '')}
-              className="h-10 rounded-lg border border-input bg-card px-3 text-sm text-foreground"
+              className="h-10 rounded-lg border border-input bg-card px-3 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-ring"
             >
               {roles.map((role) => (
                 <option key={role.id} value={role.id} disabled={!canAssignRole(role)}>
@@ -539,13 +551,23 @@ export default function UsersPage() {
             )}
           </div>
 
-          {canAssignDevices && (
+          {canAssignDevices ? (
             <DeviceAccessSelector
               idPrefix="create"
               accounts={accounts}
+              mode={newDeviceMode}
               selectedIds={newDeviceIds}
+              onModeChange={setNewDeviceMode}
               onChange={setNewDeviceIds}
+              gowaReachable={gowaReachable}
+              onRetryAccounts={() => void accountsQuery.refetch()}
+              isRetrying={accountsQuery.isFetching}
+              showValidationError={createTriedSubmit}
             />
+          ) : (
+            <p className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+              {t.users.deviceAccessNoPermissionHint}
+            </p>
           )}
 
           <div className="flex justify-end gap-2 pt-2">
@@ -568,10 +590,7 @@ export default function UsersPage() {
         className="sm:max-w-lg"
       >
         <form
-          onSubmit={(e: FormEvent) => {
-            e.preventDefault();
-            updateMutation.mutate();
-          }}
+          onSubmit={handleEditSubmit}
           className="flex max-h-[78vh] flex-col gap-4 overflow-y-auto pe-1"
         >
           <div className="flex flex-col gap-1.5">
@@ -590,7 +609,7 @@ export default function UsersPage() {
               id="edit-user-role"
               value={editRoleId}
               onChange={(e) => setEditRoleId(e.target.value ? Number(e.target.value) : '')}
-              className="h-10 rounded-lg border border-input bg-card px-3 text-sm text-foreground"
+              className="h-10 rounded-lg border border-input bg-card px-3 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-ring"
             >
               {roles.map((role) => (
                 <option
@@ -609,13 +628,25 @@ export default function UsersPage() {
             )}
           </div>
 
-          {canAssignDevices && (
+          {canAssignDevices ? (
             <DeviceAccessSelector
               idPrefix="edit"
               accounts={accounts}
+              mode={editDeviceMode}
               selectedIds={editDeviceIds}
+              onModeChange={setEditDeviceMode}
               onChange={setEditDeviceIds}
+              gowaReachable={gowaReachable}
+              onRetryAccounts={() => void accountsQuery.refetch()}
+              isRetrying={accountsQuery.isFetching}
+              showValidationError={editTriedSubmit}
             />
+          ) : (
+            <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              <p className="font-medium text-foreground">{t.users.deviceAccessLabel}</p>
+              <p className="mt-1">{formatAccountsFullTooltip(editingUser?.allowed_device_ids ?? [])}</p>
+              <p className="mt-1 text-[11px]">{t.users.deviceAccessNoPermissionHint}</p>
+            </div>
           )}
 
           <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2.5">
@@ -646,6 +677,47 @@ export default function UsersPage() {
             </Button>
             <Button type="submit" disabled={updateMutation.isPending}>
               {updateMutation.isPending && <Loader2 className="size-4 animate-spin" />}
+              <span>{t.saveChanges}</span>
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+
+      {/* Focused Allowed Accounts Dialog */}
+      <Dialog
+        open={managingAccountsUser !== null}
+        onOpenChange={(open) => !open && setManagingAccountsUser(null)}
+        title={managingAccountsUser ? t.users.manageAccountsTitle(managingAccountsUser.display_name) : ''}
+        description={t.users.manageAccountsDesc}
+        className="sm:max-w-lg"
+      >
+        <form
+          onSubmit={handleManageAccountsSubmit}
+          className="flex max-h-[75vh] flex-col gap-4 overflow-y-auto pe-1"
+        >
+          <DeviceAccessSelector
+            idPrefix="quick-accounts"
+            accounts={accounts}
+            mode={quickDeviceMode}
+            selectedIds={quickDeviceIds}
+            onModeChange={setQuickDeviceMode}
+            onChange={setQuickDeviceIds}
+            gowaReachable={gowaReachable}
+            onRetryAccounts={() => void accountsQuery.refetch()}
+            isRetrying={accountsQuery.isFetching}
+            showValidationError={quickTriedSubmit}
+          />
+
+          <div className="flex justify-end gap-2 pt-1">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setManagingAccountsUser(null)}
+            >
+              {t.cancel}
+            </Button>
+            <Button type="submit" disabled={manageAccountsMutation.isPending}>
+              {manageAccountsMutation.isPending && <Loader2 className="size-4 animate-spin" />}
               <span>{t.saveChanges}</span>
             </Button>
           </div>
