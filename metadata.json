@@ -1,0 +1,6 @@
+{
+  "name": "gowa-lite — صندوق واتساب الموحد",
+  "description": "النسخة الخفيفة من نظام إدارة محادثات وحسابات واتساب المتوافق مع gowa مع إدارة الوكلاء والصلاحيات.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

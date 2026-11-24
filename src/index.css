@@ -1,0 +1,165 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@import "@fontsource/ibm-plex-sans-arabic/400.css";
+@import "@fontsource/ibm-plex-sans-arabic/500.css";
+@import "@fontsource/ibm-plex-sans-arabic/600.css";
+@import "@fontsource/ibm-plex-sans-arabic/700.css";
+@import "@fontsource-variable/jetbrains-mono";
+
+@theme inline {
+  --font-sans: "IBM Plex Sans Arabic", system-ui, -apple-system, sans-serif;
+  --font-heading: "IBM Plex Sans Arabic", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-rail: var(--rail);
+  --color-chat-canvas: var(--chat-canvas);
+  --color-live: var(--live);
+  --color-bubble-in: var(--bubble-in);
+  --color-bubble-out: var(--bubble-out);
+  --color-bubble-out-subtle: var(--bubble-out-subtle);
+}
+
+:root {
+  --background: #f0f2f5;
+  --foreground: #111b21;
+  --card: #ffffff;
+  --card-foreground: #111b21;
+  --popover: #ffffff;
+  --popover-foreground: #111b21;
+  --primary: #008069;
+  --primary-foreground: #ffffff;
+  --secondary: #f0f2f5;
+  --secondary-foreground: #111b21;
+  --muted: #f0f2f5;
+  --muted-foreground: #54656f;
+  --accent: #d9fdd3;
+  --accent-foreground: #008069;
+  --destructive: #ea0038;
+  --destructive-foreground: #ffffff;
+  --border: rgba(17, 27, 33, 0.09);
+  --input: rgba(17, 27, 33, 0.16);
+  --ring: #00a884;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #111b21;
+  --sidebar-accent: #f0f2f5;
+  --sidebar-accent-foreground: #008069;
+  --sidebar-border: rgba(17, 27, 33, 0.09);
+  --rail: #f0f2f5;
+  --chat-canvas: #efeae2;
+  --live: #25d366;
+  --bubble-in: #ffffff;
+  --bubble-out: #d9fdd3;
+  --bubble-out-subtle: #c8f1c1;
+}
+
+.dark {
+  --background: #111b21;
+  --foreground: #e9edef;
+  --card: #161717;
+  --card-foreground: #e9edef;
+  --popover: #233138;
+  --popover-foreground: #e9edef;
+  --primary: #00a884;
+  --primary-foreground: #111b21;
+  --secondary: #242626;
+  --secondary-foreground: #e9edef;
+  --muted: #202c33;
+  --muted-foreground: #8696a0;
+  --accent: #0a332c;
+  --accent-foreground: #25d366;
+  --destructive: #f15c6d;
+  --destructive-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.14);
+  --ring: #00a884;
+  --sidebar: #161717;
+  --sidebar-foreground: #e9edef;
+  --sidebar-accent: #242626;
+  --sidebar-accent-foreground: #e9edef;
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --rail: #1d1f1f;
+  --chat-canvas: #0b141a;
+  --live: #25d366;
+  --bubble-in: #242626;
+  --bubble-out: #144d37;
+  --bubble-out-subtle: #0e3b2a;
+}
+
+.wa-wallpaper {
+  background-color: var(--chat-canvas);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220' viewBox='0 0 220 220' fill='none' stroke='%23111b21' stroke-opacity='0.05' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M28 34c-8 0-14 5-14 12 0 3 1 5 3 7l-2 7 7-3c2 1 4 1 6 1 8 0 14-5 14-12s-6-12-14-12z'/%3E%3Ccircle cx='95' cy='38' r='10'/%3E%3Cpath d='M91 38l3 3 5-6'/%3E%3Cpath d='M158 26l14 14m0-14l-14 14'/%3E%3Cpath d='M188 46c4-9 13-11 16-3 3 7-3 15-16 18-13-3-19-11-16-18 3-8 12-6 16 3z'/%3E%3Crect x='22' y='92' width='22' height='16' rx='3'/%3E%3Cpath d='M22 96l11 7 11-7'/%3E%3Cpath d='M84 96c2-5 9-5 11 0l4 10c1 3-1 6-4 6H84c-3 0-5-3-4-6l4-10z'/%3E%3Ccircle cx='144' cy='102' r='11'/%3E%3Cpath d='M140 99h.01M148 99h.01M140 105c2 2 6 2 8 0'/%3E%3Cpath d='M192 92v18m0-18l10-3v14'/%3E%3Ccircle cx='189' cy='110' r='3'/%3E%3Ccircle cx='199' cy='103' r='3'/%3E%3Cpath d='M36 154l4 8 9 1-6 6 1 9-8-4-8 4 1-9-6-6 9-1z'/%3E%3Cpath d='M88 158h18v12a6 6 0 0 1-6 6h-6a6 6 0 0 1-6-6v-12zm18 3h4a3 3 0 0 1 0 6h-4'/%3E%3Cpath d='M144 152c6 0 11 5 11 11 0 8-11 17-11 17s-11-9-11-17c0-6 5-11 11-11z'/%3E%3Ccircle cx='144' cy='163' r='3.5'/%3E%3Cpath d='M188 164l8-8a5 5 0 0 1 7 7l-10 10a7 7 0 0 1-10-10l9-9'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 220px 220px;
+}
+
+.dark .wa-wallpaper {
+  background-color: var(--chat-canvas);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220' viewBox='0 0 220 220' fill='none' stroke='%23ffffff' stroke-opacity='0.045' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M28 34c-8 0-14 5-14 12 0 3 1 5 3 7l-2 7 7-3c2 1 4 1 6 1 8 0 14-5 14-12s-6-12-14-12z'/%3E%3Ccircle cx='95' cy='38' r='10'/%3E%3Cpath d='M91 38l3 3 5-6'/%3E%3Cpath d='M158 26l14 14m0-14l-14 14'/%3E%3Cpath d='M188 46c4-9 13-11 16-3 3 7-3 15-16 18-13-3-19-11-16-18 3-8 12-6 16 3z'/%3E%3Crect x='22' y='92' width='22' height='16' rx='3'/%3E%3Cpath d='M22 96l11 7 11-7'/%3E%3Cpath d='M84 96c2-5 9-5 11 0l4 10c1 3-1 6-4 6H84c-3 0-5-3-4-6l4-10z'/%3E%3Ccircle cx='144' cy='102' r='11'/%3E%3Cpath d='M140 99h.01M148 99h.01M140 105c2 2 6 2 8 0'/%3E%3Cpath d='M192 92v18m0-18l10-3v14'/%3E%3Ccircle cx='189' cy='110' r='3'/%3E%3Ccircle cx='199' cy='103' r='3'/%3E%3Cpath d='M36 154l4 8 9 1-6 6 1 9-8-4-8 4 1-9-6-6 9-1z'/%3E%3Cpath d='M88 158h18v12a6 6 0 0 1-6 6h-6a6 6 0 0 1-6-6v-12zm18 3h4a3 3 0 0 1 0 6h-4'/%3E%3Cpath d='M144 152c6 0 11 5 11 11 0 8-11 17-11 17s-11-9-11-17c0-6 5-11 11-11z'/%3E%3Ccircle cx='144' cy='163' r='3.5'/%3E%3Cpath d='M188 164l8-8a5 5 0 0 1 7 7l-10 10a7 7 0 0 1-10-10l9-9'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 220px 220px;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    font-family: var(--font-sans);
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "tnum" 0;
+  }
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(134, 150, 160, 0.3);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(134, 150, 160, 0.5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
