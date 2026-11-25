@@ -6,8 +6,23 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Runtime databases (never commit operator data)
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Encryption keys and certificates
 *.key
 .gowa-lite.key*
+*.pem
+*.p12
+*.pfx
+id_rsa*
+
+# Raw AI Studio artifacts and real chat captures
+.aistudio/
+public/assets/aistudio/

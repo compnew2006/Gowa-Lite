@@ -30,9 +30,8 @@ A unified web interface and broker server for managing multiple WhatsApp devices
 
 ## Screenshots
 
-<!-- Add screenshots of the app itself here (login, inbox, accounts).
-     Note: the files currently in public/assets/aistudio are WhatsApp Web captures of real chats,
-     so they must not be used on a public page. -->
+<!-- Add screenshots captured with demo data only (login, inbox, accounts).
+     Never commit real customer chats, phone numbers, QR pairing codes, or production data. -->
 
 ---
 
