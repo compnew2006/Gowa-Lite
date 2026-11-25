@@ -637,7 +637,8 @@ export function MessageView({
   const closeMutation = useMutation({
     mutationFn: () => closeUnifiedChat(chat.device_id, chat.jid, {cached_title: displayName}),
     onSuccess: (data) => {
-      toast.success(t.chats.closedToast);
+      if (data.rating_prompt === 'failed') toast.warning(t.chats.ratingPromptFailed);
+      else toast.success(t.chats.closedToast);
       applyLifecycleMutationResult(data);
     },
     onError: (err) => {

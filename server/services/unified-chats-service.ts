@@ -20,6 +20,11 @@ import {
 } from '../gowa-client.ts';
 import {hasDeviceAccess, hasPermission, isAdminSubject} from '../rbac.ts';
 import {
+  buildCloseRatingUpdatedEvent,
+  captureChatCloseRating,
+  hasPendingChatCloseRating,
+} from './chat-close-rating.ts';
+import {
   getAssignmentStatsForDevices,
   getChatLifecycleMap,
   handleIncomingCustomerMessageLifecycle,
@@ -629,24 +634,49 @@ export async function runInitialUnreadCatchup(params: {
           {deviceId: changed.device_id, query: {limit: 15, offset: 0}, timeoutMs: 3_500},
         );
         if (latest?.data?.length) {
-          upsertCachedMessages(changed.device_id, changed.chat_jid, latest.data, {
+          const {device_id: deviceId, chat_jid: chatJid} = changed;
+          const ratings: GowaMessageInfo[] = [];
+          const ordinary: GowaMessageInfo[] = [];
+          let waitingForRating = hasPendingChatCloseRating(chatJid, deviceId);
+          let latestCustomerMs = 0;
+          const ordered = latest.data.map((msg) => ({msg, ms: parseTimestampMs(msg.timestamp)}))
+            .sort((a, b) => a.ms - b.ms);
+          for (const {msg, ms} of ordered) {
+            if (msg.is_from_me) {
+              ordinary.push(msg);
+              continue;
+            }
+            const rating = captureChatCloseRating(deviceId, chatJid, {
+              id: msg.id, text: msg.content ?? '', mediaType: msg.media_type,
+              timestampMs: ms, contextMetadata: msg.context_metadata,
+            });
+            if (rating) {
+              ratings.push(msg);
+              if (rating === 'recorded') {
+                waitingForRating = false;
+                wsBridge.broadcast(buildCloseRatingUpdatedEvent(deviceId));
+              }
+              continue;
+            }
+            ordinary.push(msg);
+            if (ms > changed.prev_last_message_ms && ms > latestCustomerMs) {
+              latestCustomerMs = ms;
+              if (waitingForRating) {
+                const reopened = handleIncomingCustomerMessageLifecycle(deviceId, chatJid, ms);
+                if (reopened) {
+                  waitingForRating = false;
+                  wsBridge.broadcast(reopened);
+                }
+              }
+            }
+          }
+          upsertCachedMessages(deviceId, chatJid, ordinary, {
             markUnreadCandidate: true,
             minUnreadTimestampMs: changed.prev_last_message_ms,
           });
-          let latestCustomerMs = 0;
-          for (const msg of latest.data) {
-            if (msg.is_from_me) continue;
-            const ms = parseTimestampMs(msg.timestamp);
-            if (ms > changed.prev_last_message_ms && ms > latestCustomerMs) {
-              latestCustomerMs = ms;
-            }
-          }
+          if (ratings.length > 0) upsertCachedMessages(deviceId, chatJid, ratings);
           if (latestCustomerMs > 0) {
-            const reopenEvent = handleIncomingCustomerMessageLifecycle(
-              changed.device_id,
-              changed.chat_jid,
-              latestCustomerMs,
-            );
+            const reopenEvent = handleIncomingCustomerMessageLifecycle(deviceId, chatJid, latestCustomerMs);
             if (reopenEvent) wsBridge.broadcast(reopenEvent);
           }
         }

@@ -9,6 +9,7 @@ import {
   requirePermission,
 } from '../middleware/auth.ts';
 import {decodeRouteParam} from '../security.ts';
+import {sendChatCloseRatingPrompt} from '../services/chat-close-rating.ts';
 import {
   assignChat,
   buildLifecycleWsPayload,
@@ -132,6 +133,15 @@ export function registerChatLifecycleRoutes(wsBridge: GowaWsBridge): Router {
           if (item.wsPayload) {
             wsBridge.broadcast(item.wsPayload);
           }
+        }
+        // Keep large bulk closes responsive while delivering prompts sequentially.
+        if (body.action === 'close') {
+          void (async () => {
+            for (const item of outcome.succeeded) {
+              const event = item.wsPayload?.result.event;
+              if (event) await sendChatCloseRatingPrompt(event.id);
+            }
+          })().catch((error) => console.error('[close-rating] bulk delivery failed', error));
         }
 
         res.json({
@@ -271,7 +281,7 @@ export function registerChatLifecycleRoutes(wsBridge: GowaWsBridge): Router {
     requireAuth,
     requirePermission('chats', 'close'),
     requireDeviceParamAccess,
-    (req: AuthedRequest, res) => {
+    async (req: AuthedRequest, res) => {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
@@ -283,10 +293,17 @@ export function registerChatLifecycleRoutes(wsBridge: GowaWsBridge): Router {
         if (result.event) {
           wsBridge.broadcast(buildLifecycleWsPayload(result.assignment, result.event));
         }
+        const ratingPrompt = result.event ? await sendChatCloseRatingPrompt(result.event.id) : undefined;
         res.json({
           code: 'SUCCESS',
           message: 'تم إغلاق المحادثة',
-          results: result,
+          results: {
+            ...result,
+            ...(ratingPrompt ? {
+              assignment: getChatLifecycleState(deviceId, chatJid),
+              rating_prompt: ratingPrompt,
+            } : {}),
+          },
         });
       } catch (err) {
         handleRouteError(res, err);

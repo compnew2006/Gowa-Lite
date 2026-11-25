@@ -8,6 +8,7 @@ import {
 } from '../db.ts';
 import {GowaError, type GowaChatInfo, type GowaDevice} from '../gowa-client.ts';
 import type {GowaUpstreamEvent} from '../ws-bridge.ts';
+import {buildCloseRatingUpdatedEvent, captureChatCloseRating} from './chat-close-rating.ts';
 import {
   handleIncomingCustomerMessageLifecycle,
   type ChatLifecycleWsPayload,
@@ -346,6 +347,7 @@ export function handleUpstreamGowaEvent(
   deviceId: string,
   event: GowaUpstreamEvent,
   onLifecycleEvent?: (payload: ChatLifecycleWsPayload | Record<string, unknown>) => void,
+  onRatingConsumed?: () => void,
 ): ChatLifecycleWsPayload | null {
   if (!deviceId) return null;
   const code = (event.code || '').toUpperCase();
@@ -484,10 +486,7 @@ export function handleUpstreamGowaEvent(
       typeof raw.timestamp === 'string' && raw.timestamp.trim()
         ? raw.timestamp.trim()
         : new Date().toISOString();
-    const repliedToId =
-      typeof raw.replied_to_id === 'string' && raw.replied_to_id.trim()
-        ? raw.replied_to_id.trim()
-        : '';
+    const repliedToId = firstNonEmptyString(raw.replied_to_id, raw.replied_id);
     const contextMetadata =
       typeof raw.context_metadata === 'string'
         ? raw.context_metadata
@@ -515,7 +514,18 @@ export function handleUpstreamGowaEvent(
       file_length: typeof raw.file_length === 'number' ? raw.file_length : 0,
     };
 
-    upsertCachedMessages(deviceId, chatJid, [msg], {markUnreadCandidate: true});
+    const rating = !isFromMe && event.device_id === deviceId
+      ? captureChatCloseRating(deviceId, chatJid, {
+        id, text: msg.content, mediaType: msg.media_type,
+        timestampMs: parseTimestampMs(timestamp), replyToId: repliedToId || undefined,
+      })
+      : undefined;
+    upsertCachedMessages(deviceId, chatJid, [msg], {markUnreadCandidate: !rating});
+    if (rating) {
+      onRatingConsumed?.();
+      if (rating === 'recorded') onLifecycleEvent?.(buildCloseRatingUpdatedEvent(deviceId));
+      return null;
+    }
     syncChatWatermarks([{device_id: deviceId, chat_jid: chatJid, last_message_time: timestamp}]);
 
     if (!isFromMe && !isStatusBroadcastJid(chatJid) && !isGroupJid(chatJid)) {

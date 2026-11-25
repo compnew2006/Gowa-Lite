@@ -52,6 +52,7 @@ export interface GowaUpstreamEvent {
   code: string;
   message: string;
   result: unknown;
+  device_id?: string;
 }
 
 function redactWsMessageObject(
@@ -96,6 +97,9 @@ export function shouldDeliverWsEventToUser(
 
   if (deviceId && !hasDeviceAccess(user, deviceId)) {
     return {allowed: false};
+  }
+  if (code === 'CHAT_CLOSE_RATING_UPDATED') {
+    return {allowed: Boolean(deviceId) && hasPermission(user, 'accounts', 'read')};
   }
 
   if (code === 'CONVERSATION_NOTE_UPDATED') {
@@ -300,12 +304,12 @@ export class GowaWsBridge {
   private upstreamSockets = new Map<string, WebSocket>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private syncTimer: ReturnType<typeof setInterval> | null = null;
-  private onUpstreamEvent?: (deviceId: string, event: GowaUpstreamEvent) => void;
+  private onUpstreamEvent?: (deviceId: string, event: GowaUpstreamEvent) => boolean | void;
   private userCache = new Map<number, {user: PublicUser | null; version: number; fetchedAt: number}>();
 
   constructor(
     httpServer: HttpServer,
-    options?: {onUpstreamEvent?: (deviceId: string, event: GowaUpstreamEvent) => void},
+    options?: {onUpstreamEvent?: (deviceId: string, event: GowaUpstreamEvent) => boolean | void},
   ) {
     this.onUpstreamEvent = options?.onUpstreamEvent;
     this.wss = new WebSocketServer({noServer: true});
@@ -499,9 +503,12 @@ export class GowaWsBridge {
               code: parsed.code,
               message: parsed.message ?? '',
               result: parsed.result ?? null,
+              device_id: (parsed.device_id ?? asReactionRecord(parsed.result)?.device_id) === deviceId
+                ? deviceId
+                : undefined,
             };
             try {
-              this.onUpstreamEvent?.(deviceId, eventPayload);
+              if (this.onUpstreamEvent?.(deviceId, eventPayload)) return;
             } catch (err) {
               console.error('[ws-bridge] onUpstreamEvent error', err);
             }

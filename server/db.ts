@@ -227,6 +227,30 @@ db.exec(`
     PRIMARY KEY (device_id, jid)
   );
 
+  CREATE TABLE IF NOT EXISTS chat_close_ratings (
+    closed_event_id INTEGER PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    chat_jid TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('queued', 'sending', 'pending', 'rated', 'expired', 'failed')),
+    expires_at INTEGER NOT NULL,
+    sent_at INTEGER,
+    prompt_message_id TEXT,
+    reply_message_id TEXT,
+    score INTEGER CHECK(score BETWEEN 1 AND 5),
+    rated_at TEXT
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_close_rating_pending_chat
+    ON chat_close_ratings (device_id, chat_jid) WHERE status = 'pending';
+  CREATE INDEX IF NOT EXISTS idx_close_rating_queued
+    ON chat_close_ratings (closed_event_id) WHERE status = 'queued';
+  CREATE INDEX IF NOT EXISTS idx_close_rating_pending_webhook
+    ON chat_close_ratings (chat_jid, expires_at) WHERE status = 'pending';
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_close_rating_reply
+    ON chat_close_ratings (device_id, chat_jid, reply_message_id) WHERE reply_message_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_close_rating_report
+    ON chat_close_ratings (device_id, rated_at DESC) WHERE status = 'rated';
+
   CREATE TABLE IF NOT EXISTS message_reaction_changes (
     device_id TEXT NOT NULL,
     chat_jid TEXT NOT NULL,

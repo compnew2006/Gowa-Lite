@@ -10,11 +10,44 @@ import {
   requirePermission,
 } from '../middleware/auth.ts';
 import {decodeRouteParam} from '../security.ts';
+import {getAccountCloseRatings, setAccountCloseRatingEnabled} from '../services/chat-close-rating.ts';
 import {normalizeSearchQuery} from '../services/chat-sync.ts';
 import type {AuthedRequest} from '../types.ts';
+import {closeRatingSettingsSchema, parseSchema} from '../validation/schemas.ts';
 
 export function registerAccountRoutes(): Router {
   const router = createApiRouter();
+
+  router.get(
+    '/api/devices/:deviceId/close-ratings',
+    requireAuth,
+    requirePermission('accounts', 'read'),
+    (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        assertDeviceAccess(req.user, deviceId);
+        res.json({code: 'SUCCESS', message: 'ok', results: getAccountCloseRatings(deviceId)});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.put(
+    '/api/devices/:deviceId/close-ratings',
+    requireAuth,
+    requirePermission('accounts', 'write'),
+    (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        assertDeviceAccess(req.user, deviceId);
+        const {enabled} = parseSchema(closeRatingSettingsSchema, req.body ?? {});
+        res.json({code: 'SUCCESS', message: 'ok', results: setAccountCloseRatingEnabled(deviceId, enabled)});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
 
   router.get(
     '/api/devices/:deviceId/user/privacy',

@@ -1,5 +1,6 @@
 import {http, results} from '@/lib/http';
 import type {
+  AccountCloseRatings,
   AccountContact,
   AccountSummary,
   AssignableAccountSummary,
@@ -193,6 +194,14 @@ export function saveInboxPolicy(payload: Partial<InboxPolicy>): Promise<InboxPol
 }
 
 // Accounts / Devices
+export function getAccountCloseRatings(deviceId: string): Promise<AccountCloseRatings> {
+  return results(http.get(`/devices/${enc(deviceId)}/close-ratings`));
+}
+
+export function saveAccountCloseRatings(deviceId: string, enabled: boolean): Promise<AccountCloseRatings> {
+  return results(http.put(`/devices/${enc(deviceId)}/close-ratings`, {enabled}));
+}
+
 export function listUnifiedAccounts(): Promise<AccountSummary[]> {
   return results(http.get('/unified/accounts'));
 }
@@ -550,7 +559,7 @@ export function closeUnifiedChat(
   deviceId: string,
   chatJid: string,
   payload?: {reason?: string; cached_title?: string},
-): Promise<{assignment: ChatAssignmentInfo; event?: ChatLifecycleEvent}> {
+): Promise<{assignment: ChatAssignmentInfo; event?: ChatLifecycleEvent; rating_prompt?: 'sent' | 'failed'}> {
   return results(
     http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/close`, payload ?? {}),
   );

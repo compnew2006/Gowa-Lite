@@ -2,7 +2,8 @@ import {createHmac, timingSafeEqual} from 'node:crypto';
 import express, {type Router} from 'express';
 import {gowaFetch, type GowaDevice} from '../gowa-client.ts';
 import {createApiRouter, handleRouteError} from '../middleware/auth.ts';
-import {normalizeWhatsAppJid} from '../services/chat-sync.ts';
+import {hasPendingChatCloseRating} from '../services/chat-close-rating.ts';
+import {handleUpstreamGowaEvent, normalizeWhatsAppJid} from '../services/chat-sync.ts';
 import {
   asReactionRecord,
   isGowaReactionEvent,
@@ -26,27 +27,46 @@ export function registerGowaWebhookRoutes(wsBridge: GowaWsBridge): Router {
 
     try {
       const envelope = asReactionRecord(JSON.parse(req.body.toString('utf8')));
-      if (typeof envelope?.event !== 'string' || !isGowaReactionEvent(envelope.event)) {
+      const code = typeof envelope?.event === 'string' ? envelope.event : '';
+      const isReaction = isGowaReactionEvent(code);
+      const incoming = code === 'message' ? asReactionRecord(envelope?.payload) : undefined;
+      const chatJid = typeof incoming?.chat_id === 'string' ? normalizeWhatsAppJid(incoming.chat_id) : '';
+      const isRatingInboxMessage = incoming?.is_from_me === false && Boolean(chatJid) &&
+        hasPendingChatCloseRating(chatJid);
+      if (!isReaction && !isRatingInboxMessage) {
         res.sendStatus(204);
         return;
       }
-      const change = readGowaReaction(envelope);
-      const upstreamId = typeof envelope.device_id === 'string' ? envelope.device_id.trim() : '';
-      if (!change || !upstreamId) {
-        res.status(400).json({code: 'INVALID_REACTION', message: 'Invalid reaction payload'});
+      const change = isReaction ? readGowaReaction(envelope) : undefined;
+      const upstreamId = typeof envelope?.device_id === 'string' ? envelope.device_id.trim() : '';
+      const sessionId = typeof envelope?.session_id === 'string' ? envelope.session_id.trim() : '';
+      if ((!upstreamId && !sessionId) || (isReaction && !change)) {
+        res.status(400).json({
+          code: isReaction ? 'INVALID_REACTION' : 'INVALID_WEBHOOK_PAYLOAD',
+          message: 'Invalid GOWA webhook payload',
+        });
         return;
       }
 
       // GOWA can identify the webhook source by WhatsApp JID while REST uses a slot ID.
       const devices = await gowaFetch<GowaDevice[]>('/devices');
       const jid = normalizeWhatsAppJid(upstreamId);
-      const candidates = devices.filter((device) =>
-        device.id === upstreamId || Boolean(jid && [device.jid, device.phone_number]
-          .some((value) => value && normalizeWhatsAppJid(value) === jid)),
-      );
+      const candidates = sessionId
+        ? devices.filter((device) => device.id === sessionId)
+        : devices.filter((device) =>
+          device.id === upstreamId || Boolean(jid && [device.jid, device.phone_number]
+            .some((value) => value && normalizeWhatsAppJid(value) === jid)),
+        );
       if (candidates.length === 1) {
-        const event = recordMessageReaction(candidates[0].id, change.chatJid, change.messageId, change.reaction);
-        if (event) wsBridge.broadcast(event);
+        const deviceId = candidates[0].id;
+        if (change) {
+          const event = recordMessageReaction(deviceId, change.chatJid, change.messageId, change.reaction);
+          if (event) wsBridge.broadcast(event);
+        } else if (hasPendingChatCloseRating(chatJid, deviceId)) {
+          handleUpstreamGowaEvent(deviceId, {
+            code: 'MESSAGE_RECEIVED', message: '', result: incoming, device_id: deviceId,
+          }, (event) => wsBridge.broadcast(event));
+        }
       }
       res.sendStatus(204);
     } catch (error) {

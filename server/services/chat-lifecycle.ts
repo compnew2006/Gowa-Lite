@@ -10,6 +10,7 @@ import {
 } from '../db.ts';
 import {GowaError} from '../errors.ts';
 import {hasAnyPermission, hasDeviceAccess, hasPermission, isAdminSubject} from '../rbac.ts';
+import {expireChatCloseRatings, queueChatCloseRating} from './chat-close-rating.ts';
 import {
   isGroupJid,
   isNewsletterJid,
@@ -1208,6 +1209,7 @@ export function closeChat(
       createdAtMs: nowMs,
     });
 
+    queueChatCloseRating(deviceId, chatJid, event.id, nowMs);
     return {assignment, event};
   });
 }
@@ -1232,6 +1234,7 @@ export function reopenChat(
       return {assignment: existing ?? defaultAssignment(deviceId, chatJid)};
     }
 
+    expireChatCloseRatings(deviceId, chatJid);
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
     const shouldClaim = Boolean(options?.assignToSelf) && hasPermission(actor, 'chats', 'assign');
@@ -1315,6 +1318,11 @@ export function handleIncomingCustomerMessageLifecycle(
       return null;
     }
 
+    // GOWA may round timestamps to seconds. Ignore history older than this close.
+    const closedAt = parseTimestampMs(existing.closed_at || '');
+    if (messageTimestampMs && messageTimestampMs < Math.floor(closedAt / 1000) * 1000) return null;
+
+    expireChatCloseRatings(deviceId, chatJid);
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
     const assignment = upsertAssignmentRow({

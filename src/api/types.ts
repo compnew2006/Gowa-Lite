@@ -598,6 +598,14 @@ export interface InboxPolicy {
   closed_reply_policy: ClosedReplyPolicy;
 }
 
+export interface AccountCloseRatings {
+  enabled: boolean;
+  webhook_configured: boolean;
+  count: number;
+  average: number | null;
+  recent: {id: number; score: number; rated_at: string}[];
+}
+
 export type ChatLifecycleEventType =
   | 'claimed'
   | 'auto_claimed'

@@ -135,6 +135,8 @@ export const reactionBodySchema = z.object({
   emoji: z.string().trim().max(32, {message: 'صيغة التفاعل غير صالحة'}).optional().default(''),
 });
 
+export const closeRatingSettingsSchema = z.object({enabled: z.boolean()});
+
 export const conversationNoteCreateSchema = z.object({
   content: z
     .string({error: 'نص الملاحظة مطلوب'})

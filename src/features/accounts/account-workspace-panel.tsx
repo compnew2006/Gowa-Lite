@@ -12,6 +12,7 @@ import {
   Search,
   Shield,
   Smartphone,
+  Star,
   Trash2,
   Wrench,
 } from 'lucide-react';
@@ -23,6 +24,7 @@ import {ContactAvatar} from '@/components/contact-avatar';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import {AccountProfilePanel} from '@/features/accounts/account-profile-panel';
+import {AccountCloseRatingPanel} from '@/features/accounts/account-close-rating-panel';
 import {RejectCallPanel} from '@/features/accounts/reject-call-panel';
 import {accountDotTone} from '@/features/chat/chat-list';
 import {formatDate} from '@/lib/format';
@@ -31,7 +33,7 @@ import {useI18n} from '@/lib/i18n';
 import {cn} from '@/lib/utils';
 import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
-type AccountWorkspaceTab = 'connection' | 'profile' | 'tools';
+type AccountWorkspaceTab = 'connection' | 'profile' | 'tools' | 'ratings';
 
 const stateToneClass: Record<DeviceState, string> = {
   logged_in: 'text-emerald-700 dark:text-emerald-400',
@@ -60,6 +62,7 @@ export function AccountWorkspacePanel({
   const isRtl = lang === 'ar';
   const BackIcon = isRtl ? ArrowRight : ArrowLeft;
   const user = useAuthStore((s) => s.user);
+  const canReadAccounts = hasUserPermission(user, 'accounts:read');
   const canWriteAccounts = hasUserPermission(user, 'accounts:write');
   const canRejectCalls = hasUserPermission(user, 'misc:calls.reject');
   const canReadChats = hasUserPermission(user, 'chats:read');
@@ -188,6 +191,9 @@ export function AccountWorkspacePanel({
           [
             {id: 'connection' as const, label: t.accounts.tabConnection, icon: Smartphone},
             {id: 'profile' as const, label: t.accounts.tabProfile, icon: Shield},
+            ...(canReadAccounts
+              ? [{id: 'ratings' as const, label: t.accounts.closeRatings.tab, icon: Star}]
+              : []),
             ...(canRejectCalls
               ? [{id: 'tools' as const, label: t.accounts.tabTools, icon: Wrench}]
               : []),
@@ -199,6 +205,7 @@ export function AccountWorkspacePanel({
             <button
               key={tab.id}
               type="button"
+              aria-pressed={active}
               onClick={() => setActiveTab(tab.id)}
               className={cn(
                 'inline-flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-3 text-xs font-medium whitespace-nowrap transition-colors',
@@ -324,6 +331,9 @@ export function AccountWorkspacePanel({
           )}
 
           {activeTab === 'tools' && canRejectCalls && <RejectCallPanel deviceId={device.id} />}
+          {activeTab === 'ratings' && canReadAccounts && (
+            <AccountCloseRatingPanel key={device.id} deviceId={device.id} canWrite={canWriteAccounts} />
+          )}
         </div>
       </div>
 

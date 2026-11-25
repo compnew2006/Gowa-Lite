@@ -16,6 +16,7 @@ import {registerMiscRoutes} from './server/routes/misc.ts';
 import {registerRoleRoutes} from './server/routes/roles.ts';
 import {registerScheduleRoutes} from './server/routes/schedules.ts';
 import {registerUnifiedInboxRoutes} from './server/routes/unified-inbox.ts';
+import {resumeQueuedChatCloseRatings} from './server/services/chat-close-rating.ts';
 import {parseTrustProxySetting} from './server/security.ts';
 import {handleUpstreamGowaEvent} from './server/services/chat-sync.ts';
 import {GowaWsBridge} from './server/ws-bridge.ts';
@@ -29,9 +30,13 @@ async function startServer(): Promise<void> {
   const server = http.createServer(app);
   const wsBridge = new GowaWsBridge(server, {
     onUpstreamEvent: (deviceId, event) => {
+      let ratingConsumed = false;
       handleUpstreamGowaEvent(deviceId, event, (lifecyclePayload) => {
         wsBridge.broadcast(lifecyclePayload);
+      }, () => {
+        ratingConsumed = true;
       });
+      return ratingConsumed;
     },
   });
 
@@ -149,6 +154,9 @@ async function startServer(): Promise<void> {
   const port = Number(process.env.PORT || 3000);
   server.listen(port, '0.0.0.0', () => {
     console.log(`gowa-lite listening on http://0.0.0.0:${port}`);
+    void resumeQueuedChatCloseRatings().catch((error) =>
+      console.error('[close-rating] queued delivery failed', error),
+    );
   });
 
   try {
