@@ -148,13 +148,11 @@ export function NewsletterMessagesPanel({
     setDownloadingServerId(serverId);
     try {
       const media = await downloadNewsletterMedia(deviceId, newsletterId, serverId);
-      const rawPath = media.file_path || media.file_url || '';
-      if (!rawPath) {
+      if (!media.proxy_url) {
         toast.error(t.chats.mediaUnavailable);
         return;
       }
-      const proxyUrl = `/api/unified/media/file?deviceId=${encodeURIComponent(deviceId)}&path=${encodeURIComponent(rawPath)}`;
-      const blobUrl = await fetchAuthorizedBlobUrl(proxyUrl);
+      const blobUrl = await fetchAuthorizedBlobUrl(media.proxy_url);
       const a = document.createElement('a');
       a.href = blobUrl;
       a.download = resolveMediaFilename(

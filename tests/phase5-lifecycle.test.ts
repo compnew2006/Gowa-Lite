@@ -372,14 +372,24 @@ describe('Phase 5 Lifecycle HTTP, Policy & WebSocket Integration', () => {
         return;
       }
       if (url.pathname === '/send/message' && req.method === 'POST') {
-        sentMessagesCount += 1;
-        res.end(
-          JSON.stringify({
-            code: 'SUCCESS',
-            message: 'ok',
-            results: {message_id: `sent-${sentMessagesCount}`, status: 'sent'},
-          }),
-        );
+        let body = '';
+        req.setEncoding('utf8');
+        req.on('data', (chunk: string) => { body += chunk; });
+        req.on('end', () => {
+          if (JSON.parse(body).message === 'Fail after claim') {
+            res.statusCode = 502;
+            res.end(JSON.stringify({code: 'DELIVERY_FAILED', message: 'Delivery failed'}));
+            return;
+          }
+          sentMessagesCount += 1;
+          res.end(
+            JSON.stringify({
+              code: 'SUCCESS',
+              message: 'ok',
+              results: {message_id: `sent-${sentMessagesCount}`, status: 'sent'},
+            }),
+          );
+        });
         return;
       }
       res.end(JSON.stringify({code: 'SUCCESS', message: 'ok', results: []}));
@@ -682,6 +692,20 @@ describe('Phase 5 Lifecycle HTTP, Policy & WebSocket Integration', () => {
       assert.equal(lifeData.assignment.status, 'open');
       assert.equal(lifeData.assignment.assigned_user_id, saraId);
       assert.equal(lifeData.events.at(-1)?.event_type, 'auto_claimed');
+
+      const failedChat = '966509876543@s.whatsapp.net';
+      const failedSend = await api(`/api/unified/chats/dev-alpha/${encodeURIComponent(failedChat)}/send`, {
+        method: 'POST', token: saraToken, body: JSON.stringify({message: 'Fail after claim'}),
+      });
+      assert.equal(failedSend.status, 502);
+      const claimUpdate = await omarCollector.waitFor((event) =>
+        event.code === 'CHAT_LIFECYCLE_UPDATED' && (event.result as {chat_jid?: string})?.chat_jid === failedChat,
+      );
+      assert.equal((claimUpdate.result as {assignment: {assigned_user_id: number}}).assignment.assigned_user_id, saraId);
+      const secondAgent = await api(`/api/unified/chats/dev-alpha/${encodeURIComponent(failedChat)}/send`, {
+        method: 'POST', token: omarToken, body: JSON.stringify({message: 'A second reply'}),
+      });
+      assert.equal(secondAgent.body?.code, 'CHAT_ASSIGNED_TO_OTHER');
 
       // 9. Close chat2 -> block prevents send; reopen_and_claim permits send & reopens
       const closeRes = await api(

@@ -1,5 +1,7 @@
 import type {MessageInfo, ReactionInfo} from '@/api/types';
+import type {QueryClient} from '@tanstack/react-query';
 import {formatJidPhone} from '@/features/chat/display-name';
+import type {WsRevokeTarget} from '@/lib/events';
 import {toWhatsAppJid} from '@/lib/phone';
 
 export const QUICK_REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
@@ -131,4 +133,14 @@ export function applyRevokeToMessagePages<TPage extends {data: MessageInfo[]}>(
 
   if (!changedAnyPage) return oldData;
   return {...oldData, pages: nextPages};
+}
+
+export function patchRevokedMessage(client: QueryClient, revoke: WsRevokeTarget): void {
+  if (!revoke.deviceId || !revoke.chatJid) return;
+  const chatJid = toWhatsAppJid(revoke.chatJid) || revoke.chatJid;
+  client.setQueriesData<InfiniteMessagePagesShape>({
+    queryKey: ['unified-messages', revoke.deviceId],
+    predicate: ({queryKey: [, , rawJid]}) =>
+      typeof rawJid === 'string' && (toWhatsAppJid(rawJid) || rawJid) === chatJid,
+  }, (data) => applyRevokeToMessagePages(data, revoke));
 }

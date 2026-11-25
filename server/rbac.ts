@@ -1,3 +1,5 @@
+import {isGroupJid, isNewsletterJid, isStatusBroadcastJid} from '../shared/whatsapp-identity.ts';
+
 import {GowaError} from './errors.ts';
 
 export type PermissionResource =
@@ -238,6 +240,12 @@ export function hasPermission(
   action: string,
 ): boolean {
   return hasPermissionKey(user, `${resource}:${action}`);
+}
+
+export function hasChatReadPermission(user: RbacSubject, chatJid: string): boolean {
+  if (isStatusBroadcastJid(chatJid)) return hasPermission(user, 'misc', 'status.read');
+  if (isNewsletterJid(chatJid)) return hasPermission(user, 'misc', 'channels.manage');
+  return hasPermission(user, isGroupJid(chatJid) ? 'groups' : 'chats', 'read');
 }
 
 export function hasAnyPermission(user: RbacSubject, keys: string[]): boolean {

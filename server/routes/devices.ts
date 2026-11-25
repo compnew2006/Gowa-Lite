@@ -3,12 +3,12 @@ import {getAccountAliases, listKnownDeviceIds, setAccountAlias} from '../db.ts';
 import {
   GowaError,
   gowaFetch,
-  gowaFetchBinary,
   type GowaDevice,
   type GowaDeviceStatus,
   type GowaLoginQr,
   type GowaPairCode,
 } from '../gowa-client.ts';
+import {buildGowaAssetUrl, sendGowaAsset} from '../media-access.ts';
 import {
   assertDeviceAccess,
   createApiRouter,
@@ -18,7 +18,7 @@ import {
   requirePermission,
 } from '../middleware/auth.ts';
 import {filterAllowedDevices} from '../rbac.ts';
-import {buildSafeMediaHeaders, decodeRouteParam} from '../security.ts';
+import {decodeRouteParam} from '../security.ts';
 import {resolveAccountDisplayName} from '../services/chat-sync.ts';
 import type {AuthedRequest} from '../types.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
@@ -237,7 +237,12 @@ export function registerDeviceRoutes(wsBridge: GowaWsBridge): Router {
         const deviceId = decodeRouteParam(req.params.id);
         assertDeviceAccess(req.user, deviceId);
         const qr = await gowaFetch<GowaLoginQr>(`/devices/${encodeURIComponent(deviceId)}/login`);
-        res.json({code: 'SUCCESS', message: 'ok', results: qr});
+        const qrRoute = `/api/devices/${encodeURIComponent(deviceId)}/qr-image`;
+        const lifetime = Math.max(1, Math.min(300, Number(qr.qr_duration) || 30));
+        res.json({code: 'SUCCESS', message: 'ok', results: {
+          ...qr,
+          qr_link: buildGowaAssetUrl(qrRoute, deviceId, '', qr.qr_link, lifetime * 1000),
+        }});
       } catch (err) {
         handleRouteError(res, err);
       }
@@ -322,21 +327,13 @@ export function registerDeviceRoutes(wsBridge: GowaWsBridge): Router {
   router.get(
     '/api/devices/:id/qr-image',
     requireAuth,
-    requireAnyPermission(['accounts:read', 'accounts:write']),
+    requirePermission('accounts', 'write'),
     async (req: AuthedRequest, res) => {
-      const qrPath = typeof req.query.path === 'string' ? req.query.path : '';
       try {
         const deviceId = decodeRouteParam(req.params.id);
         assertDeviceAccess(req.user, deviceId);
-        const asset = await gowaFetchBinary(qrPath);
-        const safeHeaders = buildSafeMediaHeaders(asset.contentType, asset.filename);
-        res.setHeader('Content-Type', asset.contentType);
-        res.setHeader('Content-Disposition', safeHeaders.disposition);
-        if (safeHeaders.csp) {
-          res.setHeader('Content-Security-Policy', safeHeaders.csp);
-        }
-        res.setHeader('Cache-Control', 'no-store');
-        res.send(asset.buffer);
+        const qrRoute = `/api/devices/${encodeURIComponent(deviceId)}/qr-image`;
+        await sendGowaAsset(req, res, qrRoute, deviceId, '');
       } catch (err) {
         handleRouteError(res, err);
       }

@@ -30,13 +30,14 @@ async function startServer(): Promise<void> {
   const server = http.createServer(app);
   const wsBridge = new GowaWsBridge(server, {
     onUpstreamEvent: (deviceId, event) => {
-      let ratingConsumed = false;
+      let consumed = event.code === 'MESSAGE_REVOKED';
       handleUpstreamGowaEvent(deviceId, event, (lifecyclePayload) => {
+        if (lifecyclePayload.code === 'MESSAGE_REVOKED') consumed = true;
         wsBridge.broadcast(lifecyclePayload);
       }, () => {
-        ratingConsumed = true;
+        consumed = true;
       });
-      return ratingConsumed;
+      return consumed;
     },
   });
 

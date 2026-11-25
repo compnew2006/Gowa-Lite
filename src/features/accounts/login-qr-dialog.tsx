@@ -62,8 +62,7 @@ export function LoginQrDialog({
     }
     let active = true;
     let objectUrl = '';
-    const proxyUrl = `/api/devices/${encodeURIComponent(deviceId)}/qr-image?path=${encodeURIComponent(qr.qr_link)}`;
-    void fetchAuthorizedBlobUrl(proxyUrl)
+    void fetchAuthorizedBlobUrl(qr.qr_link)
       .then((url) => {
         if (!active) {
           URL.revokeObjectURL(url);

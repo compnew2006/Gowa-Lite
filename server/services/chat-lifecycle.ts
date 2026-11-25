@@ -16,7 +16,7 @@ import {
   isNewsletterJid,
   isStatusBroadcastJid,
   normalizeWhatsAppJid,
-} from './chat-sync.ts';
+} from '../../shared/whatsapp-identity.ts';
 
 export type ChatLifecycleStatus = 'pending' | 'open' | 'closed';
 

@@ -190,6 +190,53 @@ export function resolveSafeGowaConfig(override?: Partial<GowaConfig>): GowaConfi
   return merged;
 }
 
+const MAX_GOWA_JSON_BYTES = 16 * 1024 * 1024;
+const MAX_GOWA_ASSET_BYTES = 64 * 1024 * 1024;
+
+async function fetchGowaResponse(
+  url: URL, init: RequestInit, timeoutMs: number, maxBytes: number, readErrorBody: boolean,
+): Promise<{response: Response; buffer: Buffer}> {
+  const signal = AbortSignal.timeout(timeoutMs);
+  try {
+    const response = await fetch(url, {...init, signal});
+    const body = response.body;
+    if (!body || (!response.ok && !readErrorBody)) {
+      if (body) void body.cancel().catch(() => {});
+      return {response, buffer: Buffer.alloc(0)};
+    }
+
+    const tooLarge = () => new GowaError(502, 'GOWA_RESPONSE_TOO_LARGE', 'استجابة خادم gowa تتجاوز الحجم المسموح به');
+    if (Number(response.headers.get('content-length')) > maxBytes) {
+      void body.cancel().catch(() => {});
+      throw tooLarge();
+    }
+
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    try {
+      for (;;) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > maxBytes) {
+          void reader.cancel().catch(() => {});
+          throw tooLarge();
+        }
+        chunks.push(value);
+      }
+      return {response, buffer: Buffer.concat(chunks, bytes)};
+    } finally {
+      reader.releaseLock();
+    }
+  } catch (err) {
+    if (err instanceof GowaError) throw err;
+    throw new GowaError(502, 'GOWA_UNREACHABLE', signal.aborted
+      ? 'انتهت مهلة الاتصال بخادم gowa'
+      : 'تعذر الوصول إلى خادم gowa');
+  }
+}
+
 export async function gowaFetch<T>(
   routePath: string,
   options?: {
@@ -230,27 +277,9 @@ export async function gowaFetch<T>(
     body = JSON.stringify(options.body);
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? 15_000);
-  let response: Response;
-  try {
-    response = await fetch(url.toString(), {
-      method: options?.method ?? 'GET',
-      headers,
-      body,
-      signal: controller.signal,
-    });
-  } catch (err) {
-    const msg =
-      err instanceof Error && err.name === 'AbortError'
-        ? 'انتهت مهلة الاتصال بخادم gowa'
-        : 'تعذر الوصول إلى خادم gowa';
-    throw new GowaError(502, 'GOWA_UNREACHABLE', msg);
-  } finally {
-    clearTimeout(timeout);
-  }
-
-  const text = await response.text();
+  const {response, buffer} = await fetchGowaResponse(url, {method: options?.method ?? 'GET', headers, body},
+    options?.timeoutMs ?? 15_000, MAX_GOWA_JSON_BYTES, true);
+  const text = buffer.toString('utf8');
   let parsed: (Partial<GowaEnvelope<T>> & {title?: unknown; detail?: unknown}) | null = null;
   try {
     parsed = text
@@ -329,16 +358,8 @@ export async function gowaFetchRaw(
     headers['X-Device-Id'] = encodeURIComponent(options.deviceId);
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? 15_000);
-  let response: Response;
-  try {
-    response = await fetch(url.toString(), {headers, signal: controller.signal});
-  } catch {
-    throw new GowaError(502, 'GOWA_UNREACHABLE', 'تعذر الوصول إلى خادم gowa');
-  } finally {
-    clearTimeout(timeout);
-  }
+  const {response, buffer} = await fetchGowaResponse(url, {headers, redirect: 'error'}, options?.timeoutMs ?? 15_000,
+    MAX_GOWA_ASSET_BYTES, false);
 
   if (!response.ok) {
     throw new GowaError(
@@ -348,19 +369,18 @@ export async function gowaFetchRaw(
     );
   }
 
-  const arrayBuffer = await response.arrayBuffer();
   return {
     contentType: response.headers.get('content-type') || 'application/octet-stream',
-    buffer: Buffer.from(arrayBuffer),
+    buffer,
     filename: pathFromUrl(url.pathname),
   };
 }
 
 export async function gowaFetchBinary(
   relativeOrAppPath: string,
-  configOverride?: Partial<GowaConfig>,
+  options?: {deviceId?: string},
 ): Promise<{contentType: string; buffer: Buffer; filename?: string}> {
-  const config = resolveSafeGowaConfig(configOverride);
+  const config = resolveSafeGowaConfig();
   const raw = relativeOrAppPath.trim();
   if (!raw) {
     throw new GowaError(400, 'INVALID_ASSET_PATH', 'مسار الملف فارغ');
@@ -392,26 +412,18 @@ export async function gowaFetchBinary(
   const headers: Record<string, string> = {};
   const authHeader = buildAuthHeader(config);
   if (authHeader) headers.Authorization = authHeader;
+  if (options?.deviceId) headers['X-Device-Id'] = encodeURIComponent(options.deviceId);
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20_000);
-  let response: Response;
-  try {
-    response = await fetch(targetUrl.toString(), {headers, signal: controller.signal});
-  } catch {
-    throw new GowaError(502, 'GOWA_UNREACHABLE', 'تعذر تحميل الملف من خادم gowa');
-  } finally {
-    clearTimeout(timeout);
-  }
+  const {response, buffer} = await fetchGowaResponse(targetUrl, {headers, redirect: 'error'}, 20_000,
+    MAX_GOWA_ASSET_BYTES, false);
 
   if (!response.ok) {
     throw new GowaError(response.status, 'GOWA_ASSET_ERROR', 'تعذر قراءة الملف من خادم gowa');
   }
 
-  const arrayBuffer = await response.arrayBuffer();
   return {
     contentType: response.headers.get('content-type') || 'application/octet-stream',
-    buffer: Buffer.from(arrayBuffer),
+    buffer,
     filename: pathFromUrl(targetUrl.pathname),
   };
 }

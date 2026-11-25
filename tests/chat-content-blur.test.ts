@@ -6,7 +6,6 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import {after, before, describe, it} from 'node:test';
-import {WebSocket} from 'ws';
 import type {AccountSummary, UnifiedChat} from '../src/api/types.ts';
 
 function getFreePort(): Promise<number> {
@@ -128,6 +127,13 @@ describe('Server-Side Chat Content Redaction (Unit)', () => {
     assert.equal(filteredPending.result.id, 'ws-msg-1');
     assert.equal(filteredPending.result.chat_jid, jid);
     assert.equal(filteredPending.result.sender_display_name, 'Noura Client');
+
+    const {chat_jid: remoteJid, ...alternateResult} = rawWsMessage.result;
+    const alternate = wsMod.shouldDeliverWsEventToUser(agentA, {
+      ...rawWsMessage, result: {...alternateResult, remote_jid: remoteJid},
+    });
+    assert.equal((alternate.filteredPayload as typeof filteredPending)?.result.content, '');
+    assert.equal(wsMod.shouldDeliverWsEventToUser(agentA, {...rawWsMessage, result: alternateResult}).allowed, false);
 
     // Original payload must NOT be mutated
     assert.equal(rawWsMessage.result.content, 'Confidential OTP 774422');
@@ -875,10 +881,13 @@ describe('Server-Side Chat Content Redaction (HTTP & WS Integration)', () => {
     assert.equal(saraOpenMsgs.text.includes(secretText), true);
     assert.equal((saraOpenMsgs.body?.results as {content_redacted?: boolean}).content_redacted, undefined);
 
-    const saraOpenMedia = await api(
-      `/api/unified/media/file?deviceId=dev-alpha&path=${encodeURIComponent('/media/confidential-quote.pdf')}&chatJid=${encodeURIComponent(targetJid)}`,
+    const openMediaLink = await api(
+      `/api/unified/media/download?deviceId=dev-alpha&messageId=m-secret-1&phone=${encodeURIComponent(targetJid)}`,
       {token: saraToken},
     );
+    assert.equal(openMediaLink.status, 200);
+    const proxyUrl = (openMediaLink.body?.results as {proxy_url: string}).proxy_url;
+    const saraOpenMedia = await api(proxyUrl, {token: saraToken});
     assert.equal(saraOpenMedia.status, 200);
 
     const omarOtherMsgs = await api(
@@ -912,10 +921,7 @@ describe('Server-Side Chat Content Redaction (HTTP & WS Integration)', () => {
     assert.equal(saraClosedNotes.status, 200);
     assert.equal(saraClosedNotes.text.includes(secretNote), false);
 
-    const saraClosedMedia = await api(
-      `/api/unified/media/file?deviceId=dev-alpha&path=${encodeURIComponent('/media/confidential-quote.pdf')}&chatJid=${encodeURIComponent(targetJid)}`,
-      {token: saraToken},
-    );
+    const saraClosedMedia = await api(proxyUrl, {token: saraToken});
     assert.equal(saraClosedMedia.status, 403);
     assert.equal(saraClosedMedia.body?.code, 'CHAT_CONTENT_REDACTED');
 

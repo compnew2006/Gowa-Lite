@@ -156,6 +156,15 @@ export function requireAnyPermission(keys: string[]) {
   };
 }
 
+export function requireDeviceParamAccess(req: AuthedRequest, res: Response, next: NextFunction): void {
+  try {
+    assertDeviceAccess(req.user, decodeRouteParam(req.params.deviceId));
+    next();
+  } catch (err) {
+    handleRouteError(res, err);
+  }
+}
+
 export function assertDeviceAccess(user: PublicUser | undefined, deviceId: string): void {
   if (!user) {
     throw new GowaError(401, 'UNAUTHORIZED', 'يرجى تسجيل الدخول للمتابعة');

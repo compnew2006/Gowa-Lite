@@ -1,55 +1,11 @@
-export function normalizeArabicDigits(value: string): string {
-  return value
-    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
-    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
-}
+import {normalizeArabicDigits, normalizeSearchQuery as normalizeSearchInput} from '../../shared/whatsapp-identity.ts';
 
-export function normalizeSearchInput(raw: string): string {
-  const ascii = normalizeArabicDigits(raw);
-  const trimmed = ascii.trim();
-  if (!trimmed) return '';
-  if (/^[\d\s+().-]+$/.test(trimmed)) {
-    return trimmed.replace(/[\s+().-]/g, '');
-  }
-  return trimmed;
-}
-
-export function normalizePhoneQueryForGowa(raw: string): string {
-  const normalized = normalizeSearchInput(raw);
-  if (/^0\d+$/.test(normalized)) {
-    const stripped = normalized.replace(/^0+/, '');
-    if (stripped.length >= 3) {
-      return stripped;
-    }
-  }
-  return normalized;
-}
-
-export function toWhatsAppJid(raw: string): string {
-  const ascii = normalizeArabicDigits(raw).trim();
-  if (!ascii) return '';
-
-  if (ascii.includes('@')) {
-    const compact = ascii.replace(/\s+/g, '');
-    const match = /^([^@\s]+)@([a-z0-9.-]+)$/i.exec(compact);
-    if (!match) return '';
-    let local = match[1];
-    let domain = match[2].toLowerCase();
-    if (domain === 'c.us') {
-      domain = 's.whatsapp.net';
-    }
-    if (domain === 's.whatsapp.net' || domain === 'lid') {
-      local = local.split(':')[0] || local;
-    }
-    return `${local}@${domain}`;
-  }
-
-  const digits = ascii.replace(/[\s+().-]/g, '');
-  if (/^\d{5,}$/.test(digits)) {
-    return `${digits}@s.whatsapp.net`;
-  }
-  return '';
-}
+export {
+  normalizeArabicDigits,
+  normalizeSearchQuery as normalizeSearchInput,
+  normalizePhoneQueryForGowa,
+  normalizeWhatsAppJid as toWhatsAppJid,
+} from '../../shared/whatsapp-identity.ts';
 
 export function matchesNormalizedQuery(haystackParts: Array<string | undefined | null>, rawQuery: string): boolean {
   const normalized = normalizeSearchInput(rawQuery).toLowerCase();

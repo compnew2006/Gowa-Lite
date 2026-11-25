@@ -243,6 +243,7 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
   router.post('/api/auth/logout', requireAuth, (req: AuthedRequest, res) => {
     if (req.authToken) {
       deleteSession(req.authToken);
+      wsBridge.disconnectSession(req.authToken);
     }
     clearSessionCookie(req, res);
     res.json({code: 'SUCCESS', message: 'تم تسجيل الخروج'});
@@ -268,7 +269,7 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
   });
 
   router.post('/api/auth/ws-ticket', requireAuth, (req: AuthedRequest, res) => {
-    const ticket = issueWsTicket(req.user!);
+    const ticket = issueWsTicket(req.user!, req.authToken!);
     res.json({code: 'SUCCESS', message: 'ok', results: {ticket}});
   });
 

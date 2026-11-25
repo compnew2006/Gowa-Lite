@@ -582,7 +582,7 @@ const en: AppTranslations = {
     inboxPolicySubtitle: 'Control how agents reply to Pending (unclaimed) or Closed conversations.',
     unassignedReplyLabel: 'When replying to a Pending conversation',
     unassignedAutoClaimTitle: 'Auto-claim on reply',
-    unassignedAutoClaimDesc: 'Automatically assigns the chat to the replying agent.',
+    unassignedAutoClaimDesc: 'Assigns the chat when an agent attempts the first reply. The assignment stays if delivery fails.',
     unassignedRequireClaimTitle: 'Require Claim before reply',
     unassignedRequireClaimDesc: 'Composer stays locked until the agent clicks Claim or is assigned.',
     unassignedAllowTitle: 'Allow reply without claiming',

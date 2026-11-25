@@ -1,3 +1,4 @@
+import {normalizeArabicDigits} from '../../shared/whatsapp-identity.ts';
 import {db, getSetting, isChatBlocked, setSetting, upsertCachedMessages} from '../db.ts';
 import {gowaFetch} from '../gowa-client.ts';
 
@@ -155,12 +156,9 @@ export function captureChatCloseRating(
   message: RatingMessage,
 ): 'recorded' | 'duplicate' | undefined {
   if (!message.id || message.mediaType) return;
-  const number = /^([1-5١-٥۱-۵])(?:\s*\/\s*[5٥۵])?$/u.exec(message.text.trim())?.[1];
+  const number = /^([1-5])(?:\s*\/\s*5)?$/u.exec(normalizeArabicDigits(message.text.trim()))?.[1];
   if (!number) return;
-  const digits = ['12345', '١٢٣٤٥', '۱۲۳۴۵'];
-  const digitSet = digits.find((set) => set.includes(number));
-  if (!digitSet) return;
-  const score = digitSet.indexOf(number) + 1;
+  const score = Number(number);
 
   if (db.prepare(
     `SELECT 1 FROM chat_close_ratings WHERE device_id = ? AND chat_jid = ? AND reply_message_id = ?`,

@@ -12,11 +12,7 @@ import {
 } from '@/api/client';
 import type {
   AccountSummary,
-  ChatInfo,
-  ChatRedactionReason,
   GroupInfoFromLink,
-  MessageInfo,
-  Pagination,
   UnifiedDirectoryItem,
   UnifiedGroupsResponse,
 } from '@/api/types';
@@ -30,10 +26,7 @@ import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
-import {
-  applyRevokeToMessagePages,
-  type InfiniteMessagePagesShape,
-} from '@/features/chat/message-reactions';
+import {patchRevokedMessage} from '@/features/chat/message-reactions';
 import {GroupWorkspacePanel} from '@/features/groups/group-workspace-panel';
 import {
   directoryItemKey,
@@ -46,6 +39,7 @@ import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {parseParticipantsList} from '@/lib/participants';
 import {toWhatsAppJid} from '@/lib/phone';
+import {invalidateChatQueries} from '@/lib/query-client';
 import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
 const SIDEBAR_STORAGE_KEY = 'gowa-lite:groups-sidebar-width';
@@ -103,46 +97,13 @@ export default function GroupsPage() {
       const code = (event.code || '').toUpperCase();
       const target = extractWsEventTarget(event);
 
-      const invalidateScoped = (rootKey: string) => {
-        if (target.deviceId && target.chatJid) {
-          void queryClient.invalidateQueries({
-            queryKey: [rootKey, target.deviceId, target.chatJid],
-          });
-        } else if (target.deviceId) {
-          void queryClient.invalidateQueries({queryKey: [rootKey, target.deviceId]});
-        } else {
-          void queryClient.invalidateQueries({queryKey: [rootKey]});
-        }
-      };
+      const invalidateScoped = (rootKey: string) => invalidateChatQueries(queryClient, rootKey, target);
 
       const revoke = extractWsRevokeTarget(event);
       if (revoke) {
-        type MessagesPage = {
-          data: MessageInfo[];
-          pagination: Pagination;
-          chat_info: ChatInfo;
-          content_redacted?: boolean;
-          redaction_reason?: ChatRedactionReason;
-        };
-        const canonicalRevokeJid = revoke.chatJid
-          ? toWhatsAppJid(revoke.chatJid) || revoke.chatJid
-          : '';
-        if (!canonicalRevokeJid || canonicalRevokeJid.toLowerCase().endsWith('@g.us')) {
-          queryClient.setQueriesData<InfiniteMessagePagesShape<MessagesPage>>(
-            {
-              predicate: (q) => {
-                if (q.queryKey[0] !== 'unified-messages') return false;
-                if (revoke.deviceId && q.queryKey[1] !== revoke.deviceId) return false;
-                if (canonicalRevokeJid) {
-                  const rawKeyJid = typeof q.queryKey[2] === 'string' ? q.queryKey[2] : '';
-                  const canonicalKeyJid = rawKeyJid ? toWhatsAppJid(rawKeyJid) || rawKeyJid : '';
-                  return canonicalKeyJid === canonicalRevokeJid;
-                }
-                return true;
-              },
-            },
-            (oldData) => applyRevokeToMessagePages(oldData, revoke),
-          );
+        const chatJid = revoke.chatJid ? toWhatsAppJid(revoke.chatJid) || revoke.chatJid : '';
+        if (!chatJid || chatJid.toLowerCase().endsWith('@g.us')) {
+          patchRevokedMessage(queryClient, revoke);
           invalidateScoped('unified-messages');
           void queryClient.invalidateQueries({queryKey: ['unified-groups']});
           void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});

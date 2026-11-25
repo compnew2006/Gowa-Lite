@@ -289,6 +289,7 @@ export interface Pagination {
 }
 
 export interface DownloadedMedia {
+  proxy_url: string;
   message_id: string;
   media_type: string;
   filename: string;
@@ -551,6 +552,7 @@ export interface LiveUpdatesSubscription {
 }
 
 export interface NewsletterMedia {
+  proxy_url: string;
   media_type?: string;
   file_path?: string;
   file_url?: string;

@@ -1,5 +1,16 @@
 import type {Zip} from 'fflate';
+import {queryOptions} from '@tanstack/react-query';
+import {downloadUnifiedMedia} from '@/api/client';
 import type {MessageInfo} from '@/api/types';
+
+export function messageMediaQuery(deviceId: string, chatJid: string, messageId: string, requestSignal?: AbortSignal) {
+  return queryOptions({
+    queryKey: ['unified-media', deviceId, chatJid, messageId] as const,
+    queryFn: ({signal}) => downloadUnifiedMedia(deviceId, messageId, chatJid, requestSignal ?? signal),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
 
 export const DOWNLOADABLE_MEDIA_TYPES = new Set([
   'image',

@@ -582,7 +582,7 @@ const ar = {
     inboxPolicySubtitle: 'اضبط سلوك الرد على المحادثات غير المستلمة والمحادثات المغلقة لجميع الوكلاء.',
     unassignedReplyLabel: 'عند الرد على محادثة في قائمة الانتظار (Pending)',
     unassignedAutoClaimTitle: 'استلام تلقائي عند الرد',
-    unassignedAutoClaimDesc: 'تُعيّن المحادثة تلقائيًا للوكيل الذي يرسل أول رد.',
+    unassignedAutoClaimDesc: 'تُعيّن المحادثة للوكيل عند محاولة أول رد، ويظل مسؤولًا عنها لو تعذّر الإرسال.',
     unassignedRequireClaimTitle: 'إلزام الاستلام قبل الرد',
     unassignedRequireClaimDesc: 'يُقفل مربع الإرسال حتى ينقر الوكيل «استلام» أو يُعيَّن لها.',
     unassignedAllowTitle: 'السماح بالرد دون استلام',

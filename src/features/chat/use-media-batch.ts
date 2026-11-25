@@ -1,14 +1,15 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {toast} from 'sonner';
-import {downloadUnifiedMedia, fetchAuthorizedMediaBytes} from '@/api/client';
-import type {DownloadedMedia, MessageInfo} from '@/api/types';
+import {fetchAuthorizedMediaBytes} from '@/api/client';
+import type {MessageInfo} from '@/api/types';
 import {useI18n} from '@/lib/i18n';
 import {
   StreamingZipBuilder,
   computeRangeSelection,
   estimateTotalMediaBytes,
   formatZipArchiveName,
+  messageMediaQuery,
   normalizeDownloadedMime,
   resolveChatMediaFilename,
   saveBlobSafely,
@@ -153,26 +154,9 @@ export function useMediaBatch({
       message: MessageInfo,
       signal: AbortSignal,
     ): Promise<{bytes: Uint8Array<ArrayBuffer>; contentType: string; filename: string}> => {
-      const cacheKey = ['unified-media', deviceId, message.chat_jid, message.id] as const;
-      let resolved = queryClient.getQueryData<DownloadedMedia>(cacheKey);
-
-      if (!resolved || (!resolved.file_path && !resolved.file_url)) {
-        resolved = await downloadUnifiedMedia(
-          deviceId,
-          message.id,
-          message.chat_jid,
-          message.url,
-          signal,
-        );
-        if (!resolved || (!resolved.file_path && !resolved.file_url)) {
-          throw new Error(t.chats.mediaUnavailable);
-        }
-        queryClient.setQueryData(cacheKey, resolved);
-      }
-
-      const targetPath = resolved.file_path || resolved.file_url || '';
-      const fileUrl = `/api/unified/media/file?deviceId=${encodeURIComponent(deviceId)}&chatJid=${encodeURIComponent(message.chat_jid)}&path=${encodeURIComponent(targetPath)}`;
-      const {bytes, contentType} = await fetchAuthorizedMediaBytes(fileUrl, signal);
+      const resolved = await queryClient.fetchQuery(messageMediaQuery(deviceId, message.chat_jid, message.id, signal));
+      if (!resolved?.proxy_url) throw new Error(t.chats.mediaUnavailable);
+      const {bytes, contentType} = await fetchAuthorizedMediaBytes(resolved.proxy_url, signal);
       const filename = resolveChatMediaFilename(message, contentType, resolved.filename);
       return {bytes, contentType, filename};
     },

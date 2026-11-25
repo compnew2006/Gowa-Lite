@@ -1,6 +1,5 @@
 import express, {type Router} from 'express';
 import {
-  clearChatCatchup,
   clearChatHistoryInDb,
   createChatListForUser,
   createConversationNote,
@@ -11,7 +10,6 @@ import {
   getCachedAvatar,
   getCachedMessage,
   getConversationNoteById,
-  getUnreadCountsForUser,
   getUserMutedChatKeys,
   isChatBlocked,
   listChatListsForUser,
@@ -27,7 +25,6 @@ import {
   setUserChatFavourite,
   setUserChatMute,
   syncAndMergeChatMessages,
-  syncChatWatermarks,
   updateConversationNote,
   upsertCachedAvatar,
   upsertCachedMessages,
@@ -46,25 +43,27 @@ import {
   type GowaMessageInfo,
   type GowaPagination,
 } from '../gowa-client.ts';
+import {buildGowaAssetUrl, GOWA_MEDIA_ROUTE, sendGowaAsset} from '../media-access.ts';
 import {
   assertDeviceAccess,
   createApiRouter,
   handleRouteError,
   requireAnyPermission,
   requireAuth,
+  requireDeviceParamAccess,
   requirePermission,
 } from '../middleware/auth.ts';
 import {
   filterAllowedDevices,
+  hasChatReadPermission,
   hasDeviceAccess,
   hasPermission,
   isAdminSubject,
 } from '../rbac.ts';
-import {buildSafeMediaHeaders, decodeRouteParam} from '../security.ts';
+import {decodeRouteParam} from '../security.ts';
 import {recordMessageReaction} from '../services/message-reactions.ts';
 import {
   inferForwardMimeType,
-  isGroupJid,
   isNewsletterJid,
   MAX_MEDIA_UPLOAD_BYTES,
   normalizePhoneQueryForGowa,
@@ -123,16 +122,6 @@ const avatarInflight = new Map<string, Promise<CachedAvatarRow | null>>();
 
 export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
   const router = createApiRouter();
-
-  const requireDeviceParamAccess: express.RequestHandler = (req: AuthedRequest, res, next) => {
-    try {
-      const deviceId = decodeRouteParam(req.params.deviceId);
-      assertDeviceAccess(req.user, deviceId);
-      next();
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  };
 
   router.get(
     '/api/unified/chats',
@@ -305,7 +294,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const chatJid = decodeRouteParam(req.params.jid);
-      if (!hasPermission(req.user!, 'chats', 'read') && !isGroupJid(chatJid)) {
+      if (!hasChatReadPermission(req.user!, chatJid)) {
         res.status(403).json({code: 'FORBIDDEN', message: 'ليس لديك صلاحية تنفيذ هذا الإجراء'});
         return;
       }
@@ -415,7 +404,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
     async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const chatJid = decodeRouteParam(req.params.jid);
-      if (!hasPermission(req.user!, 'chats', 'read') && !isGroupJid(chatJid)) {
+      if (!hasChatReadPermission(req.user!, chatJid)) {
         res.status(403).json({code: 'FORBIDDEN', message: 'ليس لديك صلاحية تنفيذ هذا الإجراء'});
         return;
       }
@@ -466,6 +455,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
         }
 
         const policyResult = enforceInboxPolicyBeforeSend(req.user!, deviceId, chatJid);
+        if (policyResult.lifecycleEvent) wsBridge.broadcast(policyResult.lifecycleEvent);
 
         const payload: Record<string, unknown> = {
           phone: chatJid,
@@ -502,9 +492,6 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
         }
         if (req.user) {
           markChatReadForUser(req.user.id, deviceId, chatJid);
-        }
-        if (policyResult.lifecycleEvent) {
-          wsBridge.broadcast(policyResult.lifecycleEvent);
         }
 
         res.json({
@@ -579,6 +566,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
         }
 
         const policyResult = enforceInboxPolicyBeforeSend(req.user!, deviceId, chatJid);
+        if (policyResult.lifecycleEvent) wsBridge.broadcast(policyResult.lifecycleEvent);
 
         const formData = new FormData();
         formData.set('phone', chatJid);
@@ -617,9 +605,6 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
         }
         if (req.user) {
           markChatReadForUser(req.user.id, deviceId, chatJid);
-        }
-        if (policyResult.lifecycleEvent) {
-          wsBridge.broadcast(policyResult.lifecycleEvent);
         }
 
         res.json({
@@ -755,7 +740,6 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
         content?: unknown;
         media_type?: unknown;
         filename?: unknown;
-        url?: unknown;
       };
 
       const targetDeviceId =
@@ -776,6 +760,9 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
 
       try {
         assertDeviceAccess(req.user, targetDeviceId);
+        if (!hasChatReadPermission(req.user!, sourceChatJid)) {
+          throw new GowaError(403, 'FORBIDDEN', 'ليس لديك صلاحية الوصول إلى الرسالة المصدر');
+        }
         assertChatContentAccess(req.user!, sourceDeviceId, sourceChatJid);
         const cached = getCachedMessage(sourceDeviceId, sourceChatJid, messageId);
         if (cached?.is_revoked) {
@@ -792,9 +779,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
         const filename = (
           cached?.filename || (typeof body.filename === 'string' ? body.filename : '')
         ).trim();
-        const fallbackUrl = (
-          cached?.url || (typeof body.url === 'string' ? body.url : '')
-        ).trim();
+        const fallbackUrl = cached?.url?.trim() ?? '';
 
         if (!content && !mediaType) {
           res.status(400).json({code: 'VALIDATION_ERROR', message: 'محتوى الرسالة غير متوفر لإعادة التوجيه'});
@@ -856,7 +841,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
             return;
           }
 
-          const asset = await gowaFetchBinary(assetPath);
+          const asset = await gowaFetchBinary(assetPath, {deviceId: sourceDeviceId});
           const candidateName =
             filename || downloaded?.filename || asset.filename || 'forwarded-file';
           const mimeType = inferForwardMimeType(mediaType, candidateName, asset.contentType);
@@ -1228,97 +1213,72 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
       const deviceId = typeof req.query.deviceId === 'string' ? req.query.deviceId.trim() : '';
       const messageId = typeof req.query.messageId === 'string' ? req.query.messageId.trim() : '';
       const phone = typeof req.query.phone === 'string' ? req.query.phone.trim() : '';
-      const fallbackUrl =
-        typeof req.query.fallbackUrl === 'string' ? req.query.fallbackUrl.trim() : '';
       if (!deviceId || !messageId || !phone) {
         res.status(400).json({code: 'VALIDATION_ERROR', message: 'معلمات الوسائط غير مكتملة'});
         return;
       }
-      if (
-        !hasPermission(req.user!, 'chats', 'read') &&
-        !hasPermission(req.user!, 'misc', 'status.read') &&
-        !isGroupJid(phone)
-      ) {
-        res.status(403).json({code: 'FORBIDDEN', message: 'ليس لديك صلاحية تنفيذ هذا الإجراء'});
-        return;
-      }
-      if (!hasDeviceAccess(req.user!, deviceId)) {
-        res.status(403).json({
-          code: 'DEVICE_FORBIDDEN',
-          message: 'غير مصرح لك بالوصول إلى حساب واتساب هذا',
-        });
-        return;
-      }
 
-    try {
-      assertChatContentAccess(req.user!, deviceId, phone);
-      let downloaded: GowaDownloadedMedia | null = null;
       try {
-        const result = await gowaFetch<GowaDownloadedMedia | null>(
-          `/message/${encodeURIComponent(messageId)}/download`,
-          {
-            deviceId,
-            query: {phone},
-            timeoutMs: 25_000,
-          },
-        );
-        if (result && (result.file_path || result.file_url)) {
-          downloaded = result;
+        assertDeviceAccess(req.user, deviceId);
+        if (!hasChatReadPermission(req.user!, phone)) {
+          throw new GowaError(403, 'FORBIDDEN', 'ليس لديك صلاحية الوصول إلى هذه الوسائط');
         }
-      } catch (err) {
-        if (!fallbackUrl) throw err;
-      }
-
-      if (!downloaded && fallbackUrl && !fallbackUrl.includes('mmg.whatsapp.net')) {
-        downloaded = {
-          message_id: messageId,
-          media_type: '',
-          filename: fallbackUrl.split('/').pop()?.split('?')[0] || '',
-          file_path: fallbackUrl,
-          file_size: 0,
-        };
-      }
-
-      if (!downloaded || (!downloaded.file_path && !downloaded.file_url)) {
-        res.status(404).json({
-          code: 'MEDIA_NOT_AVAILABLE',
-          message: 'ملف الوسائط غير متوفر على الخادم حاليًا',
+        assertChatContentAccess(req.user!, deviceId, phone);
+        const cached = getCachedMessage(deviceId, normalizeWhatsAppJid(phone) || phone, messageId);
+        if (cached?.is_revoked) {
+          throw new GowaError(404, 'MEDIA_NOT_AVAILABLE', 'ملف الوسائط غير متوفر على الخادم حاليًا');
+        }
+        let fallbackUrl = cached?.url || '';
+        const downloaded = await gowaFetch<GowaDownloadedMedia | null>(
+          `/message/${encodeURIComponent(messageId)}/download`,
+          {deviceId, query: {phone}, timeoutMs: 25_000},
+        ).catch(async (err) => {
+          if (!fallbackUrl && phone.toLowerCase() === 'status@broadcast') {
+            const recent = await gowaFetch<{data?: GowaMessageInfo[]}>('/chat/status@broadcast/messages', {
+              deviceId, query: {limit: 50, offset: 0},
+            });
+            fallbackUrl = recent?.data?.find((item) => item.id === messageId && !item.is_revoked)?.url || '';
+          }
+          if (!fallbackUrl) throw err;
+          return null;
         });
-        return;
+        const path = downloaded?.file_path || downloaded?.file_url ||
+          (fallbackUrl.includes('mmg.whatsapp.net') ? '' : fallbackUrl);
+        if (!path) {
+          throw new GowaError(404, 'MEDIA_NOT_AVAILABLE', 'ملف الوسائط غير متوفر على الخادم حاليًا');
+        }
+        res.json({code: 'SUCCESS', message: 'ok', results: {
+          message_id: messageId,
+          media_type: cached?.media_type || '',
+          filename: cached?.filename || '',
+          file_size: cached?.file_length || 0,
+          ...downloaded,
+          file_path: path,
+          proxy_url: buildGowaAssetUrl(GOWA_MEDIA_ROUTE, deviceId, phone, path),
+        }});
+      } catch (err) {
+        handleRouteError(res, err);
       }
-
-      res.json({code: 'SUCCESS', message: 'ok', results: downloaded});
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  });
+    },
+  );
 
   router.get(
-    '/api/unified/media/file',
+    GOWA_MEDIA_ROUTE,
     requireAuth,
     requireAnyPermission(['chats:read', 'misc:status.read', 'misc:channels.manage', 'groups:read']),
     async (req: AuthedRequest, res) => {
-      const filePath = typeof req.query.path === 'string' ? req.query.path : '';
       const deviceId = typeof req.query.deviceId === 'string' ? req.query.deviceId.trim() : '';
       const chatJid = typeof req.query.chatJid === 'string' ? req.query.chatJid.trim() : '';
       try {
         if (!deviceId) {
-          res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الحساب مطلوب'});
-          return;
+          throw new GowaError(400, 'VALIDATION_ERROR', 'معرّف الحساب مطلوب');
         }
         assertDeviceAccess(req.user, deviceId);
-        if (chatJid) {
-          assertChatContentAccess(req.user!, deviceId, chatJid);
+        if (!chatJid || !hasChatReadPermission(req.user!, chatJid)) {
+          throw new GowaError(403, 'FORBIDDEN', 'ليس لديك صلاحية الوصول إلى هذه الوسائط');
         }
-        const asset = await gowaFetchBinary(filePath);
-        const safeHeaders = buildSafeMediaHeaders(asset.contentType, asset.filename);
-        res.setHeader('Content-Type', asset.contentType);
-        res.setHeader('Content-Disposition', safeHeaders.disposition);
-        if (safeHeaders.csp) {
-          res.setHeader('Content-Security-Policy', safeHeaders.csp);
-        }
-        res.setHeader('Cache-Control', 'private, max-age=300');
-        res.send(asset.buffer);
+        assertChatContentAccess(req.user!, deviceId, chatJid);
+        await sendGowaAsset(req, res, GOWA_MEDIA_ROUTE, deviceId, chatJid);
       } catch (err) {
         handleRouteError(res, err);
       }

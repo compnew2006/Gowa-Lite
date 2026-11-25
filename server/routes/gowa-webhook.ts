@@ -1,9 +1,6 @@
 import {createHmac, timingSafeEqual} from 'node:crypto';
 import express, {type Router} from 'express';
-import {gowaFetch, type GowaDevice} from '../gowa-client.ts';
 import {createApiRouter, handleRouteError} from '../middleware/auth.ts';
-import {hasPendingChatCloseRating} from '../services/chat-close-rating.ts';
-import {handleUpstreamGowaEvent, normalizeWhatsAppJid} from '../services/chat-sync.ts';
 import {
   asReactionRecord,
   isGowaReactionEvent,
@@ -11,6 +8,13 @@ import {
   recordMessageReaction,
 } from '../services/message-reactions.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
+
+const MESSAGE_CODES = new Map([
+  ['message', 'MESSAGE_RECEIVED'],
+  ['message.edited', 'MESSAGE_EDITED'],
+  ['message.deleted', 'MESSAGE_REVOKED'],
+  ['message.revoked', 'MESSAGE_REVOKED'],
+]);
 
 export function registerGowaWebhookRoutes(wsBridge: GowaWsBridge): Router {
   const router = createApiRouter();
@@ -29,18 +33,16 @@ export function registerGowaWebhookRoutes(wsBridge: GowaWsBridge): Router {
       const envelope = asReactionRecord(JSON.parse(req.body.toString('utf8')));
       const code = typeof envelope?.event === 'string' ? envelope.event : '';
       const isReaction = isGowaReactionEvent(code);
-      const incoming = code === 'message' ? asReactionRecord(envelope?.payload) : undefined;
-      const chatJid = typeof incoming?.chat_id === 'string' ? normalizeWhatsAppJid(incoming.chat_id) : '';
-      const isRatingInboxMessage = incoming?.is_from_me === false && Boolean(chatJid) &&
-        hasPendingChatCloseRating(chatJid);
-      if (!isReaction && !isRatingInboxMessage) {
+      const messageCode = MESSAGE_CODES.get(code);
+      if (!isReaction && !messageCode) {
         res.sendStatus(204);
         return;
       }
       const change = isReaction ? readGowaReaction(envelope) : undefined;
+      const payload = asReactionRecord(envelope?.payload);
       const upstreamId = typeof envelope?.device_id === 'string' ? envelope.device_id.trim() : '';
       const sessionId = typeof envelope?.session_id === 'string' ? envelope.session_id.trim() : '';
-      if ((!upstreamId && !sessionId) || (isReaction && !change)) {
+      if ((!upstreamId && !sessionId) || (isReaction && !change) || (messageCode && !payload)) {
         res.status(400).json({
           code: isReaction ? 'INVALID_REACTION' : 'INVALID_WEBHOOK_PAYLOAD',
           message: 'Invalid GOWA webhook payload',
@@ -48,24 +50,13 @@ export function registerGowaWebhookRoutes(wsBridge: GowaWsBridge): Router {
         return;
       }
 
-      // GOWA can identify the webhook source by WhatsApp JID while REST uses a slot ID.
-      const devices = await gowaFetch<GowaDevice[]>('/devices');
-      const jid = normalizeWhatsAppJid(upstreamId);
-      const candidates = sessionId
-        ? devices.filter((device) => device.id === sessionId)
-        : devices.filter((device) =>
-          device.id === upstreamId || Boolean(jid && [device.jid, device.phone_number]
-            .some((value) => value && normalizeWhatsAppJid(value) === jid)),
-        );
-      if (candidates.length === 1) {
-        const deviceId = candidates[0].id;
+      const deviceId = await wsBridge.resolveWebhookDevice(upstreamId, sessionId);
+      if (deviceId) {
         if (change) {
           const event = recordMessageReaction(deviceId, change.chatJid, change.messageId, change.reaction);
           if (event) wsBridge.broadcast(event);
-        } else if (hasPendingChatCloseRating(chatJid, deviceId)) {
-          handleUpstreamGowaEvent(deviceId, {
-            code: 'MESSAGE_RECEIVED', message: '', result: incoming, device_id: deviceId,
-          }, (event) => wsBridge.broadcast(event));
+        } else if (messageCode) {
+          wsBridge.relayScopedEvent(deviceId, {code: messageCode, message: '', result: payload});
         }
       }
       res.sendStatus(204);

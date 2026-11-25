@@ -3,7 +3,6 @@ import type {
   AccountCloseRatings,
   AccountContact,
   AccountSummary,
-  AssignableAccountSummary,
   AssignableAccountsCatalog,
   AssignableAgent,
   AuthStatus,
@@ -692,7 +691,6 @@ export function downloadUnifiedMedia(
   deviceId: string,
   messageId: string,
   phone: string,
-  fallbackUrl?: string,
   signal?: AbortSignal,
 ): Promise<DownloadedMedia> {
   return results(
@@ -701,7 +699,6 @@ export function downloadUnifiedMedia(
         deviceId,
         messageId,
         phone,
-        fallbackUrl: fallbackUrl || undefined,
       },
       signal,
     }),

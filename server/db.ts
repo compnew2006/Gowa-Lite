@@ -612,7 +612,7 @@ export async function verifyPasswordAsync(password: string, storedHash: string):
   }
 }
 
-function hashToken(token: string): string {
+export function hashSessionToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
@@ -1283,7 +1283,7 @@ export function createSession(userId: number): string {
   const now = Date.now();
   db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now);
   const rawToken = crypto.randomBytes(32).toString('hex');
-  const tokenHash = hashToken(rawToken);
+  const tokenHash = hashSessionToken(rawToken);
   db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)').run(
     tokenHash,
     userId,
@@ -1295,7 +1295,7 @@ export function createSession(userId: number): string {
 
 export function getSessionUser(rawToken: string): PublicUser | null {
   if (!rawToken) return null;
-  const tokenHash = hashToken(rawToken);
+  const tokenHash = hashSessionToken(rawToken);
   const now = Date.now();
   const row = queryOne<HydratedUserRow & {expires_at: number}>(
     `SELECT u.id, u.username, u.display_name, u.role, u.role_id, u.password_hash, u.is_active, u.created_at,
@@ -1322,7 +1322,14 @@ export function getSessionUser(rawToken: string): PublicUser | null {
 
 export function deleteSession(rawToken: string): void {
   if (!rawToken) return;
-  db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashToken(rawToken));
+  db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashSessionToken(rawToken));
+}
+
+export function hasActiveSession(sessionHash: string, userId: number): boolean {
+  return Boolean(queryOne(
+    'SELECT 1 FROM sessions WHERE token_hash = ? AND user_id = ? AND expires_at > ?',
+    sessionHash, userId, Date.now(),
+  ));
 }
 
 export function getSetting(key: string): string | null {
@@ -1814,81 +1821,31 @@ export function upsertCachedMessages(
 export function markCachedMessageRevoked(
   deviceId: string,
   messageId: string,
-  opts?: {chatJid?: string; revokedBy?: string; revokedAt?: string},
-): {updated: number; chatJids: string[]} {
-  if (!deviceId || !messageId) return {updated: 0, chatJids: []};
-  const nowMs = Date.now();
-  const revokedAt = opts?.revokedAt || new Date(nowMs).toISOString();
-  const revokedBy = opts?.revokedBy || null;
+  {chatJid, revokedBy, revokedAt = new Date().toISOString()}: {chatJid: string; revokedBy?: string; revokedAt?: string},
+): void {
+  if (!deviceId || !chatJid || !messageId) return;
+  const updated = db.prepare(
+    `UPDATE cached_messages SET is_revoked = 1,
+       revoked_at = COALESCE(revoked_at, ?), revoked_by = COALESCE(revoked_by, ?), updated_at = ?
+     WHERE device_id = ? AND chat_jid = ? AND id = ?`,
+  ).run(revokedAt, revokedBy || null, Date.now(), deviceId, chatJid, messageId);
+  if (updated.changes) return;
 
-  const exactAffected = opts?.chatJid
-    ? queryAll<{chat_jid: string}>(
-        'SELECT chat_jid FROM cached_messages WHERE device_id = ? AND chat_jid = ? AND id = ?',
-        deviceId,
-        opts.chatJid,
-        messageId,
-      )
-    : [];
-
-  const useExactChat = exactAffected.length > 0 && Boolean(opts?.chatJid);
-  const affected = useExactChat
-    ? exactAffected
-    : queryAll<{chat_jid: string}>(
-        'SELECT chat_jid FROM cached_messages WHERE device_id = ? AND id = ?',
-        deviceId,
-        messageId,
-      );
-
-  if (affected.length > 0) {
-    const info = useExactChat
-      ? db
-          .prepare(
-            `UPDATE cached_messages
-             SET is_revoked = 1,
-                 revoked_at = COALESCE(revoked_at, ?),
-                 revoked_by = COALESCE(revoked_by, ?),
-                 updated_at = ?
-             WHERE device_id = ? AND chat_jid = ? AND id = ?`,
-          )
-          .run(revokedAt, revokedBy, nowMs, deviceId, opts!.chatJid!, messageId)
-      : db
-          .prepare(
-            `UPDATE cached_messages
-             SET is_revoked = 1,
-                 revoked_at = COALESCE(revoked_at, ?),
-                 revoked_by = COALESCE(revoked_by, ?),
-                 updated_at = ?
-             WHERE device_id = ? AND id = ?`,
-          )
-          .run(revokedAt, revokedBy, nowMs, deviceId, messageId);
-    return {
-      updated: Number(info.changes),
-      chatJids: Array.from(new Set(affected.map((a) => a.chat_jid))),
-    };
-  }
-
-  if (opts?.chatJid) {
-    upsertCachedMessages(deviceId, opts.chatJid, [
-      {
-        id: messageId,
-        chat_jid: opts.chatJid,
-        sender_jid: opts.revokedBy || '',
-        content: '',
-        timestamp: revokedAt,
-        is_from_me: false,
-        media_type: '',
-        filename: '',
-        url: '',
-        file_length: 0,
-        is_revoked: true,
-        revoked_at: revokedAt,
-        revoked_by: opts.revokedBy,
-      },
-    ]);
-    return {updated: 1, chatJids: [opts.chatJid]};
-  }
-
-  return {updated: 0, chatJids: []};
+  upsertCachedMessages(deviceId, chatJid, [{
+    id: messageId,
+    chat_jid: chatJid,
+    sender_jid: revokedBy || '',
+    content: '',
+    timestamp: revokedAt,
+    is_from_me: false,
+    media_type: '',
+    filename: '',
+    url: '',
+    file_length: 0,
+    is_revoked: true,
+    revoked_at: revokedAt,
+    revoked_by: revokedBy,
+  }]);
 }
 
 export function syncAndMergeChatMessages(

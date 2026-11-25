@@ -1,14 +1,16 @@
 import crypto from 'node:crypto';
 import type {Server as HttpServer} from 'node:http';
 import {WebSocket, WebSocketServer} from 'ws';
-import {getGowaConfig, getUserById, getUserCacheVersion, type PublicUser} from './db.ts';
+import {normalizeWhatsAppJid} from '../shared/whatsapp-identity.ts';
+import {getGowaConfig, getUserById, getUserCacheVersion, hasActiveSession, hashSessionToken, type PublicUser} from './db.ts';
 import {gowaFetch, type GowaDevice} from './gowa-client.ts';
-import {hasAnyPermission, hasDeviceAccess, hasPermission} from './rbac.ts';
+import {hasAnyPermission, hasChatReadPermission, hasDeviceAccess, hasPermission} from './rbac.ts';
 import {
   getChatContentAccessState,
   isLifecycleApplicableJid,
   type ChatRedactionReason,
 } from './services/chat-lifecycle.ts';
+import {readGowaEventChatJid, readGowaIncomingMessageId} from './services/chat-sync.ts';
 import {
   asReactionRecord,
   isGowaReactionEvent,
@@ -17,35 +19,39 @@ import {
 } from './services/message-reactions.ts';
 
 interface TicketEntry {
-  user: PublicUser;
+  userId: number;
+  sessionHash: string;
   expiresAt: number;
 }
 
 const TICKET_TTL_MS = 30_000;
+const MESSAGE_REPLAY_WINDOW_MS = 30_000;
+const MAX_RECENT_MESSAGES = 2_048;
 const tickets = new Map<string, TicketEntry>();
 
-export function issueWsTicket(user: PublicUser): string {
+export function issueWsTicket(user: PublicUser, token: string): string {
   const now = Date.now();
   for (const [k, entry] of tickets.entries()) {
     if (entry.expiresAt <= now) tickets.delete(k);
   }
   const ticket = crypto.randomBytes(24).toString('hex');
-  tickets.set(ticket, {user, expiresAt: now + TICKET_TTL_MS});
+  tickets.set(ticket, {userId: user.id, sessionHash: hashSessionToken(token), expiresAt: now + TICKET_TTL_MS});
   return ticket;
 }
 
-function consumeWsTicket(ticket: string): PublicUser | null {
+function consumeWsTicket(ticket: string): TicketEntry | null {
   if (!ticket) return null;
   const entry = tickets.get(ticket);
   if (!entry) return null;
   tickets.delete(ticket);
-  if (entry.expiresAt <= Date.now()) return null;
-  return entry.user;
+  if (entry.expiresAt <= Date.now() || !hasActiveSession(entry.sessionHash, entry.userId)) return null;
+  return entry;
 }
 
 interface BridgeClient {
   socket: WebSocket;
   userId: number;
+  sessionHash: string;
 }
 
 export interface GowaUpstreamEvent {
@@ -55,31 +61,36 @@ export interface GowaUpstreamEvent {
   device_id?: string;
 }
 
+function findEventDevice(devices: GowaDevice[], source: string, sessionId: string): string | undefined {
+  if (!Array.isArray(devices)) return undefined;
+  if (sessionId) return devices.find((device) => device.id === sessionId)?.id;
+  const jid = normalizeWhatsAppJid(source);
+  const candidates = devices.filter((device) => device.id === source ||
+    Boolean(jid && [device.jid, device.phone_number].some((value) => value && normalizeWhatsAppJid(value) === jid)));
+  return candidates.length === 1 ? candidates[0].id : undefined;
+}
+
 function redactWsMessageObject(
   src: Record<string, unknown>,
   reason: ChatRedactionReason,
 ): Record<string, unknown> {
-  const out: Record<string, unknown> = {...src};
-  out.content = '';
-  if ('body' in out) out.body = '';
-  if ('text' in out) out.text = '';
-  if ('caption' in out) out.caption = '';
-  out.media_type = '';
-  out.filename = '';
-  out.url = '';
-  out.context_metadata = '';
-  if ('replied_to_id' in out) out.replied_to_id = '';
-  out.reactions = [];
-  if ('reaction' in out) out.reaction = '';
-  if ('emoji' in out) out.emoji = '';
-  out.file_length = 0;
-  delete out.image;
-  delete out.video;
-  delete out.audio;
-  delete out.document;
-  delete out.sticker;
-  out.content_redacted = true;
-  out.redaction_reason = reason;
+  const out: Record<string, unknown> = {
+    content: '', media_type: '', filename: '', url: '', context_metadata: '', reactions: [],
+    file_length: 0, content_redacted: true, redaction_reason: reason,
+  };
+  for (const key of [
+    'id', 'message_id', 'original_message_id', 'revoked_message_id', 'revoked_at', 'revoked_by',
+    'chat_jid', 'chat_id', 'remote_jid', 'remoteJid', 'jid', 'from', 'sender_jid',
+    'sender_display_name', 'from_name', 'pushname', 'timestamp', 'device_id',
+  ]) {
+    if (typeof src[key] === 'string') out[key] = src[key];
+  }
+  for (const key of ['is_from_me', 'from_me', 'is_revoked']) {
+    if (typeof src[key] === 'boolean') out[key] = src[key];
+  }
+  for (const key of ['body', 'text', 'caption', 'replied_to_id', 'reaction', 'emoji']) {
+    if (key in src) out[key] = '';
+  }
   return out;
 }
 
@@ -192,49 +203,23 @@ export function shouldDeliverWsEventToUser(
     typeof resultObj?.payload === 'object' && resultObj.payload !== null
       ? (resultObj.payload as Record<string, unknown>)
       : null;
-  const innerMessage =
-    typeof resultObj?.message === 'object' && resultObj.message !== null
-      ? (resultObj.message as Record<string, unknown>)
-      : typeof innerPayload?.message === 'object' && innerPayload.message !== null
-        ? (innerPayload.message as Record<string, unknown>)
-        : null;
-  const rawChatJid = String(
-    resultObj?.chat_jid ||
-      resultObj?.chat_id ||
-      resultObj?.jid ||
-      resultObj?.from ||
-      innerPayload?.chat_jid ||
-      innerPayload?.chat_id ||
-      innerPayload?.jid ||
-      innerPayload?.from ||
-      innerMessage?.chat_jid ||
-      innerMessage?.chat_id ||
-      innerMessage?.jid ||
-      innerMessage?.from ||
-      '',
-  ).trim();
-  const chatJid = rawChatJid.toLowerCase();
-
-  if (chatJid === 'status@broadcast') {
-    return {allowed: hasPermission(user, 'misc', 'status.read')};
+  const chatJid = readGowaEventChatJid(obj?.result);
+  if ((code === 'MESSAGE' || /^MESSAGE[_.]/i.test(code)) && (!deviceId || !chatJid)) {
+    return {allowed: false};
   }
 
-  if (chatJid.endsWith('@g.us')) {
-    return {allowed: (code !== 'MESSAGE_REACTION' || Boolean(deviceId)) && hasPermission(user, 'groups', 'read')};
-  }
-
-  if (!hasPermission(user, 'chats', 'read')) {
+  if (!hasChatReadPermission(user, chatJid)) {
     return {allowed: false};
   }
 
   if (code === 'MESSAGE_REACTION') {
     return {
-      allowed: Boolean(deviceId && rawChatJid && getChatContentAccessState(user, deviceId, rawChatJid).allowed),
+      allowed: getChatContentAccessState(user, deviceId, chatJid).allowed,
     };
   }
 
-  if (obj && resultObj && deviceId && rawChatJid && isLifecycleApplicableJid(rawChatJid)) {
-    const access = getChatContentAccessState(user, deviceId, rawChatJid);
+  if (obj && resultObj && deviceId && chatJid && isLifecycleApplicableJid(chatJid)) {
+    const access = getChatContentAccessState(user, deviceId, chatJid);
     if (!access.allowed && access.reason) {
       const redactedResult = redactWsMessageObject(resultObj, access.reason);
       if (innerPayload) {
@@ -260,6 +245,7 @@ export function shouldDeliverWsEventToUser(
         allowed: true,
         filteredPayload: {
           ...obj,
+          message: '',
           result: redactedResult,
         },
       };
@@ -302,6 +288,8 @@ export class GowaWsBridge {
   private wss: WebSocketServer;
   private clients = new Set<BridgeClient>();
   private upstreamSockets = new Map<string, WebSocket>();
+  private upstreamDevices: GowaDevice[] = [];
+  private recentMessages = new Map<string, number>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private syncTimer: ReturnType<typeof setInterval> | null = null;
   private onUpstreamEvent?: (deviceId: string, event: GowaUpstreamEvent) => boolean | void;
@@ -321,25 +309,25 @@ export class GowaWsBridge {
         return;
       }
       const ticket = parsed.searchParams.get('ticket') || '';
-      const user = consumeWsTicket(ticket);
-      if (!user) {
+      const session = consumeWsTicket(ticket);
+      if (!session) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
         return;
       }
       this.wss.handleUpgrade(request, socket, head, (ws) => {
-        this.wss.emit('connection', ws, user);
+        this.wss.emit('connection', ws, session);
       });
     });
 
-    this.wss.on('connection', (ws: WebSocket, user: PublicUser) => {
-      const liveUser = getUserById(user.id);
+    this.wss.on('connection', (ws: WebSocket, session: TicketEntry) => {
+      const liveUser = getUserById(session.userId);
       if (!liveUser || !liveUser.is_active) {
         ws.close(4001, 'Session revoked');
         return;
       }
 
-      const client: BridgeClient = {socket: ws, userId: liveUser.id};
+      const client: BridgeClient = {socket: ws, userId: liveUser.id, sessionHash: session.sessionHash};
       this.clients.add(client);
 
       const allowedDevices = Array.from(this.upstreamSockets.keys()).filter((id) =>
@@ -363,9 +351,32 @@ export class GowaWsBridge {
     });
 
     this.syncTimer = setInterval(() => {
+      for (const client of this.clients) this.getAuthenticatedClientUser(client);
       void this.reconcileUpstreams();
     }, 15_000);
     void this.reconcileUpstreams();
+  }
+
+  disconnectSession(token: string): void {
+    const sessionHash = hashSessionToken(token);
+    for (const [ticket, entry] of tickets) {
+      if (entry.sessionHash === sessionHash) tickets.delete(ticket);
+    }
+    for (const client of this.clients) {
+      if (client.sessionHash === sessionHash) this.disconnectClient(client);
+    }
+  }
+
+  private disconnectClient(client: BridgeClient): void {
+    client.socket.close(4001, 'Session revoked');
+    this.clients.delete(client);
+  }
+
+  private getAuthenticatedClientUser(client: BridgeClient): PublicUser | null {
+    const user = this.getCachedLiveUser(client.userId);
+    if (user?.is_active && hasActiveSession(client.sessionHash, client.userId)) return user;
+    this.disconnectClient(client);
+    return null;
   }
 
   private getCachedLiveUser(userId: number): PublicUser | null {
@@ -384,12 +395,8 @@ export class GowaWsBridge {
     let defaultSerialized: string | null = null;
     for (const client of this.clients) {
       if (client.socket.readyState !== WebSocket.OPEN) continue;
-      const liveUser = this.getCachedLiveUser(client.userId);
-      if (!liveUser || !liveUser.is_active) {
-        client.socket.close(4001, 'Session revoked');
-        this.clients.delete(client);
-        continue;
-      }
+      const liveUser = this.getAuthenticatedClientUser(client);
+      if (!liveUser) continue;
       const decision = shouldDeliverWsEventToUser(liveUser, payload);
       if (!decision.allowed) continue;
       if (decision.filteredPayload !== undefined) {
@@ -407,8 +414,35 @@ export class GowaWsBridge {
     const serialized = JSON.stringify(payload);
     for (const client of this.clients) {
       if (client.userId !== userId || client.socket.readyState !== WebSocket.OPEN) continue;
-      client.socket.send(serialized);
+      if (this.getAuthenticatedClientUser(client)) client.socket.send(serialized);
     }
+  }
+
+  async resolveWebhookDevice(source: string, sessionId: string): Promise<string | undefined> {
+    return findEventDevice(this.upstreamDevices, source, sessionId) ??
+      findEventDevice(await gowaFetch<GowaDevice[]>('/devices') ?? [], source, sessionId);
+  }
+
+  relayScopedEvent(deviceId: string, event: GowaUpstreamEvent): void {
+    const scoped = {...event, device_id: deviceId};
+    const code = scoped.code.toUpperCase();
+    const id = code === 'MESSAGE' || code === 'MESSAGE_RECEIVED' ? readGowaIncomingMessageId(event.result) : '';
+    const chatJid = id ? readGowaEventChatJid(event.result) : '';
+    if (id && !chatJid) return;
+    const key = id ? JSON.stringify([deviceId, chatJid, id]) : '';
+    const now = Date.now();
+    if (key && (this.recentMessages.get(key) ?? 0) > now) return;
+
+    const consumed = this.onUpstreamEvent?.(deviceId, scoped);
+    if (key) {
+      this.recentMessages.delete(key);
+      this.recentMessages.set(key, now + MESSAGE_REPLAY_WINDOW_MS);
+      if (this.recentMessages.size > MAX_RECENT_MESSAGES) {
+        const oldest = this.recentMessages.keys().next().value;
+        if (oldest !== undefined) this.recentMessages.delete(oldest);
+      }
+    }
+    if (!consumed) this.broadcast(scoped);
   }
 
   async reconcileUpstreams(): Promise<void> {
@@ -424,6 +458,8 @@ export class GowaWsBridge {
     } catch {
       return;
     }
+    if (!Array.isArray(devices)) return;
+    this.upstreamDevices = devices;
 
     const desiredIds = new Set<string>();
     if (devices.length === 0) {
@@ -454,6 +490,8 @@ export class GowaWsBridge {
   }
 
   private closeAllUpstreams(): void {
+    this.upstreamDevices = [];
+    this.recentMessages.clear();
     for (const timer of this.reconnectTimers.values()) {
       clearTimeout(timer);
     }
@@ -486,12 +524,24 @@ export class GowaWsBridge {
             message?: string;
             result?: unknown;
             device_id?: string;
+            session_id?: string;
           };
           if (parsed && typeof parsed.code === 'string') {
+            if (this.upstreamSockets.get(deviceId) !== upstream) return;
+            if (parsed.code === 'LIST_DEVICES') {
+              if (this.upstreamSockets.keys().next().value === deviceId && Array.isArray(parsed.result)) {
+                this.broadcast({code: parsed.code, result: parsed.result});
+              }
+              return;
+            }
+            const result = asReactionRecord(parsed.result);
+            const source = parsed.device_id ?? result?.device_id;
+            const session = parsed.session_id ?? result?.session_id;
+            const resolved = findEventDevice(this.upstreamDevices,
+              typeof source === 'string' ? source.trim() : '', typeof session === 'string' ? session.trim() : '');
+            // GOWA can publish the same frame on every socket. The socket URL does not identify its source.
+            if (!deviceId || resolved !== deviceId) return;
             if (isGowaReactionEvent(parsed.code)) {
-              // Upstream sockets may all receive the same frame. Scope reactions by its source.
-              const source = parsed.device_id ?? asReactionRecord(parsed.result)?.device_id;
-              if (!deviceId || source !== deviceId) return;
               const change = readGowaReaction(parsed.result);
               if (change) {
                 const event = recordMessageReaction(deviceId, change.chatJid, change.messageId, change.reaction);
@@ -499,22 +549,10 @@ export class GowaWsBridge {
               }
               return;
             }
-            const eventPayload: GowaUpstreamEvent = {
+            this.relayScopedEvent(deviceId, {
               code: parsed.code,
               message: parsed.message ?? '',
               result: parsed.result ?? null,
-              device_id: (parsed.device_id ?? asReactionRecord(parsed.result)?.device_id) === deviceId
-                ? deviceId
-                : undefined,
-            };
-            try {
-              if (this.onUpstreamEvent?.(deviceId, eventPayload)) return;
-            } catch (err) {
-              console.error('[ws-bridge] onUpstreamEvent error', err);
-            }
-            this.broadcast({
-              ...eventPayload,
-              device_id: deviceId || undefined,
             });
           }
         } catch (err) {

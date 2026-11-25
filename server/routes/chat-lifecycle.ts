@@ -1,4 +1,3 @@
-import type express from 'express';
 import type {Router} from 'express';
 import {
   assertDeviceAccess,
@@ -6,6 +5,7 @@ import {
   handleRouteError,
   requireAnyPermission,
   requireAuth,
+  requireDeviceParamAccess,
   requirePermission,
 } from '../middleware/auth.ts';
 import {decodeRouteParam} from '../security.ts';
@@ -31,16 +31,6 @@ import type {GowaWsBridge} from '../ws-bridge.ts';
 
 export function registerChatLifecycleRoutes(wsBridge: GowaWsBridge): Router {
   const router = createApiRouter();
-
-  const requireDeviceParamAccess: express.RequestHandler = (req: AuthedRequest, res, next) => {
-    try {
-      const deviceId = decodeRouteParam(req.params.deviceId);
-      assertDeviceAccess(req.user, deviceId);
-      next();
-    } catch (err) {
-      handleRouteError(res, err);
-    }
-  };
 
   router.get(
     '/api/settings/inbox-policy',

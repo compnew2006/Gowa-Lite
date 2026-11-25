@@ -10,7 +10,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import {toast} from 'sonner';
-import {downloadUnifiedMedia, fetchAuthorizedMediaBytes} from '@/api/client';
+import {fetchAuthorizedMediaBytes} from '@/api/client';
 import type {MessageInfo} from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
@@ -18,6 +18,7 @@ import {formatBytes} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {
+  messageMediaQuery,
   normalizeDownloadedMime,
   resolveChatMediaFilename,
   saveBlobSafely,
@@ -109,26 +110,9 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     return () => observer.disconnect();
   }, [autoFetch, inView]);
 
-  const query = useQuery({
-    queryKey: ['unified-media', deviceId, message.chat_jid, message.id],
-    queryFn: async () => {
-      const data = await downloadUnifiedMedia(
-        deviceId,
-        message.id,
-        message.chat_jid,
-        message.url,
-      );
-      if (!data || (!data.file_path && !data.file_url)) {
-        throw new Error(t.chats.mediaUnavailable);
-      }
-      return data;
-    },
-    enabled: autoFetch && inView,
-    staleTime: Infinity,
-    retry: false,
-  });
-
-  const resolvedPath = query.data?.file_path || query.data?.file_url || '';
+  const mediaQuery = messageMediaQuery(deviceId, message.chat_jid, message.id);
+  const query = useQuery({...mediaQuery, enabled: autoFetch && inView});
+  const resolvedPath = query.data?.proxy_url || '';
 
   useEffect(() => {
     if (!autoFetch || !resolvedPath) return;
@@ -137,8 +121,7 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     const controller = new AbortController();
     setBlobError(null);
 
-    const url = `/api/unified/media/file?deviceId=${encodeURIComponent(deviceId)}&chatJid=${encodeURIComponent(message.chat_jid)}&path=${encodeURIComponent(resolvedPath)}`;
-    void fetchAuthorizedMediaBytes(url, controller.signal)
+    void fetchAuthorizedMediaBytes(resolvedPath, controller.signal)
       .then(({bytes, contentType}) => {
         const blob = new Blob([bytes], {type: normalizeDownloadedMime(contentType)});
         const objectUrl = URL.createObjectURL(blob);
@@ -161,7 +144,7 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
       controller.abort();
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [autoFetch, resolvedPath, deviceId, message.chat_jid]);
+  }, [autoFetch, resolvedPath]);
 
   const handleDirectDownload = async () => {
     if (directDownloading) return;
@@ -176,27 +159,9 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     const expectedKey = messageKey;
     setDirectDownloading(true);
     try {
-      const cacheKey = ['unified-media', deviceId, message.chat_jid, message.id] as const;
-      const resolved = await queryClient.fetchQuery({
-        queryKey: cacheKey,
-        queryFn: async () => {
-          const data = await downloadUnifiedMedia(
-            deviceId,
-            message.id,
-            message.chat_jid,
-            message.url,
-          );
-          if (!data || (!data.file_path && !data.file_url)) {
-            throw new Error(t.chats.mediaUnavailable);
-          }
-          return data;
-        },
-        staleTime: Infinity,
-      });
-
-      const targetPath = resolved.file_path || resolved.file_url || '';
-      const fileUrl = `/api/unified/media/file?deviceId=${encodeURIComponent(deviceId)}&chatJid=${encodeURIComponent(message.chat_jid)}&path=${encodeURIComponent(targetPath)}`;
-      const {bytes, contentType} = await fetchAuthorizedMediaBytes(fileUrl);
+      const resolved = await queryClient.fetchQuery(mediaQuery);
+      if (!resolved?.proxy_url) throw new Error(t.chats.mediaUnavailable);
+      const {bytes, contentType} = await fetchAuthorizedMediaBytes(resolved.proxy_url);
       const blob = new Blob([bytes], {type: normalizeDownloadedMime(contentType)});
       const downloadName = resolveChatMediaFilename(message, contentType, resolved.filename);
 

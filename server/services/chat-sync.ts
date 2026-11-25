@@ -14,6 +14,26 @@ import {
   type ChatLifecycleWsPayload,
 } from './chat-lifecycle.ts';
 
+import {
+  isGroupJid,
+  isNewsletterJid,
+  isStatusBroadcastJid,
+  normalizeArabicDigits,
+  normalizeSearchQuery,
+  normalizeWhatsAppJid,
+} from '../../shared/whatsapp-identity.ts';
+
+export {
+  isExcludedFromUnifiedChats,
+  isGroupJid,
+  isNewsletterJid,
+  isStatusBroadcastJid,
+  normalizeArabicDigits,
+  normalizePhoneQueryForGowa,
+  normalizeSearchQuery,
+  normalizeWhatsAppJid,
+} from '../../shared/whatsapp-identity.ts';
+
 export const MAX_MEDIA_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
@@ -169,48 +189,6 @@ export function inferForwardMimeType(
   return 'application/octet-stream';
 }
 
-export function isNewsletterJid(jid: string): boolean {
-  return jid.trim().toLowerCase().endsWith('@newsletter');
-}
-
-export function isStatusBroadcastJid(jid: string): boolean {
-  return jid.trim().toLowerCase() === 'status@broadcast';
-}
-
-export function isGroupJid(jid: string): boolean {
-  return jid.trim().toLowerCase().endsWith('@g.us');
-}
-
-export function isExcludedFromUnifiedChats(jid: string): boolean {
-  return isNewsletterJid(jid) || isStatusBroadcastJid(jid) || isGroupJid(jid);
-}
-
-export function normalizeWhatsAppJid(raw: string): string {
-  const ascii = normalizeArabicDigits(raw).trim();
-  if (!ascii) return '';
-
-  if (ascii.includes('@')) {
-    const compact = ascii.replace(/\s+/g, '');
-    const match = /^([^@\s]+)@([a-z0-9.-]+)$/i.exec(compact);
-    if (!match) return '';
-    let local = match[1];
-    let domain = match[2].toLowerCase();
-    if (domain === 'c.us') {
-      domain = 's.whatsapp.net';
-    }
-    if (domain === 's.whatsapp.net' || domain === 'lid') {
-      local = local.split(':')[0] || local;
-    }
-    return `${local}@${domain}`;
-  }
-
-  const digits = ascii.replace(/[\s+().-]/g, '');
-  if (/^\d{5,}$/.test(digits)) {
-    return `${digits}@s.whatsapp.net`;
-  }
-  return '';
-}
-
 export function resolveAccountDisplayName(device: GowaDevice, aliases: Record<string, string>): string {
   return (
     aliases[device.id] ||
@@ -218,33 +196,6 @@ export function resolveAccountDisplayName(device: GowaDevice, aliases: Record<st
     device.phone_number?.trim() ||
     device.id
   );
-}
-
-export function normalizeArabicDigits(value: string): string {
-  return value
-    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
-    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
-}
-
-export function normalizeSearchQuery(raw: string): string {
-  const ascii = normalizeArabicDigits(raw);
-  const trimmed = ascii.trim();
-  if (!trimmed) return '';
-  if (/^[\d\s+().-]+$/.test(trimmed)) {
-    return trimmed.replace(/[\s+().-]/g, '');
-  }
-  return trimmed;
-}
-
-export function normalizePhoneQueryForGowa(raw: string): string {
-  const normalized = normalizeSearchQuery(raw);
-  if (/^0\d+$/.test(normalized)) {
-    const stripped = normalized.replace(/^0+/, '');
-    if (stripped.length >= 3) {
-      return stripped;
-    }
-  }
-  return normalized;
 }
 
 export function matchesUnifiedChatSearch(
@@ -301,6 +252,26 @@ function unwrapEventPayload(result: unknown): Record<string, unknown> | null {
   const message = asRecord(obj.message);
   if (message) return message;
   return obj;
+}
+
+export function readGowaEventChatJid(result: unknown, protocolKey?: Record<string, unknown> | null): string {
+  const outer = asRecord(result);
+  const payload = unwrapEventPayload(result);
+  const message = asRecord(payload?.message);
+  const jid = firstNonEmptyString(
+    payload?.chat_jid, payload?.chat_id, payload?.remote_jid, payload?.remoteJid, payload?.revoked_chat,
+    protocolKey?.remote_jid, protocolKey?.remoteJid,
+    message?.chat_jid, message?.chat_id, message?.remote_jid, message?.remoteJid,
+    outer?.chat_jid, outer?.chat_id, outer?.remote_jid, outer?.remoteJid,
+    payload?.jid, message?.jid, outer?.jid, payload?.from, message?.from, outer?.from,
+  );
+  return jid ? normalizeWhatsAppJid(jid) || jid : '';
+}
+
+export function readGowaIncomingMessageId(result: unknown): string {
+  const outer = asRecord(result);
+  const payload = unwrapEventPayload(result);
+  return firstNonEmptyString(payload?.id, payload?.message_id, outer?.id, outer?.message_id);
 }
 
 function extractMediaFromWsPayload(raw: Record<string, unknown>): {
@@ -405,25 +376,7 @@ export function handleUpstreamGowaEvent(
       raw.id,
       resultObj?.id,
     );
-    const rawChatJid = firstNonEmptyString(
-      raw.chat_jid,
-      raw.chat_id,
-      raw.remote_jid,
-      raw.remoteJid,
-      protocolKey?.remote_jid,
-      protocolKey?.remoteJid,
-      resultObj?.chat_jid,
-      resultObj?.chat_id,
-      raw.jid,
-      resultObj?.jid,
-      raw.from,
-      resultObj?.from,
-    );
-    const normalizedChat = rawChatJid ? normalizeWhatsAppJid(rawChatJid) || rawChatJid : '';
-    const chatJid =
-      normalizedChat && !isNewsletterJid(normalizedChat) && !isStatusBroadcastJid(normalizedChat)
-        ? normalizedChat
-        : undefined;
+    const chatJid = readGowaEventChatJid(event.result, protocolKey);
     const rawRevokedBy = firstNonEmptyString(
       raw.sender_jid,
       protocolKey?.participant,
@@ -436,47 +389,28 @@ export function handleUpstreamGowaEvent(
       firstNonEmptyString(raw.revoked_at, raw.timestamp, resultObj?.timestamp) ||
       new Date().toISOString();
 
-    if (revokedId) {
-      const result = markCachedMessageRevoked(deviceId, revokedId, {
-        chatJid,
-        revokedBy,
-        revokedAt,
-      });
-      const targetJids = result.chatJids.length > 0 ? result.chatJids : chatJid ? [chatJid] : [];
-      for (const targetJid of targetJids) {
-        onLifecycleEvent?.({
-          code: 'MESSAGE_REVOKED',
-          message: 'revoked',
+    if (revokedId && chatJid && !isNewsletterJid(chatJid) && !isStatusBroadcastJid(chatJid)) {
+      markCachedMessageRevoked(deviceId, revokedId, {chatJid, revokedBy, revokedAt});
+      onLifecycleEvent?.({
+        code: 'MESSAGE_REVOKED',
+        message: 'revoked',
+        device_id: deviceId,
+        result: {
           device_id: deviceId,
-          result: {
-            device_id: deviceId,
-            chat_jid: targetJid,
-            revoked_message_id: revokedId,
-            message_id: revokedId,
-            revoked_by: revokedBy ?? null,
-            revoked_at: revokedAt,
-          },
-        });
-      }
+          chat_jid: chatJid,
+          revoked_message_id: revokedId,
+          message_id: revokedId,
+          revoked_by: revokedBy ?? null,
+          revoked_at: revokedAt,
+        },
+      });
     }
     return null;
   }
 
   if (code === 'MESSAGE_RECEIVED' || code === 'MESSAGE') {
-    const id = firstNonEmptyString(raw.id, raw.message_id, resultObj?.id, resultObj?.message_id);
-    const rawChatJid = firstNonEmptyString(
-      raw.chat_jid,
-      raw.chat_id,
-      raw.remote_jid,
-      raw.remoteJid,
-      resultObj?.chat_jid,
-      resultObj?.chat_id,
-      raw.jid,
-      raw.from,
-      resultObj?.jid,
-      resultObj?.from,
-    );
-    const chatJid = rawChatJid ? normalizeWhatsAppJid(rawChatJid) || rawChatJid : '';
+    const id = readGowaIncomingMessageId(event.result);
+    const chatJid = readGowaEventChatJid(event.result);
     if (!id || !chatJid || isNewsletterJid(chatJid)) return null;
 
     const isFromMe = Boolean(raw.is_from_me ?? raw.from_me);
@@ -544,8 +478,7 @@ export function handleUpstreamGowaEvent(
 
   if (code === 'MESSAGE_EDITED' || code === 'MESSAGE.EDITED') {
     const id = String(raw.original_message_id || raw.message_id || raw.id || '').trim();
-    const rawChatJid = String(raw.chat_jid || raw.chat_id || raw.from || '').trim();
-    const chatJid = normalizeWhatsAppJid(rawChatJid) || rawChatJid;
+    const chatJid = readGowaEventChatJid(event.result);
     const media = extractMediaFromWsPayload(raw);
     const editedBody = media.content;
     if (id && chatJid && !isNewsletterJid(chatJid) && editedBody.trim()) {

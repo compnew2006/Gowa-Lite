@@ -63,6 +63,34 @@ after(() => {
 });
 
 describe('Phase 8 Security, Performance & Hardening Unit Tests', () => {
+  it('limits upstream body reads by time and by size after headers arrive', async () => {
+    const port = await getFreePort();
+    const server = http.createServer((req, res) => {
+      if (req.url === '/large') {
+        res.writeHead(200, {'Content-Length': 17 * 1024 * 1024});
+        res.end('{}');
+        return;
+      }
+      res.writeHead(200, {'Content-Type': 'application/json'});
+      res.write('{"code":"SUCCESS",');
+      const timer = setTimeout(() => res.end('"results":true}'), 150);
+      res.on('close', () => clearTimeout(timer));
+    });
+    await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
+    const configOverride = {url: `http://127.0.0.1:${port}`, username: '', password: ''};
+    try {
+      await assert.rejects(gowaMod.gowaFetch('/slow', {configOverride, timeoutMs: 35}), {
+        code: 'GOWA_UNREACHABLE',
+      });
+      await assert.rejects(gowaMod.gowaFetch('/large', {configOverride}), {
+        code: 'GOWA_RESPONSE_TOO_LARGE',
+      });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('encrypts gowa_password at rest (AES-256-GCM) and migrates legacy plaintext on read (SEC-01)', () => {
     dbMod.setGowaConfig({
       url: 'https://gowa.example.com',
@@ -318,7 +346,7 @@ describe('Phase 8 Security, Performance & Hardening Unit Tests', () => {
 
     const bridge = new wsBridgeMod.GowaWsBridge(server);
     try {
-      const ticket = wsBridgeMod.issueWsTicket(agent);
+      const ticket = wsBridgeMod.issueWsTicket(agent, dbMod.createSession(agent.id));
       const clientWs = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${ticket}`);
       const closeCodePromise = new Promise<number>((resolve) => {
         clientWs.once('close', (code) => resolve(code));
@@ -400,7 +428,16 @@ describe('Phase 8 End-to-End Server Hardening (Media RBAC/CSP, QR CSP, Compressi
         res.end(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
         return;
       }
-      if (reqUrl.pathname === '/app/login') {
+      if (reqUrl.pathname === '/message/test-image/download' || reqUrl.pathname === '/message/test-document/download') {
+        const image = reqUrl.pathname.includes('test-image');
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({code: 'SUCCESS', results: {
+          message_id: image ? 'test-image' : 'test-document',
+          file_path: image ? '/statics/safe.png' : '/statics/evil.svg',
+        }}));
+        return;
+      }
+      if (reqUrl.pathname === '/devices/dev-1/login') {
         res.writeHead(200, {'Content-Type': 'application/json'});
         res.end(
           JSON.stringify({
@@ -497,6 +534,27 @@ describe('Phase 8 End-to-End Server Hardening (Media RBAC/CSP, QR CSP, Compressi
     assert.equal(loginAgentRes.status, 200);
     const agentToken = ((await loginAgentRes.json()) as {results: {token: string}}).results.token;
 
+    const group = encodeURIComponent('120363012345678901@g.us');
+    const limitedRole = await fetch(`${base}/api/roles`, {
+      method: 'POST',
+      headers: {Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json'},
+      body: JSON.stringify({name: 'Direct chat only', permissions: ['chats:read']}),
+    });
+    assert.equal(limitedRole.status, 201);
+    const {results: {id: roleId}} = await limitedRole.json() as {results: {id: number}};
+    const updateAgent = await fetch(`${base}/api/users/2`, {
+      method: 'PATCH',
+      headers: {Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json'},
+      body: JSON.stringify({role_id: roleId}),
+    });
+    assert.equal(updateAgent.status, 200);
+    for (const [suffix, method] of [['messages', 'GET'], ['history', 'POST']]) {
+      const response = await fetch(`${base}/api/unified/chats/dev-1/${group}/${suffix}`, {
+        method, headers: {Authorization: `Bearer ${agentToken}`},
+      });
+      assert.equal(response.status, 403);
+    }
+
     // 1. Missing deviceId -> 400 VALIDATION_ERROR
     const missingDev = await fetch(
       `${base}/api/unified/media/file?path=${encodeURIComponent('/statics/evil.svg')}`,
@@ -511,10 +569,24 @@ describe('Phase 8 End-to-End Server Hardening (Media RBAC/CSP, QR CSP, Compressi
     );
     assert.equal(forbiddenDev.status, 403);
 
-    // 3. Allowed deviceId with SVG -> 200 with attachment + CSP sandbox
+    const adminHeaders = {Authorization: `Bearer ${adminToken}`};
+    const chat = '966500000003@s.whatsapp.net';
+    const media = async (messageId: string) => {
+      const query = new URLSearchParams({deviceId: 'dev-1', phone: chat, messageId});
+      const response = await fetch(`${base}/api/unified/media/download?${query}`, {headers: adminHeaders});
+      assert.equal(response.status, 200);
+      return ((await response.json()) as {results: {proxy_url: string}}).results.proxy_url;
+    };
+    const unsigned = await fetch(`${base}/api/unified/media/file?deviceId=dev-1&path=/statics/evil.svg`, {
+      headers: adminHeaders,
+    });
+    assert.equal(unsigned.status, 403);
+
+    // Authorization of a specific message permits the server-issued URL.
+    const svgUrl = await media('test-document');
     const svgRes = await fetch(
-      `${base}/api/unified/media/file?deviceId=dev-1&path=${encodeURIComponent('/statics/evil.svg')}`,
-      {headers: {Authorization: `Bearer ${agentToken}`}},
+      new URL(svgUrl, base),
+      {headers: adminHeaders},
     );
     assert.equal(svgRes.status, 200);
     assert.ok(svgRes.headers.get('content-disposition')?.startsWith('attachment'));
@@ -522,21 +594,29 @@ describe('Phase 8 End-to-End Server Hardening (Media RBAC/CSP, QR CSP, Compressi
 
     // 4. Allowed deviceId with PNG -> 200 inline without sandbox CSP
     const pngRes = await fetch(
-      `${base}/api/unified/media/file?deviceId=dev-1&path=${encodeURIComponent('/statics/safe.png')}`,
-      {headers: {Authorization: `Bearer ${agentToken}`}},
+      new URL(await media('test-image'), base),
+      {headers: adminHeaders},
     );
     assert.equal(pngRes.status, 200);
     assert.ok(pngRes.headers.get('content-disposition')?.startsWith('inline'));
     assert.equal(pngRes.headers.get('content-security-policy'), null);
 
-    // 5. QR image proxy applies safe media headers on SVG QR link
-    const qrRes = await fetch(
-      `${base}/api/devices/dev-1/qr-image?path=${encodeURIComponent('/statics/evil.svg')}`,
-      {headers: {Authorization: `Bearer ${adminToken}`}},
-    );
+    const changedDevice = new URL(svgUrl, base);
+    changedDevice.searchParams.set('deviceId', 'dev-2');
+    assert.equal((await fetch(changedDevice, {headers: adminHeaders})).status, 403);
+    const changedPath = new URL(svgUrl, base);
+    changedPath.searchParams.set('path', '/statics/safe.png');
+    assert.equal((await fetch(changedPath, {headers: adminHeaders})).status, 403);
+
+    // QR images are scoped to the pairing request and permission.
+    const pairing = await fetch(`${base}/api/devices/dev-1/login`, {headers: adminHeaders});
+    assert.equal(pairing.status, 200);
+    const {results: {qr_link: qrUrl}} = await pairing.json() as {results: {qr_link: string}};
+    const qrRes = await fetch(new URL(qrUrl, base), {headers: adminHeaders});
     assert.equal(qrRes.status, 200);
     assert.ok(qrRes.headers.get('content-disposition')?.startsWith('attachment'));
     assert.equal(qrRes.headers.get('content-security-policy'), "default-src 'none'; sandbox");
+    assert.equal((await fetch(new URL(qrUrl, base), {headers: {Authorization: `Bearer ${agentToken}`}})).status, 403);
 
     // 6. Dynamic 413 message checks (JSON limit = 8MB vs send-media = 20MB)
     const oversizedJson = JSON.stringify({username: 'a'.repeat(8_500_000), password: 'x'});

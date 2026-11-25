@@ -140,5 +140,39 @@ describe('Phase 3 Production Server Smoke Check (PROD-01)', () => {
     });
 
     assert.equal(wsPayload.code, 'BRIDGE_STATUS');
+
+    async function issueTicket() {
+      const response = await fetch(`${baseUrl}/api/auth/ws-ticket`, {method: 'POST', headers: authHeaders});
+      assert.equal(response.status, 200);
+      return ((await response.json()) as {results: {ticket: string}}).results.ticket;
+    }
+    const pendingTicket = await issueTicket();
+    const activeTicket = await issueTicket();
+    const connected = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${activeTicket}`);
+    const closed = new Promise<number>((resolve) => connected.once('close', resolve));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        connected.once('open', resolve);
+        connected.once('error', reject);
+      });
+      const logout = await fetch(`${baseUrl}/api/auth/logout`, {method: 'POST', headers: authHeaders});
+      assert.equal(logout.status, 200);
+      await new Promise<void>((resolve, reject) => {
+        const pending = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${pendingTicket}`);
+        pending.once('unexpected-response', (_request, response) => {
+          response.resume();
+          assert.equal(response.statusCode, 401);
+          resolve();
+        });
+        pending.once('open', () => {
+          pending.close();
+          reject(new Error('Ticket from a logged-out session was accepted'));
+        });
+        pending.once('error', reject);
+      });
+      assert.equal(await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 500))]), 4001);
+    } finally {
+      connected.terminate();
+    }
   });
 });

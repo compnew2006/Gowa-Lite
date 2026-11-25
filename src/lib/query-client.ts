@@ -1,5 +1,16 @@
 import {QueryClient} from '@tanstack/react-query';
 
+export function invalidateChatQueries(
+  client: QueryClient, rootKey: string, target: {deviceId?: string; chatJid?: string},
+): void {
+  const queryKey = [rootKey];
+  if (target.deviceId) {
+    queryKey.push(target.deviceId);
+    if (target.chatJid) queryKey.push(target.chatJid);
+  }
+  void client.invalidateQueries({queryKey});
+}
+
 const NON_RETRYABLE_CODES = new Set([
   'GOWA_UNREACHABLE',
   'GOWA_NOT_CONFIGURED',

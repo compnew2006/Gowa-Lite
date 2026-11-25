@@ -11,6 +11,7 @@ import {WebSocket, WebSocketServer} from 'ws';
 
 const deviceId = 'test-line';
 const deviceJid = '61400123456@s.whatsapp.net';
+const otherDeviceId = 'other-line';
 const chatJid = '61400123457@s.whatsapp.net';
 const messageId = 'test-document';
 const secret = 'test-reaction-webhook-secret';
@@ -36,6 +37,7 @@ let snapshots: typeof remoteReaction[] | undefined = [remoteReaction];
 let gatewayEmojis: string[] = [];
 let gateway: Server;
 let gatewayWs: WebSocketServer;
+const upstreamClients = new Map<string, WebSocket>();
 let app: ChildProcess;
 let client: WebSocket;
 let base: string;
@@ -116,7 +118,10 @@ before(async () => {
     const pathname = new URL(req.url!, 'http://localhost').pathname;
     let results: unknown;
     if (pathname === '/devices') {
-      results = [{id: deviceId, jid: deviceJid, state: 'logged_in'}];
+      results = [
+        {id: deviceId, jid: deviceJid, state: 'logged_in'},
+        {id: otherDeviceId, jid: '61400120000@s.whatsapp.net', state: 'logged_in'},
+      ];
     } else if (pathname.endsWith('/status')) {
       results = {is_logged_in: true};
     } else if (pathname.endsWith('/messages')) {
@@ -139,6 +144,10 @@ before(async () => {
     res.end(JSON.stringify({code: 'SUCCESS', results}));
   });
   gatewayWs = new WebSocketServer({server: gateway});
+  gatewayWs.on('connection', (socket, req) => {
+    const id = new URL(req.url!, 'http://localhost').searchParams.get('device_id');
+    if (id) upstreamClients.set(id, socket);
+  });
   const gowaPort = await listen(gateway);
   const probe = createServer();
   const appPort = await listen(probe);
@@ -175,6 +184,43 @@ before(async () => {
     client.once('open', resolve);
     client.once('error', reject);
   });
+});
+
+it('routes events from a shared upstream socket only to the identified account', async () => {
+  for (let attempt = 0; upstreamClients.size < 2 && attempt < 40; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(upstreamClients.size, 2);
+  const events: Array<{device_id: string; result: {id: string}}> = [];
+  const collect = (frame: Buffer) => {
+    const event = JSON.parse(frame.toString());
+    if (event.code === 'MESSAGE_RECEIVED') events.push(event);
+  };
+  const payload = {...message, media_type: '', content: 'Message for one account'};
+  client.on('message', collect);
+  try {
+    for (const upstream of upstreamClients.values()) {
+      upstream.send(JSON.stringify({code: 'MESSAGE_RECEIVED', result: {...payload, id: 'no-source'}}));
+      upstream.send(JSON.stringify({code: 'MESSAGE_RECEIVED', device_id: deviceId, result: {...payload, id: 'known-source'}}));
+    }
+    for (const id of ['known-source', 'webhook-source']) {
+      const body = JSON.stringify({event: 'message', device_id: deviceJid, payload: {...payload, id}});
+      const signature = createHmac('sha256', secret).update(body).digest('hex');
+      const response = await fetch(`${base}/api/webhooks/gowa`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-Hub-Signature-256': `sha256=${signature}`},
+        body,
+      });
+      assert.equal(response.status, 204);
+    }
+    const pairs = () => events.map(({device_id, result}) => [device_id, result.id]);
+    for (let attempt = 0; !pairs().some(([, id]) => id === 'webhook-source') && attempt < 20; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.deepEqual(pairs().sort(), [[deviceId, 'known-source'], [deviceId, 'webhook-source']]);
+  } finally {
+    client.off('message', collect);
+  }
 });
 
 after(async () => {

@@ -3,10 +3,12 @@ import {getAccountAliases, parseTimestampMs} from '../db.ts';
 import {
   GowaError,
   gowaFetch,
+  type GowaDownloadedMedia,
   type GowaDevice,
   type GowaMessageInfo,
   type GowaPagination,
 } from '../gowa-client.ts';
+import {buildGowaAssetUrl, GOWA_MEDIA_ROUTE} from '../media-access.ts';
 import {
   assertDeviceAccess,
   createApiRouter,
@@ -378,11 +380,15 @@ export function registerMiscRoutes(): Router {
       }
       try {
         assertDeviceAccess(req.user, deviceId);
-        const result = await gowaFetch(`/newsletter/messages/${serverId}/download`, {
+        const result = await gowaFetch<GowaDownloadedMedia>(`/newsletter/messages/${serverId}/download`, {
           deviceId,
           query: {newsletter_id: newsletterId},
         });
-        res.json({code: 'SUCCESS', message: 'ok', results: result});
+        const channelJid = newsletterId.endsWith('@newsletter') ? newsletterId : `${newsletterId}@newsletter`;
+        res.json({code: 'SUCCESS', message: 'ok', results: {
+          ...result,
+          proxy_url: buildGowaAssetUrl(GOWA_MEDIA_ROUTE, deviceId, channelJid, result?.file_path || result?.file_url || ''),
+        }});
       } catch (err) {
         handleRouteError(res, err);
       }

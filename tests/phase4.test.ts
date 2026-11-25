@@ -327,6 +327,11 @@ describe('Phase 3 Roadmap: Pagination Merging, Message Actions & Unread Notifica
     assert.equal(beforeRevoke.content, 'عرض السعر المرفق');
     assert.equal(beforeRevoke.is_revoked, undefined);
 
+    const otherChat = '966500000998@s.whatsapp.net';
+    dbMod.markCachedMessageRevoked(deviceId, 'msg-act-1', {chatJid: otherChat});
+    assert.equal(dbMod.getCachedMessage(deviceId, chatJid, 'msg-act-1')?.is_revoked, undefined);
+    assert.equal(dbMod.getCachedMessage(deviceId, otherChat, 'msg-act-1')?.is_revoked, true);
+
     dbMod.markCachedMessageRevoked(deviceId, 'msg-act-1', {
       chatJid,
       revokedBy: 'me@s.whatsapp.net',

@@ -11,11 +11,6 @@ import {useNavigate, useSearchParams} from 'react-router-dom';
 import {toast} from 'sonner';
 import {bulkUnifiedChatsLifecycle, DEFAULT_UNIFIED_CHATS_QUERY_KEY, listUnifiedChats} from '@/api/client';
 import type {
-  AccountSummary,
-  ChatInfo,
-  ChatRedactionReason,
-  MessageInfo,
-  Pagination,
   UnifiedChat,
   UnifiedChatTab,
 } from '@/api/types';
@@ -28,10 +23,7 @@ import {
 import {Button} from '@/components/ui/button';
 import {ChatList, chatUniqueKey} from '@/features/chat/chat-list';
 import {chatDisplayName} from '@/features/chat/display-name';
-import {
-  applyRevokeToMessagePages,
-  type InfiniteMessagePagesShape,
-} from '@/features/chat/message-reactions';
+import {patchRevokedMessage} from '@/features/chat/message-reactions';
 import {MessageView} from '@/features/chat/message-view';
 import {resolveSelectedUnifiedChat} from '@/features/chat/selected-chat';
 
@@ -48,6 +40,7 @@ import {extractWsEventTarget, extractWsRevokeTarget, onWsEvent} from '@/lib/even
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {toWhatsAppJid} from '@/lib/phone';
+import {invalidateChatQueries} from '@/lib/query-client';
 import {cn} from '@/lib/utils';
 import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
@@ -75,7 +68,6 @@ const SIDEBAR_STORAGE_KEY = 'gowa-lite:chat-sidebar-width';
 function SplitWorkspacePane({
   index,
   pane,
-  accounts,
   globalJidAccountsMap,
   canRemove,
   canViewAll,
@@ -86,7 +78,6 @@ function SplitWorkspacePane({
 }: {
   index: number;
   pane: SplitPaneConfig;
-  accounts: AccountSummary[];
   globalJidAccountsMap: Map<string, OtherAccountRef[]>;
   canRemove: boolean;
   canViewAll: boolean;
@@ -469,45 +460,11 @@ export default function ChatsPage() {
         });
       };
 
-      const invalidateScoped = (rootKey: string) => {
-        if (target.deviceId && target.chatJid) {
-          void queryClient.invalidateQueries({
-            queryKey: [rootKey, target.deviceId, target.chatJid],
-          });
-        } else if (target.deviceId) {
-          void queryClient.invalidateQueries({queryKey: [rootKey, target.deviceId]});
-        } else {
-          void queryClient.invalidateQueries({queryKey: [rootKey]});
-        }
-      };
+      const invalidateScoped = (rootKey: string) => invalidateChatQueries(queryClient, rootKey, target);
 
       const revoke = extractWsRevokeTarget(event);
       if (revoke) {
-        type MessagesPage = {
-          data: MessageInfo[];
-          pagination: Pagination;
-          chat_info: ChatInfo;
-          content_redacted?: boolean;
-          redaction_reason?: ChatRedactionReason;
-        };
-        const canonicalRevokeJid = revoke.chatJid
-          ? toWhatsAppJid(revoke.chatJid) || revoke.chatJid
-          : '';
-        queryClient.setQueriesData<InfiniteMessagePagesShape<MessagesPage>>(
-          {
-            predicate: (q) => {
-              if (q.queryKey[0] !== 'unified-messages') return false;
-              if (revoke.deviceId && q.queryKey[1] !== revoke.deviceId) return false;
-              if (canonicalRevokeJid) {
-                const rawKeyJid = typeof q.queryKey[2] === 'string' ? q.queryKey[2] : '';
-                const canonicalKeyJid = rawKeyJid ? toWhatsAppJid(rawKeyJid) || rawKeyJid : '';
-                return canonicalKeyJid === canonicalRevokeJid;
-              }
-              return true;
-            },
-          },
-          (oldData) => applyRevokeToMessagePages(oldData, revoke),
-        );
+        patchRevokedMessage(queryClient, revoke);
         invalidateChats();
         invalidateScoped('unified-messages');
         return;
@@ -674,7 +631,6 @@ export default function ChatsPage() {
               key={pane.id}
               index={idx}
               pane={pane}
-              accounts={accounts}
               globalJidAccountsMap={jidAccountsMap}
               canRemove={splitPanes.length > 2}
               canViewAll={canViewAll}
