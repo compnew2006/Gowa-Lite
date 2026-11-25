@@ -2,15 +2,17 @@ import {Suspense, lazy, useEffect} from 'react';
 import {Loader2} from 'lucide-react';
 import {Navigate, Route, Routes} from 'react-router-dom';
 import {Toaster} from 'sonner';
-import {getAuthStatus} from '@/api/client';
+import {DEFAULT_UNIFIED_CHATS_QUERY_KEY, getAuthStatus, listUnifiedChats} from '@/api/client';
 import {AppShell} from '@/components/layout/app-shell';
-import {useI18n} from '@/lib/i18n';
+import {bootingLabels, useI18n} from '@/lib/i18n';
+import {queryClient} from '@/lib/query-client';
 import {wsClient} from '@/lib/ws';
 import {
   applyLanguageToDom,
   applyThemeToDom,
   firstAllowedRoute,
   hasUserAnyPermission,
+  hasUserPermission,
   useAuthStore,
 } from '@/stores/auth';
 
@@ -27,12 +29,12 @@ const SetupPage = lazy(() => import('@/pages/setup'));
 const UsersPage = lazy(() => import('@/pages/users'));
 
 function BootLoader() {
-  const {t} = useI18n();
+  const lang = useAuthStore((state) => state.language);
   return (
     <div className="flex min-h-svh items-center justify-center bg-background">
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="size-5 animate-spin" />
-        <span>{t.booting}</span>
+        <span>{bootingLabels[lang]}</span>
       </div>
     </div>
   );
@@ -82,6 +84,13 @@ export default function App() {
         if (!res.initialized) {
           setBootState({status: 'needs_setup', gowaConfigured: res.gowaConfigured});
         } else if (res.authenticated && res.user) {
+          if (hasUserPermission(res.user, 'chats:read')) {
+            void queryClient.prefetchQuery({
+              queryKey: DEFAULT_UNIFIED_CHATS_QUERY_KEY,
+              queryFn: () => listUnifiedChats({}),
+              staleTime: 25_000,
+            });
+          }
           setBootState({
             status: 'authenticated',
             user: res.user,

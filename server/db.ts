@@ -227,6 +227,23 @@ db.exec(`
     PRIMARY KEY (device_id, jid)
   );
 
+  CREATE TABLE IF NOT EXISTS message_reaction_changes (
+    device_id TEXT NOT NULL,
+    chat_jid TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    emoji TEXT NOT NULL,
+    sender_jid TEXT NOT NULL,
+    sender_display_name TEXT,
+    is_from_me INTEGER NOT NULL,
+    timestamp_ms INTEGER NOT NULL,
+    received_at INTEGER NOT NULL,
+    PRIMARY KEY (device_id, chat_jid, message_id, actor)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_message_reaction_changes_expiry
+    ON message_reaction_changes (received_at) WHERE is_from_me = 0;
+
   CREATE TABLE IF NOT EXISTS cached_messages (
     device_id TEXT NOT NULL,
     chat_jid TEXT NOT NULL,
@@ -1432,6 +1449,80 @@ export interface CachedReactionLike {
   timestamp: string;
 }
 
+const REMOTE_REACTION_GRACE_MS = 30_000;
+
+interface StoredReactionChange {
+  message_id: string;
+  emoji: string;
+  sender_jid: string;
+  sender_display_name: string | null;
+  is_from_me: number;
+  timestamp_ms: number;
+}
+
+function reactionActor(reaction: {sender_jid: string; is_from_me: boolean | number}): string {
+  if (reaction.is_from_me) return 'me';
+  return reaction.sender_jid.toLowerCase().replace(/:\d+(?=@)/, '').replace(/@c\.us$/, '@s.whatsapp.net');
+}
+
+export function storeMessageReaction(
+  deviceId: string,
+  chatJid: string,
+  messageId: string,
+  reaction: CachedReactionLike,
+): boolean {
+  const actor = reactionActor(reaction);
+  const timestampMs = parseTimestampMs(reaction.timestamp);
+  const cachedReactions = getCachedMessage(deviceId, chatJid, messageId)?.reactions;
+  if (cachedReactions?.some((cached) =>
+    reactionActor(cached) === actor && parseTimestampMs(cached.timestamp) > timestampMs,
+  )) return false;
+
+  const update = db.prepare(
+    `INSERT INTO message_reaction_changes
+       (device_id, chat_jid, message_id, actor, emoji, sender_jid,
+        sender_display_name, is_from_me, timestamp_ms, received_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (device_id, chat_jid, message_id, actor) DO UPDATE SET
+       emoji = excluded.emoji, sender_jid = excluded.sender_jid,
+       sender_display_name = excluded.sender_display_name, is_from_me = excluded.is_from_me,
+       timestamp_ms = excluded.timestamp_ms, received_at = excluded.received_at
+     WHERE excluded.timestamp_ms > message_reaction_changes.timestamp_ms
+        OR (excluded.timestamp_ms = message_reaction_changes.timestamp_ms
+            AND excluded.emoji <> message_reaction_changes.emoji)`,
+  ).run(
+    deviceId, chatJid, messageId, actor, reaction.emoji, reaction.sender_jid,
+    reaction.sender_display_name ?? null, Number(reaction.is_from_me),
+    timestampMs, Date.now(),
+  );
+  return Number(update.changes) > 0;
+}
+
+function mergeMessageReactions(
+  snapshot: CachedReactionLike[] | undefined,
+  changes: StoredReactionChange[],
+): CachedReactionLike[] {
+  const reactions = new Map((snapshot ?? []).filter((reaction) => reaction.emoji)
+    .map((reaction) => [reactionActor(reaction), reaction]));
+  for (const change of changes) {
+    const actor = reactionActor(change);
+    const upstream = reactions.get(actor);
+    if (upstream && parseTimestampMs(upstream.timestamp) > change.timestamp_ms) continue;
+    if (!change.emoji) {
+      reactions.delete(actor);
+      continue;
+    }
+    reactions.set(actor, {
+      emoji: change.emoji,
+      sender_jid: change.sender_jid,
+      sender_display_name: change.sender_display_name ?? upstream?.sender_display_name,
+      is_from_me: Boolean(change.is_from_me),
+      timestamp: new Date(change.timestamp_ms).toISOString(),
+    });
+  }
+  return [...reactions.values()];
+}
+
 export interface CachedMessagePayload {
   id: string;
   chat_jid: string;
@@ -1845,16 +1936,31 @@ export function syncAndMergeChatMessages(
 
   // Enrich live messages with preserved cached data & is_revoked flag
   const cachedById = new Map<string, CachedMessageRow>();
+  const reactionChangesById = new Map<string, StoredReactionChange[]>();
   if (effectiveLiveMessages.length > 0) {
-    const allForChat = queryAll<CachedMessageRow>(
+    const ids = JSON.stringify([...liveIds]);
+    const cachedPage = queryAll<CachedMessageRow>(
       `SELECT ${CACHED_MESSAGE_COLUMNS} FROM cached_messages
-       WHERE device_id = ? AND chat_jid = ? AND timestamp_ms > ?`,
+       WHERE device_id = ? AND chat_jid = ? AND timestamp_ms > ?
+         AND id IN (SELECT value FROM json_each(?))`,
       deviceId,
       chatJid,
       clearedBeforeMs,
+      ids,
     );
-    for (const row of allForChat) {
-      cachedById.set(row.id, row);
+    for (const row of cachedPage) cachedById.set(row.id, row);
+    const changes = queryAll<StoredReactionChange>(
+      `SELECT message_id, emoji, sender_jid, sender_display_name, is_from_me, timestamp_ms
+       FROM message_reaction_changes
+       WHERE device_id = ? AND chat_jid = ?
+         AND message_id IN (SELECT value FROM json_each(?))
+         AND (is_from_me = 1 OR received_at >= ?)`,
+      deviceId, chatJid, ids, Date.now() - REMOTE_REACTION_GRACE_MS,
+    );
+    for (const change of changes) {
+      const existing = reactionChangesById.get(change.message_id);
+      if (existing) existing.push(change);
+      else reactionChangesById.set(change.message_id, [change]);
     }
   }
 
@@ -1862,6 +1968,7 @@ export function syncAndMergeChatMessages(
     const cached = cachedById.get(msg.id);
     if (!cached) return msg;
     const payload = rowToMessagePayload(cached);
+    const reactionChanges = reactionChangesById.get(msg.id);
     return {
       ...msg,
       content: payload.content || msg.content,
@@ -1871,7 +1978,9 @@ export function syncAndMergeChatMessages(
       file_length: payload.file_length || msg.file_length,
       context_metadata: payload.context_metadata || msg.context_metadata,
       sender_display_name: msg.sender_display_name || payload.sender_display_name,
-      reactions: msg.reactions ?? payload.reactions,
+      reactions: reactionChanges
+        ? mergeMessageReactions(msg.reactions ?? payload.reactions, reactionChanges)
+        : msg.reactions ?? payload.reactions,
       is_revoked: payload.is_revoked,
       revoked_at: payload.revoked_at,
       revoked_by: payload.revoked_by,
@@ -2372,6 +2481,8 @@ export function cleanupExpiredRecords(options?: {
 }): {deletedSessions: number; deletedAvatars: number} {
   const nowMs = options?.nowMs ?? Date.now();
   const avatarMaxAgeMs = options?.avatarMaxAgeMs ?? DEFAULT_AVATAR_RETENTION_MS;
+  db.prepare('DELETE FROM message_reaction_changes WHERE is_from_me = 0 AND received_at < ?')
+    .run(nowMs - REMOTE_REACTION_GRACE_MS);
   const expiredSessions = db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(nowMs);
   const staleAvatars = db
     .prepare('DELETE FROM contact_avatars WHERE updated_at < ?')
@@ -2553,6 +2664,8 @@ export function clearChatHistoryInDb(
     const deleted = db
       .prepare('DELETE FROM cached_messages WHERE device_id = ? AND chat_jid = ?')
       .run(deviceId, chatJid);
+    db.prepare('DELETE FROM message_reaction_changes WHERE device_id = ? AND chat_jid = ?')
+      .run(deviceId, chatJid);
 
     db.prepare(
       `UPDATE user_chat_read_states
@@ -2601,6 +2714,8 @@ export function deleteChatInDb(
       deviceId,
       chatJid,
     );
+    db.prepare('DELETE FROM message_reaction_changes WHERE device_id = ? AND chat_jid = ?')
+      .run(deviceId, chatJid);
     db.prepare('DELETE FROM chat_assignments WHERE device_id = ? AND chat_jid = ?').run(
       deviceId,
       chatJid,

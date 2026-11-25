@@ -85,6 +85,7 @@ function MessageReactionsBar({
           key={reaction.emoji}
           type="button"
           disabled={!interactive}
+          aria-pressed={reaction.hasMe}
           onClick={() => onReact(reaction.emoji)}
           title={reaction.senders.join('، ')}
           className={cn(

@@ -1,5 +1,6 @@
 import type {MessageInfo, ReactionInfo} from '@/api/types';
 import {formatJidPhone} from '@/features/chat/display-name';
+import {toWhatsAppJid} from '@/lib/phone';
 
 export const QUICK_REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
@@ -56,26 +57,45 @@ export function groupReactions(reactions: ReactionInfo[]): GroupedReaction[] {
   return Array.from(map.values());
 }
 
-export function applyOptimisticReaction(
+export function applyMessageReaction(
   reactions: ReactionInfo[] | undefined,
-  emoji: string,
+  change: ReactionInfo,
 ): ReactionInfo[] {
-  const filtered = (reactions ?? []).filter((r) => !r.is_from_me);
-  if (!emoji) return filtered;
-  return [
-    ...filtered,
-    {
-      emoji,
-      sender_jid: 'me',
-      is_from_me: true,
-      timestamp: new Date().toISOString(),
-    },
-  ];
+  const sender = toWhatsAppJid(change.sender_jid) || change.sender_jid;
+  const filtered = (reactions ?? []).filter((reaction) =>
+    change.is_from_me
+      ? !reaction.is_from_me
+      : reaction.is_from_me || (toWhatsAppJid(reaction.sender_jid) || reaction.sender_jid) !== sender,
+  );
+  if (change.emoji) filtered.push(change);
+  return filtered;
 }
 
 export interface InfiniteMessagePagesShape<TPage extends {data: MessageInfo[]} = {data: MessageInfo[]}> {
   pages: TPage[];
   pageParams: unknown[];
+}
+
+export function updateMessageReactions<TPage extends {data: MessageInfo[]; content_redacted?: boolean}>(
+  oldData: InfiniteMessagePagesShape<TPage> | undefined,
+  messageId: string,
+  update: (reactions: ReactionInfo[] | undefined) => ReactionInfo[] | undefined,
+): InfiniteMessagePagesShape<TPage> | undefined {
+  if (!oldData) return oldData;
+  let changed = false;
+  const pages = oldData.pages.map((page) => {
+    if (page.content_redacted) return page;
+    const index = page.data.findIndex((message) => message.id === messageId && !message.is_revoked);
+    if (index < 0) return page;
+    const message = page.data[index];
+    const reactions = update(message.reactions);
+    if (reactions === message.reactions) return page;
+    changed = true;
+    const data = [...page.data];
+    data[index] = {...message, reactions};
+    return {...page, data};
+  });
+  return changed ? {...oldData, pages} : oldData;
 }
 
 export function applyRevokeToMessagePages<TPage extends {data: MessageInfo[]}>(

@@ -1,4 +1,5 @@
 import {toWhatsAppJid} from '@/lib/phone';
+import type {ReactionInfo} from '@/api/types';
 
 export type WsEventCode =
   | 'BRIDGE_STATUS'
@@ -41,6 +42,27 @@ export interface WsRevokeTarget {
   messageId: string;
   revokedBy?: string;
   revokedAt?: string;
+}
+
+export function extractWsReaction(event: WsEvent): {deviceId: string; chatJid: string; messageId: string; reaction: ReactionInfo} | null {
+  if (event.code !== 'MESSAGE_REACTION') return null;
+  const result = asRecord(event.result);
+  if (!result || result.content_redacted === true || !event.device_id ||
+      typeof result.chat_jid !== 'string' || typeof result.message_id !== 'string' ||
+      typeof result.emoji !== 'string' || typeof result.sender_jid !== 'string' ||
+      typeof result.is_from_me !== 'boolean' || typeof result.timestamp !== 'string') return null;
+  return {
+    deviceId: event.device_id,
+    chatJid: result.chat_jid,
+    messageId: result.message_id,
+    reaction: {
+      emoji: result.emoji,
+      sender_jid: result.sender_jid,
+      sender_display_name: firstNonEmptyString(result.sender_display_name) || undefined,
+      is_from_me: result.is_from_me,
+      timestamp: result.timestamp,
+    },
+  };
 }
 
 function asRecord(val: unknown): Record<string, unknown> | null {

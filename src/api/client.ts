@@ -263,6 +263,8 @@ export async function fetchContactAvatarBlob(deviceId: string, jid: string): Pro
 }
 
 // Unified Inbox
+export const DEFAULT_UNIFIED_CHATS_QUERY_KEY = ['unified-chats', [], '', false] as const;
+
 export function listUnifiedChats(params: {
   deviceIds?: string[];
   search?: string;
@@ -294,15 +296,18 @@ export function getUnifiedChatMessages(
   deviceId: string,
   chatJid: string,
   params: {limit?: number; offset?: number; search?: string; media_only?: boolean},
+  signal?: AbortSignal,
 ): Promise<{
   data: MessageInfo[];
   pagination: Pagination;
   chat_info: ChatInfo;
   content_redacted?: boolean;
   redaction_reason?: ChatRedactionReason;
+  reaction_webhook_configured?: boolean;
 }> {
   return results(
     http.get(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/messages`, {
+      signal,
       params: {
         limit: params.limit,
         offset: params.offset,

@@ -29,6 +29,7 @@
 | `GOWA_URL` | *(فارغ)* | رابط خادم GOWA الافتراضي (يمكن ضبطه أو تغييره من واجهة الإعدادات، وتُقدَّم إعدادات الواجهة المحفوظة عليه). |
 | `GOWA_USERNAME` | *(فارغ)* | اسم مستخدم Basic Auth لخادم GOWA الافتراضي. |
 | `GOWA_PASSWORD` | *(فارغ)* | كلمة مرور Basic Auth لخادم GOWA الافتراضي. |
+| `GOWA_WEBHOOK_SECRET` | *(فارغ)* | مفتاح توقيع Webhook اختياري لعرض تفاعلات جهات الاتصال لحظيًا. |
 | `GOWA_WS_QUERY_AUTH` | `false` | اضبطه إلى `true` فقط إذا كان خادم GOWA أو الوكيل يرفض ترويسة `Authorization: Basic` في اتصال WebSocket ويطلب `?authorization=`. |
 
 ---
@@ -63,6 +64,10 @@ npm run lint
 npm test
 npm run verify:live
 ```
+
+### تفاعلات واتساب اللحظية
+
+اضبط `GOWA_WEBHOOK_SECRET` على Gowa Lite. على بوابة GOWA اضبط `WHATSAPP_WEBHOOK_SECRET` بنفس القيمة، وأضف عنوان `/api/webhooks/gowa` الكامل إلى `WHATSAPP_WEBHOOK`. اضبط `WHATSAPP_WEBHOOK_EVENTS=message.reaction` لهذا الاستخدام، أو أضف الحدث إلى قائمة الأحداث الحالية إذا كنت تعتمد على أحداث أخرى. إذا كانت للأجهزة Webhooks منفصلة، فعّل `WHATSAPP_WEBHOOK_DEVICE_MERGE_GLOBAL=true` لإرسال التفاعلات إلى العنوان العام أيضًا. يجب أن تستطيع البوابة الوصول إلى العنوان عبر الشبكة. بدون مفتاح Webhook، يعيد التطبيق جلب الرسائل في المحادثة المفتوحة كل 12 ثانية أثناء عرضها. [إعداد Webhooks في GOWA](https://github.com/aldinokemal/go-whatsapp-web-multidevice#webhooks)
 
 ---
 

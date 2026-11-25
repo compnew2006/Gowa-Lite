@@ -9,6 +9,12 @@ import {
   isLifecycleApplicableJid,
   type ChatRedactionReason,
 } from './services/chat-lifecycle.ts';
+import {
+  asReactionRecord,
+  isGowaReactionEvent,
+  readGowaReaction,
+  recordMessageReaction,
+} from './services/message-reactions.ts';
 
 interface TicketEntry {
   user: PublicUser;
@@ -210,11 +216,17 @@ export function shouldDeliverWsEventToUser(
   }
 
   if (chatJid.endsWith('@g.us')) {
-    return {allowed: hasPermission(user, 'groups', 'read')};
+    return {allowed: (code !== 'MESSAGE_REACTION' || Boolean(deviceId)) && hasPermission(user, 'groups', 'read')};
   }
 
   if (!hasPermission(user, 'chats', 'read')) {
     return {allowed: false};
+  }
+
+  if (code === 'MESSAGE_REACTION') {
+    return {
+      allowed: Boolean(deviceId && rawChatJid && getChatContentAccessState(user, deviceId, rawChatJid).allowed),
+    };
   }
 
   if (obj && resultObj && deviceId && rawChatJid && isLifecycleApplicableJid(rawChatJid)) {
@@ -469,8 +481,20 @@ export class GowaWsBridge {
             code?: string;
             message?: string;
             result?: unknown;
+            device_id?: string;
           };
           if (parsed && typeof parsed.code === 'string') {
+            if (isGowaReactionEvent(parsed.code)) {
+              // Upstream sockets may all receive the same frame. Scope reactions by its source.
+              const source = parsed.device_id ?? asReactionRecord(parsed.result)?.device_id;
+              if (!deviceId || source !== deviceId) return;
+              const change = readGowaReaction(parsed.result);
+              if (change) {
+                const event = recordMessageReaction(deviceId, change.chatJid, change.messageId, change.reaction);
+                if (event) this.broadcast(event);
+              }
+              return;
+            }
             const eventPayload: GowaUpstreamEvent = {
               code: parsed.code,
               message: parsed.message ?? '',

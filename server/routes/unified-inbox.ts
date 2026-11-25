@@ -61,6 +61,7 @@ import {
   isAdminSubject,
 } from '../rbac.ts';
 import {buildSafeMediaHeaders, decodeRouteParam} from '../security.ts';
+import {recordMessageReaction} from '../services/message-reactions.ts';
 import {
   inferForwardMimeType,
   isGroupJid,
@@ -372,7 +373,12 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
             media_only: mediaOnly ? true : undefined,
           },
         });
-        const merged = syncAndMergeChatMessages(deviceId, chatJid, data?.data ?? [], {
+        // GOWA omits the reactions field when the last reaction is removed.
+        const snapshot = (data?.data ?? []).map((message) => ({
+          ...message,
+          reactions: message.reactions ?? [],
+        }));
+        const merged = syncAndMergeChatMessages(deviceId, chatJid, snapshot, {
           offset,
           limit,
           search: search || undefined,
@@ -385,6 +391,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
           results: {
             ...data,
             data: merged.messages,
+            reaction_webhook_configured: Boolean(process.env.GOWA_WEBHOOK_SECRET?.trim()),
             pagination: {
               ...(data?.pagination ?? {limit, offset, total: merged.messages.length}),
               total: (liveTotal ?? merged.messages.length) + merged.injectedCount,
@@ -654,6 +661,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
           return;
         }
 
+        const timestamp = new Date().toISOString();
         const result = await gowaFetch(`/message/${encodeURIComponent(messageId)}/reaction`, {
           method: 'POST',
           deviceId,
@@ -662,6 +670,11 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
             emoji,
           },
         });
+
+        const event = recordMessageReaction(deviceId, chatJid, messageId, {
+          emoji, sender_jid: deviceId, is_from_me: true, timestamp,
+        });
+        if (event) wsBridge.broadcast(event);
 
         res.json({
           code: 'SUCCESS',

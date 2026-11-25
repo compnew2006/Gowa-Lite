@@ -165,7 +165,6 @@ export default function GroupsPage() {
       if (
         code === 'MESSAGE_RECEIVED' ||
         code === 'MESSAGE' ||
-        code === 'MESSAGE_REACTION' ||
         code === 'MESSAGE_UPDATED' ||
         code === 'MESSAGE_EDITED' ||
         code === 'MESSAGE.EDITED' ||

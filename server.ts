@@ -10,6 +10,7 @@ import {registerAccountRoutes} from './server/routes/account.ts';
 import {registerAuthRoutes} from './server/routes/auth.ts';
 import {registerChatLifecycleRoutes} from './server/routes/chat-lifecycle.ts';
 import {registerDeviceRoutes} from './server/routes/devices.ts';
+import {registerGowaWebhookRoutes} from './server/routes/gowa-webhook.ts';
 import {registerGroupRoutes} from './server/routes/groups.ts';
 import {registerMiscRoutes} from './server/routes/misc.ts';
 import {registerRoleRoutes} from './server/routes/roles.ts';
@@ -47,12 +48,13 @@ async function startServer(): Promise<void> {
       }),
     );
   }
-  app.use(express.json({limit: '8mb'}));
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     next();
   });
+  app.use(registerGowaWebhookRoutes(wsBridge));
+  app.use(express.json({limit: '8mb'}));
 
   app.use(registerAuthRoutes(wsBridge));
   app.use(registerRoleRoutes());

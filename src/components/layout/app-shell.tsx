@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from 'react';
-import {useQuery, useQueryClient} from '@tanstack/react-query';
+import {useQuery, useQueryClient, type QueryFilters} from '@tanstack/react-query';
 import {
   CalendarClock,
   LogOut,
@@ -19,6 +19,7 @@ import {
 import {NavLink, Outlet, useLocation, useNavigate} from 'react-router-dom';
 import {toast} from 'sonner';
 import {
+  DEFAULT_UNIFIED_CHATS_QUERY_KEY,
   getAuthStatus,
   getUnifiedGroupsUnread,
   listUnifiedChats,
@@ -30,7 +31,12 @@ import {LanguageToggle} from '@/components/language-toggle';
 import {Button} from '@/components/ui/button';
 import {NotificationControls} from '@/features/notifications/notification-controls';
 import {formatNavUnreadCount, shouldShowNavUnreadBadge} from '@/features/chat/chat-ui-helpers';
-import {extractWsEventTarget, onWsEvent} from '@/lib/events';
+import {
+  applyMessageReaction,
+  updateMessageReactions,
+  type InfiniteMessagePagesShape,
+} from '@/features/chat/message-reactions';
+import {extractWsEventTarget, extractWsReaction, onWsEvent} from '@/lib/events';
 import {useI18n} from '@/lib/i18n';
 import {
   extractIncomingAlertData,
@@ -41,6 +47,7 @@ import {
   useNotificationPrefsStore,
 } from '@/lib/notifications';
 import {cn} from '@/lib/utils';
+import {toWhatsAppJid} from '@/lib/phone';
 import {wsClient} from '@/lib/ws';
 import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
@@ -66,7 +73,7 @@ export function AppShell() {
   const canReadGroups = hasUserPermission(user, 'groups:read');
 
   const unreadQuery = useQuery({
-    queryKey: ['unified-chats', [], '', false],
+    queryKey: DEFAULT_UNIFIED_CHATS_QUERY_KEY,
     queryFn: () => listUnifiedChats({}),
     enabled: Boolean(user) && canReadChats,
     refetchInterval: 30_000,
@@ -118,6 +125,26 @@ export function AppShell() {
     if (!user) return;
     return onWsEvent((event) => {
       const code = (event.code || '').toUpperCase();
+      if (code === 'MESSAGE_REACTION') {
+        const change = extractWsReaction(event);
+        if (!change) return;
+        const filters: QueryFilters = {
+          predicate: ({queryKey, state}) =>
+            queryKey[0] === 'unified-messages' && queryKey[1] === change.deviceId &&
+            typeof queryKey[2] === 'string' &&
+            (toWhatsAppJid(queryKey[2]) || queryKey[2]) === change.chatJid &&
+            Boolean((state.data as InfiniteMessagePagesShape | undefined)?.pages.some((page) =>
+              page.data.some((message) => message.id === change.messageId),
+            )),
+        };
+        void queryClient.cancelQueries(filters, {revert: false});
+        queryClient.setQueriesData<InfiniteMessagePagesShape>(filters, (data) =>
+          updateMessageReactions(data, change.messageId, (reactions) =>
+            applyMessageReaction(reactions, change.reaction),
+          ),
+        );
+        return;
+      }
       if (code === 'USER_ACCESS_UPDATED') {
         const payloadUser =
           event.result && typeof event.result === 'object'

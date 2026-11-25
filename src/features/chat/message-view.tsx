@@ -58,10 +58,11 @@ import {
   type ComposerLockState,
 } from '@/features/chat/message-composer';
 import {
-  applyOptimisticReaction,
+  applyMessageReaction,
   dayKey,
   repliedToId,
   sortMessagesChronologically,
+  updateMessageReactions,
 } from '@/features/chat/message-reactions';
 import {MessageViewHeader} from '@/features/chat/message-view-header';
 import type {OtherAccountRef} from '@/features/chat/other-accounts';
@@ -125,6 +126,7 @@ function formatLifecycleEventText(
 const PAGE_SIZE = 40;
 const HISTORY_POLL_MS = 2_000;
 const HISTORY_POLL_WINDOW_MS = 30_000;
+const REACTION_FALLBACK_POLL_MS = 12_000;
 const SCROLL_TOP_THRESHOLD_PX = 140;
 
 type MessagesPage = {
@@ -133,6 +135,7 @@ type MessagesPage = {
   chat_info: ChatInfo;
   content_redacted?: boolean;
   redaction_reason?: ChatRedactionReason;
+  reaction_webhook_configured?: boolean;
 };
 
 function computeNextMessagePageParam(
@@ -197,6 +200,7 @@ export function MessageView({
   const [isDragOver, setIsDragOver] = useState(false);
   const [replyingTo, setReplyingTo] = useState<MessageInfo | null>(null);
   const [reactionPickerMessageId, setReactionPickerMessageId] = useState<string | null>(null);
+  const pendingReactions = useRef(new Set<string>());
   const [historyPollUntil, setHistoryPollUntil] = useState(0);
   const [drawerTab, setDrawerTab] = useState<ContextDrawerTab | null>(null);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
@@ -271,15 +275,21 @@ export function MessageView({
   const query = useInfiniteQuery({
     queryKey: ['unified-messages', chat.device_id, chat.jid, normalizedSearch, mediaOnly],
     initialPageParam: 0,
-    queryFn: ({pageParam}) =>
+    queryFn: ({pageParam, signal}) =>
       getUnifiedChatMessages(chat.device_id, chat.jid, {
         limit: PAGE_SIZE,
         offset: pageParam,
         search: normalizedSearch || undefined,
         media_only: mediaOnly || undefined,
-      }),
+      }, signal),
     getNextPageParam: computeNextMessagePageParam,
-    refetchInterval: () => (Date.now() < historyPollUntil ? HISTORY_POLL_MS : false),
+    refetchInterval: (query) => {
+      if (Date.now() < historyPollUntil) return HISTORY_POLL_MS;
+      const page = query.state.data?.pages[0];
+      return page && !page.content_redacted && page.reaction_webhook_configured === false
+        ? REACTION_FALLBACK_POLL_MS
+        : false;
+    },
   });
 
   const firstPage = query.data?.pages[0];
@@ -303,13 +313,13 @@ export function MessageView({
   const notesQuery = useQuery({
     queryKey: ['unified-chat-notes', chat.device_id, chat.jid],
     queryFn: () => listUnifiedChatNotes(chat.device_id, chat.jid),
-    enabled: canReadNotes && !isContentRedacted,
+    enabled: canReadNotes && !isContentRedacted && (Boolean(firstPage) || drawerTab === 'notes'),
   });
 
   const schedulesQuery = useQuery({
     queryKey: ['unified-chat-schedules', chat.device_id, chat.jid],
     queryFn: () => listUnifiedChatSchedules(chat.device_id, chat.jid),
-    enabled: canReadSchedules && !isContentRedacted,
+    enabled: canReadSchedules && !isContentRedacted && (Boolean(firstPage) || drawerTab === 'scheduled'),
   });
 
   const notesCount = notesQuery.data?.notes?.length ?? 0;
@@ -671,38 +681,44 @@ export function MessageView({
     unblockMutation.isPending;
 
   const reactionMutation = useMutation({
-    mutationFn: ({messageId, emoji}: {messageId: string; emoji: string}) =>
-      sendUnifiedMessageReaction(chat.device_id, chat.jid, messageId, emoji),
-    onMutate: async ({messageId, emoji}) => {
-      const queryKey = ['unified-messages', chat.device_id, chat.jid] as const;
+    mutationFn: ({deviceId, chatJid, messageId, emoji}: {
+      deviceId: string;
+      chatJid: string;
+      messageId: string;
+      emoji: string;
+      pendingKey: string;
+    }) => sendUnifiedMessageReaction(deviceId, chatJid, messageId, emoji),
+    onMutate: async ({deviceId, chatJid, messageId, emoji}) => {
+      const queryKey = ['unified-messages', deviceId, chatJid] as const;
       await queryClient.cancelQueries({queryKey});
       const previous = queryClient.getQueriesData<InfiniteData<MessagesPage>>({queryKey});
-      queryClient.setQueriesData<InfiniteData<MessagesPage>>({queryKey}, (old) => {
-        if (!old) return old;
-        return {
-          ...old,
-          pages: old.pages.map((page) => ({
-            ...page,
-            data: page.data.map((msg) =>
-              msg.id === messageId
-                ? {...msg, reactions: applyOptimisticReaction(msg.reactions, emoji)}
-                : msg,
-            ),
-          })),
-        };
-      });
-      return {previous};
+      const optimistic = {emoji, sender_jid: deviceId, is_from_me: true, timestamp: new Date().toISOString()};
+      queryClient.setQueriesData<InfiniteData<MessagesPage>>({queryKey}, (data) =>
+        updateMessageReactions(data, messageId, (reactions) =>
+          applyMessageReaction(reactions, optimistic),
+        ),
+      );
+      return {previous, optimistic};
     },
-    onError: (err, _vars, context) => {
-      if (context?.previous) {
-        for (const [key, data] of context.previous) queryClient.setQueryData(key, data);
+    onError: (err, {messageId}, context) => {
+      if (context) {
+        const {optimistic, previous} = context;
+        for (const [key, data] of previous) {
+          const original = data?.pages.flatMap((page) => page.data)
+            .find((message) => message.id === messageId)?.reactions?.find((reaction) => reaction.is_from_me);
+          queryClient.setQueryData<InfiniteData<MessagesPage>>(key, (current) =>
+            updateMessageReactions(current, messageId, (reactions) => {
+              const own = reactions?.find((reaction) => reaction.is_from_me);
+              if (own ? own.timestamp !== optimistic.timestamp : optimistic.emoji) return reactions;
+              return applyMessageReaction(reactions, original ?? {...optimistic, emoji: ''});
+            }),
+          );
+        }
       }
       toast.error(toApiError(err).message);
     },
-    onSettled: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ['unified-messages', chat.device_id, chat.jid],
-      });
+    onSettled: (_data, _err, {pendingKey}) => {
+      pendingReactions.current.delete(pendingKey);
     },
   });
 
@@ -826,13 +842,20 @@ export function MessageView({
     window.setTimeout(() => composerInputRef.current?.focus(), 0);
   };
 
+  const reactToMessage = reactionMutation.mutate;
   const handleReact = useCallback(
     (message: MessageInfo, emoji: string) => {
       if (!isDeviceReady) return;
+      const pendingKey = JSON.stringify([chat.device_id, chat.jid, message.id]);
+      if (pendingReactions.current.has(pendingKey)) return;
+      pendingReactions.current.add(pendingKey);
       const myExisting = message.reactions?.find((r) => r.is_from_me && r.emoji === emoji);
-      reactionMutation.mutate({messageId: message.id, emoji: myExisting ? '' : emoji});
+      reactToMessage({
+        deviceId: chat.device_id, chatJid: chat.jid, messageId: message.id,
+        emoji: myExisting ? '' : emoji, pendingKey,
+      });
     },
-    [isDeviceReady, reactionMutation],
+    [chat.device_id, chat.jid, isDeviceReady, reactToMessage],
   );
 
   const handleReply = useCallback((message: MessageInfo) => {

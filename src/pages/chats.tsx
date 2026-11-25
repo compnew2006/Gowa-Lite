@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import {useNavigate, useSearchParams} from 'react-router-dom';
 import {toast} from 'sonner';
-import {bulkUnifiedChatsLifecycle, listUnifiedChats} from '@/api/client';
+import {bulkUnifiedChatsLifecycle, DEFAULT_UNIFIED_CHATS_QUERY_KEY, listUnifiedChats} from '@/api/client';
 import type {
   AccountSummary,
   ChatInfo,
@@ -401,7 +401,7 @@ export default function ChatsPage() {
     selectedDeviceIds.length > 0 || Boolean(search.trim()) || hasMedia;
 
   const globalChatsQuery = useQuery({
-    queryKey: ['unified-chats', [], '', false],
+    queryKey: DEFAULT_UNIFIED_CHATS_QUERY_KEY,
     queryFn: () => listUnifiedChats({}),
     enabled: hasActiveFilter && !(apiErr && isGowaConnectionError(apiErr)),
     staleTime: 60_000,
@@ -516,7 +516,6 @@ export default function ChatsPage() {
       if (
         code === 'MESSAGE_RECEIVED' ||
         code === 'MESSAGE' ||
-        code === 'MESSAGE_REACTION' ||
         code === 'MESSAGE_UPDATED' ||
         code === 'MESSAGE_EDITED' ||
         code === 'MESSAGE.EDITED' ||

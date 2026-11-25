@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
-import {listUnifiedChats} from '@/api/client';
+import {DEFAULT_UNIFIED_CHATS_QUERY_KEY, listUnifiedChats} from '@/api/client';
 import type {UnifiedChat, UnifiedChatTab} from '@/api/types';
 import {normalizeSearchInput} from '@/lib/phone';
 
@@ -52,6 +52,8 @@ export function usePaginatedChats({
   const normalizedSearch = normalizeSearchInput(search);
   const resolvedTab = tab ?? '';
   const resolvedAssignedTo = assignedTo !== undefined && assignedTo !== '' ? String(assignedTo) : '';
+  const isDefaultPage = deviceIds.length === 0 && !normalizedSearch && !hasMedia &&
+    (!tab || tab === 'all') && !resolvedAssignedTo;
   const filterSignature = `${deviceIds.join(',')}::${normalizedSearch}::${hasMedia ? '1' : '0'}::${resolvedTab}::${resolvedAssignedTo}`;
 
   const [extraState, setExtraState] = useState<{
@@ -74,9 +76,11 @@ export function usePaginatedChats({
   }, [filterSignature]);
 
   const query = useQuery({
-    queryKey: ['unified-chats', deviceIds, normalizedSearch, hasMedia, resolvedTab, resolvedAssignedTo],
+    queryKey: isDefaultPage
+      ? DEFAULT_UNIFIED_CHATS_QUERY_KEY
+      : ['unified-chats', deviceIds, normalizedSearch, hasMedia, resolvedTab, resolvedAssignedTo],
     queryFn: () =>
-      listUnifiedChats({
+      listUnifiedChats(isDefaultPage ? {} : {
         deviceIds: deviceIds.length > 0 ? deviceIds : undefined,
         search: normalizedSearch || undefined,
         has_media: hasMedia || undefined,

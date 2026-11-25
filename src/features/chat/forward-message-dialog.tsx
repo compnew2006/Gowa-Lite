@@ -2,7 +2,7 @@ import {useEffect, useMemo, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {AlertTriangle, Forward, Loader2} from 'lucide-react';
 import {toast} from 'sonner';
-import {forwardUnifiedMessage, listUnifiedChats} from '@/api/client';
+import {DEFAULT_UNIFIED_CHATS_QUERY_KEY, forwardUnifiedMessage, listUnifiedChats} from '@/api/client';
 import type {MessageInfo} from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
@@ -35,8 +35,8 @@ export function ForwardMessageDialog({
   const [error, setError] = useState<string | null>(null);
 
   const chatsQuery = useQuery({
-    queryKey: ['unified-chats', [], '', false],
-    queryFn: () => listUnifiedChats({limit: 100, offset: 0}),
+    queryKey: DEFAULT_UNIFIED_CHATS_QUERY_KEY,
+    queryFn: () => listUnifiedChats({}),
     enabled: open,
     staleTime: 20_000,
   });
