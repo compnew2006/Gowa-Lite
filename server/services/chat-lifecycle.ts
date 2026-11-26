@@ -528,13 +528,15 @@ export function assertChatContentAccess(
   return state.assignment;
 }
 
-export type UnifiedChatTab = 'all' | 'me' | 'pending' | 'closed';
+export type UnifiedChatTab = 'all' | 'me' | 'open' | 'pending' | 'closed' | 'private';
 
 export interface UnifiedTabCounts {
   all: number;
   me: number;
+  open: number;
   pending: number;
   closed: number;
+  private: number;
 }
 
 export interface DbLifecycleChatEntry {
@@ -1183,6 +1185,15 @@ export function closeChat(
     );
     const cachedTitle = (options?.cachedTitle ?? '').trim() || existing?.cached_title || '';
 
+    const ratedUserId =
+      existing?.status === 'open' && existing.assigned_user_id !== null
+        ? existing.assigned_user_id
+        : actor.id;
+    const ratedUserName =
+      existing?.status === 'open' && existing.assigned_user_id !== null
+        ? (existing.assigned_user_name || actor.display_name)
+        : actor.display_name;
+
     const assignment = upsertAssignmentRow({
       deviceId,
       chatJid,
@@ -1204,12 +1215,18 @@ export function closeChat(
       eventType: 'closed',
       actorUserId: actor.id,
       actorName: actor.display_name,
+      targetUserId: ratedUserId !== actor.id ? ratedUserId : null,
+      targetName: ratedUserId !== actor.id ? ratedUserName : '',
       note: cleanReason,
       createdAt: nowIso,
       createdAtMs: nowMs,
     });
 
-    queueChatCloseRating(deviceId, chatJid, event.id, nowMs);
+    queueChatCloseRating(deviceId, chatJid, event.id, nowMs, {
+      ratedUserId,
+      ratedUserName,
+      closedByUserId: actor.id,
+    });
     return {assignment, event};
   });
 }

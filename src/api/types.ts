@@ -215,13 +215,15 @@ export interface UnifiedChatsPagination {
   next_offset?: number;
 }
 
-export type UnifiedChatTab = 'all' | 'me' | 'pending' | 'closed';
+export type UnifiedChatTab = 'all' | 'me' | 'open' | 'pending' | 'closed' | 'private';
 
 export interface UnifiedTabCounts {
   all: number;
   me: number;
+  open: number;
   pending: number;
   closed: number;
+  private: number;
 }
 
 export interface UnifiedChatsResponse {
@@ -423,11 +425,18 @@ export interface GroupInviteLink {
   group_id: string;
 }
 
+export interface UnifiedDirectoryAccountRef {
+  device_id: string;
+  device_display_name: string;
+  device_state: DeviceState;
+}
+
 export interface UnifiedGroupItem {
   kind: 'group';
   device_id: string;
   device_display_name: string;
   device_state: DeviceState;
+  accounts?: UnifiedDirectoryAccountRef[];
   jid: string;
   name: string;
   participant_count: number;
@@ -440,6 +449,7 @@ export interface UnifiedNewsletterItem {
   device_id: string;
   device_display_name: string;
   device_state: DeviceState;
+  accounts?: UnifiedDirectoryAccountRef[];
   jid: string;
   name: string;
   subscribers_count: number;
@@ -603,9 +613,72 @@ export interface InboxPolicy {
 export interface AccountCloseRatings {
   enabled: boolean;
   webhook_configured: boolean;
+  prompt_message: string;
+  default_prompt: string;
+  is_custom_prompt: boolean;
   count: number;
   average: number | null;
-  recent: {id: number; score: number; rated_at: string}[];
+  by_user: {
+    user_id: number | null;
+    user_name: string;
+    count: number;
+    average: number;
+  }[];
+  recent: {
+    id: number;
+    score: number;
+    rated_at: string;
+    chat_jid: string;
+    user_id: number | null;
+    user_name: string;
+  }[];
+}
+
+export interface UserRatingSummary {
+  user_id: number;
+  count: number;
+  average: number | null;
+}
+
+export interface UserCloseRatings {
+  user_id: number;
+  display_name: string;
+  count: number;
+  average: number | null;
+  by_account: {
+    device_id: string;
+    device_name: string;
+    count: number;
+    average: number;
+  }[];
+  recent: {
+    id: number;
+    score: number;
+    rated_at: string;
+    device_id: string;
+    device_name: string;
+    chat_jid: string;
+  }[];
+}
+
+export interface AccountDailyResetSettings {
+  device_id: string;
+  enabled: boolean;
+  reset_hour: number;
+  timezone: string;
+  last_run_date: string;
+  last_run_at: string | null;
+  last_reset_count: number;
+  updated_at: string | null;
+}
+
+export interface DailyResetRunResult {
+  device_id: string;
+  reset_count: number;
+  chat_jids: string[];
+  run_at: string;
+  run_date: string;
+  trigger: 'schedule' | 'manual';
 }
 
 export type ChatLifecycleEventType =
@@ -661,4 +734,26 @@ export interface BulkLifecycleResponse {
   failed: Array<{device_id: string; chat_jid: string; code: string; message: string}>;
 }
 
+export type CallRejectStatus = 'pending' | 'rejected' | 'already_rejected' | 'failed';
+export type CallReplyStatus = 'pending' | 'sent' | 'failed' | 'no_message' | 'skipped';
 
+export interface CallAutoRejectLog {
+  device_id: string;
+  call_id: string;
+  caller_jid: string;
+  caller_name: string;
+  reject_status: CallRejectStatus;
+  reply_status: CallReplyStatus;
+  reply_message: string;
+  created_at: string;
+}
+
+export interface CallAutoRejectSettings {
+  device_id: string;
+  enabled: boolean;
+  webhook_configured: boolean;
+  reply_message: string;
+  default_message: string;
+  is_custom_message: boolean;
+  recent: CallAutoRejectLog[];
+}

@@ -135,7 +135,63 @@ export const reactionBodySchema = z.object({
   emoji: z.string().trim().max(32, {message: 'صيغة التفاعل غير صالحة'}).optional().default(''),
 });
 
-export const closeRatingSettingsSchema = z.object({enabled: z.boolean()});
+export const closeRatingSettingsSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    prompt_message: z
+      .string()
+      .max(1000, {message: 'نص رسالة التقييم طويل جدًا (الحد الأقصى 1000 حرف)'})
+      .optional(),
+  })
+  .refine((data) => data.enabled !== undefined || data.prompt_message !== undefined, {
+    message: 'يرجى تحديد إعداد واحد على الأقل للتحديث',
+  });
+
+export const callAutoRejectSettingsSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    reply_message: z
+      .string()
+      .max(1000, {message: 'نص رسالة الرد طويل جدًا (الحد الأقصى 1000 حرف)'})
+      .optional(),
+    reset_message: z.boolean().optional(),
+  })
+  .refine(
+    (data) =>
+      data.enabled !== undefined ||
+      data.reply_message !== undefined ||
+      data.reset_message === true,
+    {
+      message: 'يرجى تحديد إعداد واحد على الأقل للتحديث',
+    },
+  );
+
+export const dailyResetSettingsSchema = z.object({
+  enabled: z.boolean({error: 'حالة التفعيل مطلوبة'}),
+  reset_hour: z
+    .number({error: 'ساعة إعادة التعيين مطلوبة'})
+    .int({message: 'ساعة إعادة التعيين يجب أن تكون رقمًا صحيحًا'})
+    .min(0, {message: 'ساعة إعادة التعيين يجب أن تكون بين 0 و 23'})
+    .max(23, {message: 'ساعة إعادة التعيين يجب أن تكون بين 0 و 23'}),
+  timezone: z
+    .string()
+    .trim()
+    .max(100, {message: 'اسم المنطقة الزمنية طويل جدًا'})
+    .optional()
+    .default('')
+    .refine(
+      (tz) => {
+        if (!tz) return true;
+        try {
+          new Intl.DateTimeFormat('en-US', {timeZone: tz});
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      {message: 'المنطقة الزمنية غير صالحة (استخدم صيغة IANA مثل Asia/Riyadh)'},
+    ),
+});
 
 export const conversationNoteCreateSchema = z.object({
   content: z

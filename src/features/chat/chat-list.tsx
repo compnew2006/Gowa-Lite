@@ -375,9 +375,17 @@ const ChatListRow = memo(function ChatListRow({
               )}
             </div>
 
+            {secondaryPhone && (
+              <p
+                dir="ltr"
+                className="mt-0.5 truncate text-start font-mono text-[11px] text-muted-foreground tabular-nums"
+              >
+                {secondaryPhone}
+              </p>
+            )}
+
             {(showAccountName ||
               showLifecycle ||
-              secondaryPhone ||
               hasUnread ||
               isPinned ||
               isMuted ||
@@ -391,23 +399,12 @@ const ChatListRow = memo(function ChatListRow({
                     {shortAccountWidgetLabel(chat.device_display_name)}
                   </span>
                 )}
-                {showAccountName && (showLifecycle || secondaryPhone) && (
+                {showAccountName && showLifecycle && (
                   <span aria-hidden="true" className="text-border">·</span>
                 )}
                 {showLifecycle && (
-                  <span className={cn('shrink-0 truncate font-medium', lifecycleColor)}>
+                  <span className={cn('min-w-0 truncate font-medium', lifecycleColor)}>
                     {lifecycleLabel}
-                  </span>
-                )}
-                {showLifecycle && secondaryPhone && (
-                  <span aria-hidden="true" className="hidden text-border sm:inline">·</span>
-                )}
-                {secondaryPhone && (
-                  <span
-                    dir="ltr"
-                    className="hidden min-w-0 flex-1 truncate font-mono text-[11px] tabular-nums sm:inline"
-                  >
-                    {secondaryPhone}
                   </span>
                 )}
 
@@ -598,10 +595,21 @@ export function ChatList({
       list.push({id: 'all', label: t.chats.tabAll, count: tabCounts?.all});
     }
     list.push({id: 'me', label: t.chats.tabMe, count: tabCounts?.me});
+    list.push({id: 'open', label: t.chats.tabOpen, count: tabCounts?.open});
     list.push({id: 'pending', label: t.chats.tabPending, count: tabCounts?.pending});
     list.push({id: 'closed', label: t.chats.tabClosed, count: tabCounts?.closed});
+    list.push({id: 'private', label: t.chats.tabPrivate, count: tabCounts?.private});
     return list;
-  }, [canViewAll, t.chats.tabAll, t.chats.tabClosed, t.chats.tabMe, t.chats.tabPending, tabCounts]);
+  }, [
+    canViewAll,
+    t.chats.tabAll,
+    t.chats.tabClosed,
+    t.chats.tabMe,
+    t.chats.tabOpen,
+    t.chats.tabPending,
+    t.chats.tabPrivate,
+    tabCounts,
+  ]);
 
   useEffect(() => {
     if (selectedListId !== null && !chatLists.some((l) => l.id === selectedListId)) {
@@ -877,7 +885,7 @@ export function ChatList({
           <div
             role="tablist"
             aria-label={t.chats.tabsLabel}
-            className="grid auto-cols-fr grid-flow-col gap-1 border-b border-border/80 pb-1.5"
+            className="flex flex-wrap items-center gap-1 border-b border-border/80 pb-1.5"
           >
             {availableTabs.map((tabItem, idx) => {
               const isActive = activeTab === tabItem.id;
@@ -894,13 +902,13 @@ export function ChatList({
                   onClick={() => onTabChange(tabItem.id)}
                   onKeyDown={(e) => handleTabKeyDown(e, idx)}
                   className={cn(
-                    'flex cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-ring',
+                    'flex min-w-fit flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-ring',
                     isActive
                       ? 'bg-accent text-accent-foreground font-semibold'
                       : 'text-muted-foreground hover:bg-secondary/70 hover:text-foreground',
                   )}
                 >
-                  <span className="truncate">{tabItem.label}</span>
+                  <span>{tabItem.label}</span>
                   {typeof tabItem.count === 'number' && (
                     <span
                       className={cn(
@@ -917,7 +925,7 @@ export function ChatList({
           </div>
         )}
 
-        {activeTab === 'me' && canViewAll && onAssignedToFilterChange && (
+        {activeTab === 'open' && canViewAll && onAssignedToFilterChange && (
           <div className="flex items-center gap-1 rounded-lg bg-secondary/60 p-1 text-xs">
             <button
               type="button"
@@ -1134,7 +1142,7 @@ export function ChatList({
                   <span>{t.chats.bulkCloseBtn}</span>
                 </button>
               )}
-              {canAssign && (activeTab === 'me' || activeTab === 'all') && (
+              {canAssign && (activeTab === 'me' || activeTab === 'open' || activeTab === 'all') && (
                 <button
                   type="button"
                   disabled={selectedBulkChats.length === 0 || isBulkPending}
@@ -1222,7 +1230,11 @@ export function ChatList({
           <div className="p-6 text-center text-sm text-destructive">{errorMessage}</div>
         ) : visibleChats.length === 0 ? (
           <div className="p-6 text-center text-sm text-muted-foreground">
-            {archivedOnly ? t.chats.archivedEmpty : t.chats.noMatchingChats}
+            {archivedOnly
+              ? t.chats.archivedEmpty
+              : activeTab === 'private' && !search.trim()
+                ? t.chats.privateListEmpty
+                : t.chats.noMatchingChats}
           </div>
         ) : (
           <ul className="space-y-0.5">

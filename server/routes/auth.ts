@@ -26,6 +26,10 @@ import {
 } from '../db.ts';
 import {probeGowa, validateGowaUrl} from '../gowa-client.ts';
 import {
+  getUserCloseRatings,
+  listUsersCloseRatingSummaries,
+} from '../services/chat-close-rating.ts';
+import {
   clearSessionCookie,
   createApiRouter,
   extractAuthToken,
@@ -273,8 +277,33 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
     res.json({code: 'SUCCESS', message: 'ok', results: {ticket}});
   });
 
+  router.get('/api/me/ratings', requireAuth, (req: AuthedRequest, res) => {
+    try {
+      res.json({code: 'SUCCESS', message: 'ok', results: getUserCloseRatings(req.user!.id)});
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
   router.get('/api/users', requireAuth, requirePermission('users', 'read'), (_req, res) => {
     res.json({code: 'SUCCESS', message: 'ok', results: listUsers()});
+  });
+
+  router.get('/api/users/ratings', requireAuth, requirePermission('users', 'read'), (_req, res) => {
+    try {
+      res.json({code: 'SUCCESS', message: 'ok', results: listUsersCloseRatingSummaries()});
+    } catch (err) {
+      handleRouteError(res, err);
+    }
+  });
+
+  router.get('/api/users/:id/ratings', requireAuth, requirePermission('users', 'read'), (req, res) => {
+    try {
+      const userId = parsePositiveIntId(req.params.id, 'معرّف المستخدم');
+      res.json({code: 'SUCCESS', message: 'ok', results: getUserCloseRatings(userId)});
+    } catch (err) {
+      handleRouteError(res, err);
+    }
   });
 
   router.post(

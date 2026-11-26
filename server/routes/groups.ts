@@ -102,26 +102,51 @@ async function runWithConcurrency<T>(
   await Promise.all(runners);
 }
 
-async function enrichGroupsWithCounts(
+function extractGowaArray<T>(raw: unknown, ...keys: string[]): T[] {
+  if (Array.isArray(raw)) return raw as T[];
+  if (raw && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    for (const key of keys) {
+      if (Array.isArray(obj[key])) return obj[key] as T[];
+    }
+    if (Array.isArray(obj.data)) return obj.data as T[];
+    if (Array.isArray(obj.results)) return obj.results as T[];
+  }
+  return [];
+}
+
+function hydrateGroupsFromCache(
   deviceId: string,
   rawGroups: RawGowaGroup[],
-): Promise<RawGowaGroup[]> {
+): {groups: RawGowaGroup[]; missing: RawGowaGroup[]} {
   const now = Date.now();
-  const normalized = rawGroups.map((g) => ({
-    ...g,
-    ParticipantCount: resolveGroupMemberCount(g),
-  }));
-
-  const missing = normalized.filter((g) => {
-    if ((g.ParticipantCount ?? 0) > 0) return false;
+  const missing: RawGowaGroup[] = [];
+  const groups = rawGroups.map((g) => {
+    const directCount = resolveGroupMemberCount(g);
+    if (directCount > 0) {
+      return {...g, ParticipantCount: directCount};
+    }
     const cached = groupMetaCache.get(`${deviceId}::${g.JID}`);
     if (cached && cached.expiresAt > now) {
-      return false;
+      return {
+        ...g,
+        ...cached.patch,
+        ParticipantCount: cached.count,
+      };
     }
-    return true;
+    missing.push(g);
+    return {...g, ParticipantCount: 0};
   });
+  return {groups, missing};
+}
 
-  await runWithConcurrency(missing, 5, async (g) => {
+const backgroundEnrichInflight = new Set<string>();
+
+function scheduleBackgroundGroupEnrichment(deviceId: string, missing: RawGowaGroup[]): void {
+  if (missing.length === 0 || backgroundEnrichInflight.has(deviceId)) return;
+  backgroundEnrichInflight.add(deviceId);
+  const batch = missing.slice(0, 30);
+  void runWithConcurrency(batch, 3, async (g) => {
     const cacheKey = `${deviceId}::${g.JID}`;
     try {
       const info = await gowaFetch<RawGowaGroup | null>('/group/info', {
@@ -131,14 +156,12 @@ async function enrichGroupsWithCounts(
       });
       let count = info ? resolveGroupMemberCount(info) : 0;
       if (count === 0) {
-        const partRes = await gowaFetch<{participants?: unknown[]} | null>('/group/participants', {
+        const partRes = await gowaFetch<{participants?: unknown[]} | unknown[] | null>('/group/participants', {
           deviceId,
           query: {group_id: g.JID},
           timeoutMs: 4_000,
         }).catch(() => null);
-        if (Array.isArray(partRes?.participants)) {
-          count = partRes.participants.length;
-        }
+        count = extractGowaArray(partRes, 'participants').length;
       }
       groupMetaCache.set(cacheKey, {
         count,
@@ -155,24 +178,166 @@ async function enrichGroupsWithCounts(
     } catch {
       groupMetaCache.set(cacheKey, {
         count: 0,
-        expiresAt: Date.now() + 15_000,
+        expiresAt: Date.now() + 20_000,
       });
     }
+  }).finally(() => {
+    backgroundEnrichInflight.delete(deviceId);
   });
+}
 
-  const resolvedNow = Date.now();
-  return normalized.map((g) => {
-    if ((g.ParticipantCount ?? 0) > 0) return g;
-    const cached = groupMetaCache.get(`${deviceId}::${g.JID}`);
-    if (cached && cached.expiresAt > resolvedNow) {
-      return {
-        ...g,
-        ...cached.patch,
-        ParticipantCount: cached.count,
-      };
+export interface UnifiedDirectoryAccountRef {
+  device_id: string;
+  device_display_name: string;
+  device_state: GowaDevice['state'];
+}
+
+export type UnifiedDirectoryEntry =
+  | {
+      kind: 'group';
+      device_id: string;
+      device_display_name: string;
+      device_state: GowaDevice['state'];
+      accounts?: UnifiedDirectoryAccountRef[];
+      jid: string;
+      name: string;
+      participant_count: number;
+      unread_count?: number;
+      group: RawGowaGroup;
     }
-    return g;
-  });
+  | {
+      kind: 'newsletter';
+      device_id: string;
+      device_display_name: string;
+      device_state: GowaDevice['state'];
+      accounts?: UnifiedDirectoryAccountRef[];
+      jid: string;
+      name: string;
+      subscribers_count: number;
+      live_active: boolean;
+      newsletter: RawGowaNewsletter;
+    };
+
+export function normalizeDirectoryJid(rawJid: string): string {
+  const normalized = normalizeWhatsAppJid(rawJid);
+  return (normalized || rawJid.trim()).toLowerCase();
+}
+
+function isFallbackJidName(name: string, jid: string): boolean {
+  const trimmed = name.trim().toLowerCase();
+  return !trimmed || trimmed === jid.trim().toLowerCase();
+}
+
+export function deduplicateUnifiedDirectoryItems(
+  rawItems: UnifiedDirectoryEntry[],
+): UnifiedDirectoryEntry[] {
+  const byKey = new Map<string, UnifiedDirectoryEntry>();
+
+  for (const rawItem of rawItems) {
+    const canonicalJid = normalizeDirectoryJid(rawItem.jid);
+    if (!canonicalJid) continue;
+
+    const dedupKey = `${rawItem.kind}::${canonicalJid}`;
+    const incomingAccounts: UnifiedDirectoryAccountRef[] =
+      rawItem.accounts && rawItem.accounts.length > 0
+        ? rawItem.accounts
+        : [
+            {
+              device_id: rawItem.device_id,
+              device_display_name: rawItem.device_display_name,
+              device_state: rawItem.device_state,
+            },
+          ];
+
+    const existing = byKey.get(dedupKey);
+    if (!existing) {
+      const uniqueAccounts = Array.from(
+        new Map(incomingAccounts.map((acc) => [acc.device_id, acc])).values(),
+      ).sort((a, b) => a.device_display_name.localeCompare(b.device_display_name, 'ar'));
+      const primary = uniqueAccounts[0] ?? {
+        device_id: rawItem.device_id,
+        device_display_name: rawItem.device_display_name,
+        device_state: rawItem.device_state,
+      };
+      byKey.set(dedupKey, {
+        ...rawItem,
+        jid: canonicalJid,
+        device_id: primary.device_id,
+        device_display_name: primary.device_display_name,
+        device_state: primary.device_state,
+        accounts: uniqueAccounts,
+      });
+      continue;
+    }
+
+    const accountMap = new Map<string, UnifiedDirectoryAccountRef>();
+    for (const acc of existing.accounts ?? []) {
+      accountMap.set(acc.device_id, acc);
+    }
+    for (const acc of incomingAccounts) {
+      if (!accountMap.has(acc.device_id)) {
+        accountMap.set(acc.device_id, acc);
+      }
+    }
+    const mergedAccounts = Array.from(accountMap.values()).sort((a, b) =>
+      a.device_display_name.localeCompare(b.device_display_name, 'ar'),
+    );
+    const primary = mergedAccounts[0] ?? {
+      device_id: existing.device_id,
+      device_display_name: existing.device_display_name,
+      device_state: existing.device_state,
+    };
+
+    const existingHasRealName = !isFallbackJidName(existing.name, existing.jid);
+    const incomingHasRealName = !isFallbackJidName(rawItem.name, canonicalJid);
+    const mergedName =
+      existingHasRealName || !incomingHasRealName ? existing.name : rawItem.name;
+
+    if (existing.kind === 'group' && rawItem.kind === 'group') {
+      const mergedCount = Math.max(existing.participant_count, rawItem.participant_count);
+      const mergedUnread = (existing.unread_count ?? 0) + (rawItem.unread_count ?? 0);
+      const preferIncomingGroup =
+        (!existingHasRealName && incomingHasRealName) ||
+        (!existing.group.Topic && Boolean(rawItem.group.Topic)) ||
+        existing.participant_count < rawItem.participant_count;
+      const baseGroup = preferIncomingGroup ? rawItem.group : existing.group;
+      byKey.set(dedupKey, {
+        ...existing,
+        device_id: primary.device_id,
+        device_display_name: primary.device_display_name,
+        device_state: primary.device_state,
+        accounts: mergedAccounts,
+        name: mergedName,
+        participant_count: mergedCount,
+        unread_count: mergedUnread,
+        group: {
+          ...baseGroup,
+          JID: baseGroup.JID || canonicalJid,
+          Name: existingHasRealName ? existing.group.Name || mergedName : mergedName,
+          Topic: existing.group.Topic || rawItem.group.Topic,
+          ParticipantCount: mergedCount,
+        },
+      });
+    } else if (existing.kind === 'newsletter' && rawItem.kind === 'newsletter') {
+      const mergedSubs = Math.max(existing.subscribers_count, rawItem.subscribers_count);
+      const preferIncomingNl =
+        (!existingHasRealName && incomingHasRealName) ||
+        existing.subscribers_count < rawItem.subscribers_count;
+      byKey.set(dedupKey, {
+        ...existing,
+        device_id: primary.device_id,
+        device_display_name: primary.device_display_name,
+        device_state: primary.device_state,
+        accounts: mergedAccounts,
+        name: mergedName,
+        subscribers_count: mergedSubs,
+        live_active: existing.live_active || rawItem.live_active,
+        newsletter: preferIncomingNl ? rawItem.newsletter : existing.newsletter,
+      });
+    }
+  }
+
+  return Array.from(byKey.values());
 }
 
 export function registerGroupRoutes(): Router {
@@ -198,7 +363,7 @@ export function registerGroupRoutes(): Router {
           assertDeviceAccess(req.user, requestedId);
         }
         const aliases = getAccountAliases();
-        const allDevices = (await gowaFetch<GowaDevice[]>('/devices')) ?? [];
+        const allDevices = (await gowaFetch<GowaDevice[]>('/devices', {timeoutMs: 10_000})) ?? [];
         const devices = filterAllowedDevices(req.user!, allDevices);
         const targetDevices =
           selectedDeviceSet.size > 0
@@ -206,33 +371,7 @@ export function registerGroupRoutes(): Router {
             : devices;
 
       const deviceErrors: Array<{device_id: string; display_name: string; message: string}> = [];
-      const items: Array<
-        | {
-            kind: 'group';
-            device_id: string;
-            device_display_name: string;
-            device_state: GowaDevice['state'];
-            jid: string;
-            name: string;
-            participant_count: number;
-            unread_count?: number;
-            group: RawGowaGroup;
-          }
-        | {
-            kind: 'newsletter';
-            device_id: string;
-            device_display_name: string;
-            device_state: GowaDevice['state'];
-            jid: string;
-            name: string;
-            subscribers_count: number;
-            live_active: boolean;
-            newsletter: RawGowaNewsletter;
-          }
-      > = [];
-
-      let groupsCount = 0;
-      let newslettersCount = 0;
+      const rawItems: UnifiedDirectoryEntry[] = [];
 
       await Promise.all(
         targetDevices.map(async (dev) => {
@@ -242,18 +381,17 @@ export function registerGroupRoutes(): Router {
           }
 
           const [groupsResult, newslettersResult, liveUpdatesResult] = await Promise.all([
-            gowaFetch<{data?: RawGowaGroup[]} | null>('/user/my/groups', {deviceId: dev.id})
-              .then((res) => ({ok: true as const, data: res?.data ?? []}))
+            gowaFetch<unknown>('/user/my/groups', {deviceId: dev.id, timeoutMs: 10_000})
+              .then((res) => ({ok: true as const, data: extractGowaArray<RawGowaGroup>(res, 'groups', 'data')}))
               .catch((err) => ({ok: false as const, err})),
-            gowaFetch<{data?: RawGowaNewsletter[]} | null>('/user/my/newsletters', {
-              deviceId: dev.id,
-            })
-              .then((res) => res?.data ?? [])
-              .catch(() => [] as RawGowaNewsletter[]),
-            gowaFetch<{data?: Array<{jid: string}>} | null>('/newsletter/live-updates', {
-              deviceId: dev.id,
-            })
-              .then((res) => res?.data ?? [])
+            gowaFetch<unknown>('/user/my/newsletters', {deviceId: dev.id, timeoutMs: 10_000})
+              .then((res) => ({
+                ok: true as const,
+                data: extractGowaArray<RawGowaNewsletter>(res, 'newsletters', 'data'),
+              }))
+              .catch((err) => ({ok: false as const, err})),
+            gowaFetch<unknown>('/newsletter/live-updates', {deviceId: dev.id, timeoutMs: 6_000})
+              .then((res) => extractGowaArray<{jid: string}>(res, 'data'))
               .catch(() => [] as Array<{jid: string}>),
           ]);
 
@@ -268,11 +406,12 @@ export function registerGroupRoutes(): Router {
               message: msg,
             });
           } else {
-            const enrichedGroups = await enrichGroupsWithCounts(dev.id, groupsResult.data);
-            for (const g of enrichedGroups) {
+            const {groups: cachedGroups, missing} = hydrateGroupsFromCache(dev.id, groupsResult.data);
+            scheduleBackgroundGroupEnrichment(dev.id, missing);
+            for (const g of cachedGroups) {
+              if (!g?.JID) continue;
               const memberCount = resolveGroupMemberCount(g);
-              groupsCount += 1;
-              items.push({
+              rawItems.push({
                 kind: 'group',
                 device_id: dev.id,
                 device_display_name: displayName,
@@ -285,37 +424,58 @@ export function registerGroupRoutes(): Router {
             }
           }
 
-          const liveSet = new Set(liveUpdatesResult.map((l) => l.jid));
-          for (const nl of newslettersResult) {
-            if (!nl?.id) continue;
-            const subs = nl.thread_metadata?.subscribers_count ?? 0;
-            newslettersCount += 1;
-            items.push({
-              kind: 'newsletter',
-              device_id: dev.id,
-              device_display_name: displayName,
-              device_state: dev.state,
-              jid: nl.id,
-              name: nl.thread_metadata?.name?.text?.trim() || nl.id,
-              subscribers_count: subs,
-              live_active: liveSet.has(nl.id),
-              newsletter: nl,
-            });
+          if (!newslettersResult.ok) {
+            if (groupsResult.ok) {
+              const msg =
+                newslettersResult.err instanceof GowaError
+                  ? newslettersResult.err.message
+                  : 'تعذر جلب القنوات';
+              deviceErrors.push({
+                device_id: dev.id,
+                display_name: displayName,
+                message: msg,
+              });
+            }
+          } else {
+            const liveSet = new Set(liveUpdatesResult.map((l) => l.jid));
+            for (const nl of newslettersResult.data) {
+              if (!nl?.id) continue;
+              const subs = nl.thread_metadata?.subscribers_count ?? 0;
+              rawItems.push({
+                kind: 'newsletter',
+                device_id: dev.id,
+                device_display_name: displayName,
+                device_state: dev.state,
+                jid: nl.id,
+                name: nl.thread_metadata?.name?.text?.trim() || nl.id,
+                subscribers_count: subs,
+                live_active: liveSet.has(nl.id),
+                newsletter: nl,
+              });
+            }
           }
         }),
       );
-
-      items.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
 
       const unreadSummary = getGroupUnreadSummaryForUser(
         req.user!,
         targetDevices.map((d) => d.id),
       );
-      for (const item of items) {
+      for (const item of rawItems) {
         if (item.kind === 'group') {
-          item.unread_count = unreadSummary.byKey.get(`${item.device_id}::${item.jid}`) ?? 0;
+          const canonicalJid = normalizeDirectoryJid(item.jid);
+          item.unread_count =
+            unreadSummary.byKey.get(`${item.device_id}::${canonicalJid}`) ??
+            unreadSummary.byKey.get(`${item.device_id}::${item.jid}`) ??
+            0;
         }
       }
+
+      const items = deduplicateUnifiedDirectoryItems(rawItems);
+      items.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+
+      const groupsCount = items.filter((item) => item.kind === 'group').length;
+      const newslettersCount = items.filter((item) => item.kind === 'newsletter').length;
 
       res.json({
         code: 'SUCCESS',
@@ -398,8 +558,15 @@ export function registerGroupRoutes(): Router {
       const deviceId = decodeRouteParam(req.params.deviceId);
       try {
         assertDeviceAccess(req.user, deviceId);
-        const data = await gowaFetch<{data?: RawGowaGroup[]} | null>('/user/my/groups', {deviceId});
-        const enriched = await enrichGroupsWithCounts(deviceId, data?.data ?? []);
+        const data = await gowaFetch<{data?: RawGowaGroup[]; groups?: RawGowaGroup[]} | RawGowaGroup[] | null>(
+          '/user/my/groups',
+          {deviceId, timeoutMs: 10_000},
+        );
+        const {groups: enriched, missing} = hydrateGroupsFromCache(
+          deviceId,
+          extractGowaArray<RawGowaGroup>(data, 'groups'),
+        );
+        scheduleBackgroundGroupEnrichment(deviceId, missing);
         res.json({code: 'SUCCESS', message: 'ok', results: enriched});
       } catch (err) {
         handleRouteError(res, err);

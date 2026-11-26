@@ -10,6 +10,7 @@ import {
   isLifecycleApplicableJid,
   type ChatRedactionReason,
 } from './services/chat-lifecycle.ts';
+import {isCallOfferEventCode} from './services/call-auto-reject.ts';
 import {readGowaEventChatJid, readGowaIncomingMessageId} from './services/chat-sync.ts';
 import {
   asReactionRecord,
@@ -111,6 +112,21 @@ export function shouldDeliverWsEventToUser(
   }
   if (code === 'CHAT_CLOSE_RATING_UPDATED') {
     return {allowed: Boolean(deviceId) && hasPermission(user, 'accounts', 'read')};
+  }
+  if (code === 'CALL_AUTO_REJECTED') {
+    return {
+      allowed: Boolean(deviceId) && hasPermission(user, 'misc', 'calls.reject'),
+    };
+  }
+  if (isCallOfferEventCode(code)) {
+    return {
+      allowed: Boolean(deviceId) && hasAnyPermission(user, ['misc:calls.reject', 'chats:read']),
+    };
+  }
+  if (code === 'CHAT_DAILY_RESET') {
+    return {
+      allowed: Boolean(deviceId) && hasAnyPermission(user, ['chats:read', 'accounts:read']),
+    };
   }
 
   if (code === 'CONVERSATION_NOTE_UPDATED') {

@@ -5,6 +5,7 @@ import {
   Download,
   ExternalLink,
   FileText,
+  Film,
   Image as ImageIcon,
   Loader2,
   RefreshCw,
@@ -17,12 +18,14 @@ import {Dialog} from '@/components/ui/dialog';
 import {formatBytes} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {getCachedMedia, getOrFetchCachedMedia} from '@/lib/media-cache';
 import {
   messageMediaQuery,
   normalizeDownloadedMime,
   resolveChatMediaFilename,
   saveBlobSafely,
 } from '@/lib/media-download';
+import {useAuthStore} from '@/stores/auth';
 
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|webp|gif|bmp|avif)$/i;
 const AUTO_MEDIA_MAX_BYTES = 20 * 1024 * 1024;
@@ -60,14 +63,21 @@ function shouldAutoFetch(message: MessageInfo): boolean {
 export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceId: string}) {
   const {lang, t} = useI18n();
   const queryClient = useQueryClient();
+  const authToken = useAuthStore((s) => s.token);
   const containerRef = useRef<HTMLDivElement>(null);
   const isLink = isLinkMessage(message);
   const linkHref = isLink ? normalizeHref(message.url || message.content) : null;
   const autoFetch = shouldAutoFetch(message);
-  const [inView, setInView] = useState(!autoFetch);
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [blobContentType, setBlobContentType] = useState<string | undefined>(undefined);
+  const messageKey = `${deviceId}::${message.chat_jid}::${message.id}`;
+  const initialCached = autoFetch ? getCachedMedia(messageKey) : null;
+
+  const [inView, setInView] = useState(!autoFetch || Boolean(initialCached));
+  const [blobUrl, setBlobUrl] = useState<string | null>(() => initialCached?.objectUrl ?? null);
+  const [blobContentType, setBlobContentType] = useState<string | undefined>(
+    () => initialCached?.contentType,
+  );
   const [blobError, setBlobError] = useState<string | null>(null);
+  const [streamFallback, setStreamFallback] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
 
   const [directDownloading, setDirectDownloading] = useState(false);
@@ -75,20 +85,22 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
   const [directError, setDirectError] = useState<string | null>(null);
   const [resolvedFileSize, setResolvedFileSize] = useState<number | null>(null);
   const cachedDirectFileRef = useRef<{blob: Blob; filename: string} | null>(null);
-  const messageKey = `${deviceId}::${message.chat_jid}::${message.id}`;
   const activeMessageKeyRef = useRef(messageKey);
   activeMessageKeyRef.current = messageKey;
 
   useEffect(() => {
+    const cached = autoFetch ? getCachedMedia(messageKey) : null;
     cachedDirectFileRef.current = null;
-    setBlobUrl(null);
-    setBlobContentType(undefined);
+    setInView(!autoFetch || Boolean(cached));
+    setBlobUrl(cached?.objectUrl ?? null);
+    setBlobContentType(cached?.contentType);
     setBlobError(null);
+    setStreamFallback(false);
     setDirectDownloading(false);
     setDirectDownloaded(false);
     setDirectError(null);
     setResolvedFileSize(null);
-  }, [messageKey]);
+  }, [autoFetch, messageKey]);
 
   useEffect(() => {
     if (!autoFetch || inView) return;
@@ -113,38 +125,42 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
   const mediaQuery = messageMediaQuery(deviceId, message.chat_jid, message.id);
   const query = useQuery({...mediaQuery, enabled: autoFetch && inView});
   const resolvedPath = query.data?.proxy_url || '';
+  const isImage = isImageAttachment(message, query.data?.filename);
+  const isStreamable = !isImage && (message.media_type === 'video' || message.media_type === 'audio');
+  // When running with cookie auth, stream video/audio directly so HTTP Range (206) starts playback immediately.
+  // If Bearer token auth is required or direct tag playback errors, fetch and cache via authorized http client.
+  const canStreamDirectly = isStreamable && Boolean(resolvedPath) && !authToken && !streamFallback;
 
   useEffect(() => {
     if (!autoFetch || !resolvedPath) return;
+    const existing = getCachedMedia(messageKey);
+    if (existing) {
+      setBlobUrl(existing.objectUrl);
+      setBlobContentType(existing.contentType);
+      setBlobError(null);
+      return;
+    }
+    if (canStreamDirectly) return;
+
     let active = true;
-    let createdUrl = '';
-    const controller = new AbortController();
     setBlobError(null);
 
-    void fetchAuthorizedMediaBytes(resolvedPath, controller.signal)
-      .then(({bytes, contentType}) => {
-        const blob = new Blob([bytes], {type: normalizeDownloadedMime(contentType)});
-        const objectUrl = URL.createObjectURL(blob);
-        if (!active) {
-          URL.revokeObjectURL(objectUrl);
-          return;
-        }
-        createdUrl = objectUrl;
-        setBlobContentType(contentType);
-        setBlobUrl(objectUrl);
+    void getOrFetchCachedMedia(messageKey, resolvedPath)
+      .then((entry) => {
+        if (!active) return;
+        setBlobContentType(entry.contentType);
+        setBlobUrl(entry.objectUrl);
       })
       .catch((err) => {
-        if (active && !controller.signal.aborted) {
+        if (active) {
           setBlobError(toApiError(err).message);
         }
       });
 
     return () => {
       active = false;
-      controller.abort();
-      if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [autoFetch, resolvedPath]);
+  }, [autoFetch, canStreamDirectly, messageKey, resolvedPath]);
 
   const handleDirectDownload = async () => {
     if (directDownloading) return;
@@ -184,7 +200,6 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     }
   };
 
-  const isImage = isImageAttachment(message, query.data?.filename);
   const label =
     t.chats.mediaLabels[message.media_type] || message.media_type || t.chats.mediaLabels.file;
 
@@ -267,29 +282,46 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     );
   }
 
-  if (!inView || query.isLoading || (!blobUrl && !query.isError && !blobError)) {
+  const playbackSrc = blobUrl ?? (canStreamDirectly ? resolvedPath : null);
+
+  if (
+    !playbackSrc &&
+    (!inView || query.isLoading || (!query.isError && !blobError))
+  ) {
     if (isImage) {
       return (
         <div
           ref={containerRef}
-          className="mt-2 flex h-40 w-52 items-center justify-center rounded-lg border border-border bg-muted/60 text-muted-foreground"
+          aria-label={t.chats.loadingImage}
+          className="mt-2 flex h-44 w-56 animate-pulse items-center justify-center rounded-lg border border-border/60 bg-muted/80 text-muted-foreground"
         >
-          <div className="flex flex-col items-center gap-1.5 text-xs">
-            <ImageIcon className="size-5 opacity-60" />
-            <span>{t.chats.loadingImage}</span>
-          </div>
+          <ImageIcon className="size-6 opacity-50" />
+        </div>
+      );
+    }
+    if (message.media_type === 'video') {
+      return (
+        <div
+          ref={containerRef}
+          aria-label={t.chats.loadingMedia(label)}
+          className="mt-2 flex h-44 w-64 animate-pulse items-center justify-center rounded-lg border border-border/60 bg-muted/80 text-muted-foreground"
+        >
+          <Film className="size-6 opacity-50" />
         </div>
       );
     }
     return (
-      <div ref={containerRef} className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />
-        <span>{t.chats.loadingMedia(label)}</span>
+      <div
+        ref={containerRef}
+        aria-label={t.chats.loadingMedia(label)}
+        className="mt-2 flex h-11 w-64 animate-pulse items-center gap-2 rounded-lg border border-border/60 bg-muted/80 px-3 text-muted-foreground"
+      >
+        <Loader2 className="size-4 animate-spin opacity-60" />
       </div>
     );
   }
 
-  if (query.isError || blobError || !query.data || !blobUrl) {
+  if (query.isError || blobError || !playbackSrc) {
     return (
       <div
         ref={containerRef}
@@ -304,6 +336,7 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
           className="h-6 px-2 text-xs"
           onClick={() => {
             setBlobError(null);
+            setStreamFallback(false);
             void query.refetch();
           }}
         >
@@ -314,7 +347,7 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     );
   }
 
-  const filename = resolveChatMediaFilename(message, blobContentType, query.data.filename);
+  const filename = resolveChatMediaFilename(message, blobContentType, query.data?.filename);
 
   if (isImage) {
     return (
@@ -326,8 +359,10 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
           aria-label={t.chats.enlargeMediaAria(filename)}
         >
           <img
-            src={blobUrl}
+            src={playbackSrc}
             alt={filename}
+            decoding="async"
+            loading="lazy"
             referrerPolicy="no-referrer"
             className="max-h-56 w-auto max-w-full object-cover transition-opacity hover:opacity-95"
           />
@@ -341,13 +376,13 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
         >
           <div className="flex flex-col items-center gap-3">
             <img
-              src={blobUrl}
+              src={playbackSrc}
               alt={filename}
               referrerPolicy="no-referrer"
               className="max-h-[70vh] w-auto max-w-full rounded-lg border border-border object-contain"
             />
             <a
-              href={blobUrl}
+              href={playbackSrc}
               download={filename}
               className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium text-foreground hover:bg-muted"
             >
@@ -364,8 +399,16 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     return (
       <div ref={containerRef} className="mt-2">
         <video
-          src={blobUrl}
+          src={playbackSrc}
           controls
+          preload="metadata"
+          onError={() => {
+            if (!blobUrl && canStreamDirectly) {
+              setStreamFallback(true);
+            } else {
+              setBlobError(t.chats.mediaLoadFailed);
+            }
+          }}
           className="max-h-60 max-w-full rounded-lg border border-border"
         />
       </div>
@@ -375,7 +418,19 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
   if (message.media_type === 'audio') {
     return (
       <div ref={containerRef} className="mt-2">
-        <audio src={blobUrl} controls className="max-w-full" />
+        <audio
+          src={playbackSrc}
+          controls
+          preload="metadata"
+          onError={() => {
+            if (!blobUrl && canStreamDirectly) {
+              setStreamFallback(true);
+            } else {
+              setBlobError(t.chats.mediaLoadFailed);
+            }
+          }}
+          className="max-w-full"
+        />
       </div>
     );
   }

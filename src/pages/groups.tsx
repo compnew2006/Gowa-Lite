@@ -66,7 +66,7 @@ export default function GroupsPage() {
     const paramDevice = searchParams.get('device')?.trim() || '';
     const paramJid = searchParams.get('jid')?.trim() || '';
     if (paramDevice && paramJid && paramJid.toLowerCase().endsWith('@g.us')) {
-      setSelectedKey(`group::${paramDevice}::${paramJid}`);
+      setSelectedKey(`group::${paramJid.toLowerCase()}`);
       setMobileShowDetail(true);
     }
   }, [searchParams]);
@@ -89,6 +89,7 @@ export default function GroupsPage() {
       listUnifiedGroups({
         deviceIds: selectedDeviceIds.length > 0 ? selectedDeviceIds : undefined,
       }),
+    retry: 1,
     refetchInterval: 30_000,
   });
 
@@ -194,7 +195,7 @@ export default function GroupsPage() {
       setNewTitle('');
       setNewParticipants('');
       if (res?.group_id && resolvedTargetDeviceId) {
-        setSelectedKey(`group::${resolvedTargetDeviceId}::${res.group_id}`);
+        setSelectedKey(`group::${res.group_id.trim().toLowerCase()}`);
         setMobileShowDetail(true);
       }
       void queryClient.invalidateQueries({queryKey: ['unified-groups']});
@@ -209,7 +210,7 @@ export default function GroupsPage() {
       setJoinOpen(false);
       setJoinLink('');
       if (res?.group_id && resolvedTargetDeviceId) {
-        setSelectedKey(`group::${resolvedTargetDeviceId}::${res.group_id}`);
+        setSelectedKey(`group::${res.group_id.trim().toLowerCase()}`);
         setMobileShowDetail(true);
       }
       void queryClient.invalidateQueries({queryKey: ['unified-groups']});
@@ -269,6 +270,7 @@ export default function GroupsPage() {
             groupsCount={groupsCount}
             newslettersCount={newslettersCount}
             accounts={accounts}
+            deviceErrors={query.data?.device_errors ?? []}
             selectedKey={selectedKey}
             selectedDeviceIds={selectedDeviceIds}
             kindFilter={kindFilter}
@@ -288,6 +290,7 @@ export default function GroupsPage() {
               if (item.kind === 'group') {
                 const clearedCount = item.unread_count ?? 0;
                 if (clearedCount > 0) {
+                  const targetJidLower = item.jid.trim().toLowerCase();
                   queryClient.setQueriesData<UnifiedGroupsResponse>(
                     {queryKey: ['unified-groups']},
                     (oldData) => {
@@ -297,8 +300,7 @@ export default function GroupsPage() {
                         total_unread: Math.max(0, (oldData.total_unread ?? 0) - clearedCount),
                         items: oldData.items.map((entry) =>
                           entry.kind === 'group' &&
-                          entry.device_id === item.device_id &&
-                          entry.jid === item.jid
+                          entry.jid.trim().toLowerCase() === targetJidLower
                             ? {...entry, unread_count: 0}
                             : entry,
                         ),
@@ -313,11 +315,15 @@ export default function GroupsPage() {
                         : oldData,
                   );
                 }
-                void markUnifiedGroupRead(item.device_id, item.jid)
-                  .then(() => {
-                    void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
-                  })
-                  .catch(() => {});
+                const targetDeviceIds =
+                  item.accounts && item.accounts.length > 0
+                    ? item.accounts.map((a) => a.device_id)
+                    : [item.device_id];
+                void Promise.all(
+                  targetDeviceIds.map((devId) => markUnifiedGroupRead(devId, item.jid).catch(() => {})),
+                ).then(() => {
+                  void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
+                });
               }
             }}
             onOpenCreate={() => {
@@ -341,14 +347,14 @@ export default function GroupsPage() {
           selectedItem ? (
             selectedItem.kind === 'group' ? (
               <GroupWorkspacePanel
-                key={directoryItemKey(selectedItem)}
+                key={`${directoryItemKey(selectedItem)}::${selectedItem.device_id}`}
                 item={selectedItem}
                 onBack={() => setMobileShowDetail(false)}
                 onChanged={() => void queryClient.invalidateQueries({queryKey: ['unified-groups']})}
               />
             ) : (
               <NewsletterWorkspacePanel
-                key={directoryItemKey(selectedItem)}
+                key={`${directoryItemKey(selectedItem)}::${selectedItem.device_id}`}
                 item={selectedItem}
                 onBack={() => setMobileShowDetail(false)}
                 onChanged={() => void queryClient.invalidateQueries({queryKey: ['unified-groups']})}

@@ -3,6 +3,7 @@ import {useMutation, useQueryClient} from '@tanstack/react-query';
 import {
   ArrowLeft,
   ArrowRight,
+  Clock,
   KeyRound,
   LogOut,
   MessagesSquare,
@@ -25,6 +26,7 @@ import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import {AccountProfilePanel} from '@/features/accounts/account-profile-panel';
 import {AccountCloseRatingPanel} from '@/features/accounts/account-close-rating-panel';
+import {AccountDailyResetPanel} from '@/features/accounts/account-daily-reset-panel';
 import {RejectCallPanel} from '@/features/accounts/reject-call-panel';
 import {accountDotTone} from '@/features/chat/chat-list';
 import {formatDate} from '@/lib/format';
@@ -33,7 +35,7 @@ import {useI18n} from '@/lib/i18n';
 import {cn} from '@/lib/utils';
 import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
-type AccountWorkspaceTab = 'connection' | 'profile' | 'tools' | 'ratings';
+type AccountWorkspaceTab = 'connection' | 'profile' | 'tools' | 'ratings' | 'dailyReset';
 
 const stateToneClass: Record<DeviceState, string> = {
   logged_in: 'text-emerald-700 dark:text-emerald-400',
@@ -192,7 +194,10 @@ export function AccountWorkspacePanel({
             {id: 'connection' as const, label: t.accounts.tabConnection, icon: Smartphone},
             {id: 'profile' as const, label: t.accounts.tabProfile, icon: Shield},
             ...(canReadAccounts
-              ? [{id: 'ratings' as const, label: t.accounts.closeRatings.tab, icon: Star}]
+              ? [
+                  {id: 'ratings' as const, label: t.accounts.closeRatings.tab, icon: Star},
+                  {id: 'dailyReset' as const, label: t.accounts.dailyReset.tab, icon: Clock},
+                ]
               : []),
             ...(canRejectCalls
               ? [{id: 'tools' as const, label: t.accounts.tabTools, icon: Wrench}]
@@ -333,6 +338,9 @@ export function AccountWorkspacePanel({
           {activeTab === 'tools' && canRejectCalls && <RejectCallPanel deviceId={device.id} />}
           {activeTab === 'ratings' && canReadAccounts && (
             <AccountCloseRatingPanel key={device.id} deviceId={device.id} canWrite={canWriteAccounts} />
+          )}
+          {activeTab === 'dailyReset' && canReadAccounts && (
+            <AccountDailyResetPanel key={device.id} deviceId={device.id} canWrite={canWriteAccounts} />
           )}
         </div>
       </div>

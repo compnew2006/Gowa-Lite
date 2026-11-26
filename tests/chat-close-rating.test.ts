@@ -206,3 +206,67 @@ it('captures ratings when scoped message history catches up before the webhook a
     .some((rating: {score: number}) => rating.score === 3));
   assert.equal((await results(await api(chatPath(jid, 'lifecycle')))).assignment.status, 'closed');
 });
+
+it('supports custom rating prompt per account and attributes ratings to the assigned agent across accounts', async () => {
+  const settings = '/devices/rating-line/close-ratings';
+  const initial = await results(await api(settings));
+  assert.equal(initial.is_custom_prompt, false);
+  assert.match(initial.prompt_message, /1.*5/s);
+  assert.equal((await api(settings, 'PUT', {})).status, 400);
+
+  const customPrompt = 'نرحب برأيك! أرسل رقمًا من 1 إلى 5 لتقييم الموظف.';
+  const updated = await results(await api(settings, 'PUT', {prompt_message: customPrompt}));
+  assert.equal(updated.is_custom_prompt, true);
+  assert.equal(updated.prompt_message, customPrompt);
+
+  // Create an agent user who handles and owns the conversation.
+  const agent = await results(await api('/users', 'POST', {
+    display_name: 'سارة علي',
+    username: 'sara.rating',
+    password: 'AgentPassword123',
+    role: 'agent',
+  }));
+  const agentToken = (await results(await api('/auth/login', 'POST', {
+    username: 'sara.rating',
+    password: 'AgentPassword123',
+  }))).token;
+
+  const jid = '201000000105@s.whatsapp.net';
+  await results(await api(chatPath(jid, 'claim'), 'POST', {}, agentToken));
+
+  // Admin (supervisor) closes the chat on the agent's behalf; rating must still belong to the agent.
+  const sendsBefore = sends.length;
+  const closed = await results(await api(chatPath(jid, 'close'), 'POST'));
+  assert.equal(closed.rating_prompt, 'sent');
+  assert.equal(sends.length, sendsBefore + 1);
+  assert.equal(sends[sends.length - 1].message, customPrompt);
+
+  assert.equal((await incoming(jid, 'rating-agent-1', '4')).status, 204);
+
+  const accountReport = await results(await api(settings));
+  const agentEntry = accountReport.by_user.find((entry: {user_id: number | null}) => entry.user_id === agent.id);
+  assert.ok(agentEntry);
+  assert.equal(agentEntry.count, 1);
+  assert.equal(agentEntry.average, 4);
+  assert.equal(accountReport.recent[0].user_id, agent.id);
+  assert.equal(accountReport.recent[0].user_name, 'سارة علي');
+
+  const usersSummary = await results(await api('/users/ratings'));
+  const saraSummary = usersSummary.find((entry: {user_id: number}) => entry.user_id === agent.id);
+  assert.deepEqual(saraSummary, {user_id: agent.id, count: 1, average: 4});
+
+  const saraDetail = await results(await api(`/users/${agent.id}/ratings`));
+  assert.equal(saraDetail.count, 1);
+  assert.equal(saraDetail.average, 4);
+  assert.equal(saraDetail.by_account[0].device_id, deviceId);
+  assert.equal(saraDetail.recent[0].score, 4);
+
+  const meRatings = await results(await api('/me/ratings', 'GET', undefined, agentToken));
+  assert.equal(meRatings.count, 1);
+  assert.equal(meRatings.average, 4);
+
+  // Resetting prompt restores the default bilingual prompt.
+  const reset = await results(await api(settings, 'PUT', {prompt_message: ''}));
+  assert.equal(reset.is_custom_prompt, false);
+  assert.equal(reset.prompt_message, reset.default_prompt);
+});

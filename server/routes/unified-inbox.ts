@@ -148,7 +148,10 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
           query.offset > 0 &&
           !query.isSearchMode &&
           !query.hasMedia &&
-          (query.requestedTab === 'closed' || query.requestedTab === 'me');
+          (query.requestedTab === 'closed' ||
+            query.requestedTab === 'me' ||
+            query.requestedTab === 'open' ||
+            query.requestedTab === 'private');
 
         let assignmentsMap: Map<string, ChatAssignmentInfo> = skipRemoteScan
           ? new Map()
@@ -178,9 +181,9 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
         }
 
         const effectiveMeOwnerId = query.isSupervisor
-          ? query.assignedFilterUserId === req.user!.id || typeof query.assignedFilterUserId === 'number'
+          ? query.assignedFilterUserId !== undefined
             ? query.assignedFilterUserId
-            : null
+            : req.user!.id
           : req.user!.id;
 
         const tabCounts = computeUnifiedTabCounts({
@@ -192,6 +195,7 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
           anyDeviceHasMore,
           skipRemoteScan,
           effectiveMeOwnerId,
+          userId: req.user!.id,
           query,
         });
 
@@ -1205,6 +1209,41 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
   );
 
   // Media & Avatars
+  const MEDIA_RESOLVE_TTL_MS = 5 * 60_000;
+  const MAX_MEDIA_RESOLVE_ENTRIES = 500;
+  interface CachedMediaResolution {
+    filePath: string;
+    mediaType: string;
+    filename: string;
+    fileSize: number;
+    downloaded: GowaDownloadedMedia | null;
+    expiresAt: number;
+  }
+  const mediaResolveCache = new Map<string, CachedMediaResolution>();
+  const mediaResolveInflight = new Map<string, Promise<CachedMediaResolution>>();
+
+  const readCachedMediaResolution = (key: string): CachedMediaResolution | null => {
+    const entry = mediaResolveCache.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+      mediaResolveCache.delete(key);
+      return null;
+    }
+    mediaResolveCache.delete(key);
+    mediaResolveCache.set(key, entry);
+    return entry;
+  };
+
+  const writeCachedMediaResolution = (key: string, entry: CachedMediaResolution): void => {
+    if (mediaResolveCache.has(key)) mediaResolveCache.delete(key);
+    while (mediaResolveCache.size >= MAX_MEDIA_RESOLVE_ENTRIES) {
+      const oldestKey = mediaResolveCache.keys().next().value;
+      if (!oldestKey) break;
+      mediaResolveCache.delete(oldestKey);
+    }
+    mediaResolveCache.set(key, entry);
+  };
+
   router.get(
     '/api/unified/media/download',
     requireAuth,
@@ -1224,37 +1263,63 @@ export function registerUnifiedInboxRoutes(wsBridge: GowaWsBridge): Router {
           throw new GowaError(403, 'FORBIDDEN', 'ليس لديك صلاحية الوصول إلى هذه الوسائط');
         }
         assertChatContentAccess(req.user!, deviceId, phone);
-        const cached = getCachedMessage(deviceId, normalizeWhatsAppJid(phone) || phone, messageId);
+        const normalizedChatJid = normalizeWhatsAppJid(phone) || phone;
+        const cached = getCachedMessage(deviceId, normalizedChatJid, messageId);
         if (cached?.is_revoked) {
           throw new GowaError(404, 'MEDIA_NOT_AVAILABLE', 'ملف الوسائط غير متوفر على الخادم حاليًا');
         }
-        let fallbackUrl = cached?.url || '';
-        const downloaded = await gowaFetch<GowaDownloadedMedia | null>(
-          `/message/${encodeURIComponent(messageId)}/download`,
-          {deviceId, query: {phone}, timeoutMs: 25_000},
-        ).catch(async (err) => {
-          if (!fallbackUrl && phone.toLowerCase() === 'status@broadcast') {
-            const recent = await gowaFetch<{data?: GowaMessageInfo[]}>('/chat/status@broadcast/messages', {
-              deviceId, query: {limit: 50, offset: 0},
+
+        const cacheKey = `${deviceId}::${normalizedChatJid}::${messageId}`;
+        let resolved = readCachedMediaResolution(cacheKey);
+        if (!resolved) {
+          let pending = mediaResolveInflight.get(cacheKey);
+          if (!pending) {
+            pending = (async () => {
+              let fallbackUrl = cached?.url || '';
+              const downloaded = await gowaFetch<GowaDownloadedMedia | null>(
+                `/message/${encodeURIComponent(messageId)}/download`,
+                {deviceId, query: {phone}, timeoutMs: 25_000},
+              ).catch(async (err) => {
+                if (!fallbackUrl && phone.toLowerCase() === 'status@broadcast') {
+                  const recent = await gowaFetch<{data?: GowaMessageInfo[]}>('/chat/status@broadcast/messages', {
+                    deviceId, query: {limit: 50, offset: 0},
+                  });
+                  fallbackUrl = recent?.data?.find((item) => item.id === messageId && !item.is_revoked)?.url || '';
+                }
+                if (!fallbackUrl) throw err;
+                return null;
+              });
+              const path = downloaded?.file_path || downloaded?.file_url ||
+                (fallbackUrl.includes('mmg.whatsapp.net') ? '' : fallbackUrl);
+              if (!path) {
+                throw new GowaError(404, 'MEDIA_NOT_AVAILABLE', 'ملف الوسائط غير متوفر على الخادم حاليًا');
+              }
+              const entry: CachedMediaResolution = {
+                filePath: path,
+                mediaType: cached?.media_type || '',
+                filename: cached?.filename || '',
+                fileSize: cached?.file_length || 0,
+                downloaded,
+                expiresAt: Date.now() + MEDIA_RESOLVE_TTL_MS,
+              };
+              writeCachedMediaResolution(cacheKey, entry);
+              return entry;
+            })().finally(() => {
+              mediaResolveInflight.delete(cacheKey);
             });
-            fallbackUrl = recent?.data?.find((item) => item.id === messageId && !item.is_revoked)?.url || '';
+            mediaResolveInflight.set(cacheKey, pending);
           }
-          if (!fallbackUrl) throw err;
-          return null;
-        });
-        const path = downloaded?.file_path || downloaded?.file_url ||
-          (fallbackUrl.includes('mmg.whatsapp.net') ? '' : fallbackUrl);
-        if (!path) {
-          throw new GowaError(404, 'MEDIA_NOT_AVAILABLE', 'ملف الوسائط غير متوفر على الخادم حاليًا');
+          resolved = await pending;
         }
+
         res.json({code: 'SUCCESS', message: 'ok', results: {
           message_id: messageId,
-          media_type: cached?.media_type || '',
-          filename: cached?.filename || '',
-          file_size: cached?.file_length || 0,
-          ...downloaded,
-          file_path: path,
-          proxy_url: buildGowaAssetUrl(GOWA_MEDIA_ROUTE, deviceId, phone, path),
+          media_type: resolved.mediaType,
+          filename: resolved.filename,
+          file_size: resolved.fileSize,
+          ...resolved.downloaded,
+          file_path: resolved.filePath,
+          proxy_url: buildGowaAssetUrl(GOWA_MEDIA_ROUTE, deviceId, phone, resolved.filePath),
         }});
       } catch (err) {
         handleRouteError(res, err);

@@ -17,6 +17,7 @@ import {registerRoleRoutes} from './server/routes/roles.ts';
 import {registerScheduleRoutes} from './server/routes/schedules.ts';
 import {registerUnifiedInboxRoutes} from './server/routes/unified-inbox.ts';
 import {resumeQueuedChatCloseRatings} from './server/services/chat-close-rating.ts';
+import {startDailyChatResetProcessor} from './server/services/chat-daily-reset.ts';
 import {parseTrustProxySetting} from './server/security.ts';
 import {handleUpstreamGowaEvent} from './server/services/chat-sync.ts';
 import {GowaWsBridge} from './server/ws-bridge.ts';
@@ -69,7 +70,7 @@ async function startServer(): Promise<void> {
   app.use(registerUnifiedInboxRoutes(wsBridge));
   app.use(registerScheduleRoutes());
   app.use(registerGroupRoutes());
-  app.use(registerAccountRoutes());
+  app.use(registerAccountRoutes(wsBridge));
   app.use(registerMiscRoutes());
 
   app.use('/api', (_req, res) => {
@@ -174,11 +175,14 @@ async function startServer(): Promise<void> {
   }, DB_MAINTENANCE_INTERVAL_MS);
   maintenanceTimer.unref?.();
 
+  const stopDailyResetProcessor = startDailyChatResetProcessor(wsBridge);
+
   let shuttingDown = false;
   const shutdown = () => {
     if (shuttingDown) return;
     shuttingDown = true;
     clearInterval(maintenanceTimer);
+    stopDailyResetProcessor();
     wsBridge.shutdown();
     server.close(() => {
       closeDatabaseSafely();

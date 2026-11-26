@@ -231,6 +231,9 @@ db.exec(`
     closed_event_id INTEGER PRIMARY KEY,
     device_id TEXT NOT NULL,
     chat_jid TEXT NOT NULL,
+    rated_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    rated_user_name TEXT NOT NULL DEFAULT '',
+    closed_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     status TEXT NOT NULL CHECK(status IN ('queued', 'sending', 'pending', 'rated', 'expired', 'failed')),
     expires_at INTEGER NOT NULL,
     sent_at INTEGER,
@@ -459,6 +462,33 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_chat_list_items_chat
     ON chat_list_items(device_id, chat_jid);
+
+  CREATE TABLE IF NOT EXISTS device_daily_reset_settings (
+    device_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    reset_hour INTEGER NOT NULL DEFAULT 2 CHECK(reset_hour BETWEEN 0 AND 23),
+    timezone TEXT NOT NULL DEFAULT '',
+    last_run_date TEXT NOT NULL DEFAULT '',
+    last_run_at TEXT,
+    last_reset_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS call_auto_reject_logs (
+    device_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    caller_jid TEXT NOT NULL,
+    caller_name TEXT NOT NULL DEFAULT '',
+    reject_status TEXT NOT NULL CHECK(reject_status IN ('pending', 'rejected', 'already_rejected', 'failed')),
+    reply_status TEXT NOT NULL CHECK(reply_status IN ('pending', 'sent', 'failed', 'no_message', 'skipped')),
+    reply_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (device_id, call_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_call_auto_reject_logs_device
+    ON call_auto_reject_logs(device_id, created_at_ms DESC);
 `);
 
 {
@@ -492,6 +522,46 @@ db.exec(`
   if (!readCols.some((c) => c.name === 'manual_unread')) {
     db.exec('ALTER TABLE user_chat_read_states ADD COLUMN manual_unread INTEGER NOT NULL DEFAULT 0');
   }
+}
+
+{
+  const ratingCols = queryAll<{name: string}>('PRAGMA table_info(chat_close_ratings)');
+  if (!ratingCols.some((c) => c.name === 'rated_user_id')) {
+    db.exec(
+      'ALTER TABLE chat_close_ratings ADD COLUMN rated_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL',
+    );
+  }
+  if (!ratingCols.some((c) => c.name === 'rated_user_name')) {
+    db.exec("ALTER TABLE chat_close_ratings ADD COLUMN rated_user_name TEXT NOT NULL DEFAULT ''");
+  }
+  if (!ratingCols.some((c) => c.name === 'closed_by_user_id')) {
+    db.exec(
+      'ALTER TABLE chat_close_ratings ADD COLUMN closed_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL',
+    );
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_close_rating_user_report
+      ON chat_close_ratings (rated_user_id, rated_at DESC) WHERE status = 'rated';
+    UPDATE chat_close_ratings
+    SET rated_user_id = COALESCE(
+          rated_user_id,
+          (SELECT e.target_user_id FROM chat_lifecycle_events e WHERE e.id = chat_close_ratings.closed_event_id),
+          (SELECT e.actor_user_id FROM chat_lifecycle_events e WHERE e.id = chat_close_ratings.closed_event_id)
+        ),
+        rated_user_name = CASE
+          WHEN rated_user_name != '' THEN rated_user_name
+          ELSE COALESCE(
+            NULLIF((SELECT e.target_name FROM chat_lifecycle_events e WHERE e.id = chat_close_ratings.closed_event_id), ''),
+            (SELECT e.actor_name FROM chat_lifecycle_events e WHERE e.id = chat_close_ratings.closed_event_id),
+            ''
+          )
+        END,
+        closed_by_user_id = COALESCE(
+          closed_by_user_id,
+          (SELECT e.actor_user_id FROM chat_lifecycle_events e WHERE e.id = chat_close_ratings.closed_event_id)
+        )
+    WHERE rated_user_id IS NULL AND rated_user_name = '';
+  `);
 }
 
 export function seedAndMigrateRbac(): void {
@@ -2839,7 +2909,174 @@ export interface ChatListSummary {
   updated_at: string;
 }
 
+export function ensureDefaultPrivateListForUser(userId: number): void {
+  const seedKey = `default_private_list_seeded:${userId}`;
+  if (getSetting(seedKey) === '1') return;
+
+  const existing = queryOne<{id: number}>(
+    `SELECT id FROM chat_lists
+     WHERE user_id = ? AND LOWER(name) IN ('الخاص', 'private')
+     ORDER BY id ASC
+     LIMIT 1`,
+    userId,
+  );
+  if (!existing) {
+    const nowIso = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO chat_lists (user_id, name, created_at, updated_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(userId, 'الخاص', nowIso, nowIso);
+  }
+  setSetting(seedKey, '1');
+}
+
+export function getPrivateChatListIdForUser(userId: number): number | null {
+  ensureDefaultPrivateListForUser(userId);
+  const row = queryOne<{id: number}>(
+    `SELECT id FROM chat_lists
+     WHERE user_id = ? AND LOWER(name) IN ('الخاص', 'private')
+     ORDER BY id ASC
+     LIMIT 1`,
+    userId,
+  );
+  return row ? Number(row.id) : null;
+}
+
+export function countChatsInListForDevices(
+  userId: number,
+  listId: number | null,
+  deviceIds: string[],
+): number {
+  if (!listId) return 0;
+  const cleanIds = Array.from(new Set(deviceIds.map((d) => d.trim()).filter(Boolean)));
+  if (cleanIds.length === 0) return 0;
+
+  const placeholders = cleanIds.map(() => '?').join(', ');
+  const row = queryOne<{total: number}>(
+    `SELECT COUNT(*) AS total
+     FROM chat_list_items i
+     INNER JOIN chat_lists l ON l.id = i.list_id
+     LEFT JOIN chat_sync_state css ON css.device_id = i.device_id AND css.chat_jid = i.chat_jid
+     LEFT JOIN chat_device_states cds ON cds.device_id = i.device_id AND cds.chat_jid = i.chat_jid
+     WHERE l.id = ?
+       AND l.user_id = ?
+       AND i.device_id IN (${placeholders})
+       AND LOWER(i.chat_jid) <> 'status@broadcast'
+       AND LOWER(i.chat_jid) NOT LIKE '%@newsletter'
+       AND LOWER(i.chat_jid) NOT LIKE '%@g.us'
+       AND NOT (COALESCE(cds.deleted_before_ms, 0) > 0 AND COALESCE(css.last_message_ms, i.added_at) <= cds.deleted_before_ms)`,
+    listId,
+    userId,
+    ...cleanIds,
+  );
+  return Number(row?.total) || 0;
+}
+
+export interface DbChatListEntry {
+  device_id: string;
+  jid: string;
+  name: string;
+  last_message_time: string;
+  last_activity_ms: number;
+  added_at: number;
+}
+
+export function listDbChatsInList(params: {
+  userId: number;
+  listId: number;
+  deviceIds: string[];
+  limit?: number;
+  offset?: number;
+}): DbChatListEntry[] {
+  const cleanIds = Array.from(new Set(params.deviceIds.map((d) => d.trim()).filter(Boolean)));
+  if (cleanIds.length === 0 || !params.listId) return [];
+
+  const placeholders = cleanIds.map(() => '?').join(', ');
+  const args: SQLInputValue[] = [params.listId, params.userId, ...cleanIds];
+  let limitClause = '';
+  if (typeof params.limit === 'number' && params.limit > 0) {
+    limitClause = ' LIMIT ? OFFSET ?';
+    args.push(Math.floor(params.limit), Math.max(0, Math.floor(params.offset ?? 0)));
+  }
+
+  const rows = queryAll<{
+    device_id: string;
+    chat_jid: string;
+    added_at: number;
+    cached_title: string | null;
+    last_activity_ms: number | null;
+    sync_last_time: string | null;
+    sync_last_ms: number | null;
+    cached_sender_name: string | null;
+    cached_max_ms: number | null;
+  }>(
+    `SELECT i.device_id,
+            i.chat_jid,
+            i.added_at,
+            ca.cached_title,
+            ca.last_activity_ms,
+            css.last_message_time AS sync_last_time,
+            css.last_message_ms AS sync_last_ms,
+            CASE WHEN COALESCE(ca.cached_title, '') = '' THEN (
+              SELECT cm.sender_display_name
+              FROM cached_messages cm
+              WHERE cm.device_id = i.device_id
+                AND cm.chat_jid = i.chat_jid
+                AND cm.is_from_me = 0
+                AND cm.sender_display_name <> ''
+              ORDER BY cm.timestamp_ms DESC, cm.seq DESC
+              LIMIT 1
+            ) ELSE NULL END AS cached_sender_name,
+            CASE WHEN COALESCE(ca.last_activity_ms, 0) <= 0 THEN (
+              SELECT MAX(cm.timestamp_ms)
+              FROM cached_messages cm
+              WHERE cm.device_id = i.device_id
+                AND cm.chat_jid = i.chat_jid
+            ) ELSE NULL END AS cached_max_ms
+     FROM chat_list_items i
+     INNER JOIN chat_lists l ON l.id = i.list_id
+     LEFT JOIN chat_assignments ca ON ca.device_id = i.device_id AND ca.chat_jid = i.chat_jid
+     LEFT JOIN chat_sync_state css ON css.device_id = i.device_id AND css.chat_jid = i.chat_jid
+     LEFT JOIN chat_device_states cds ON cds.device_id = i.device_id AND cds.chat_jid = i.chat_jid
+     WHERE l.id = ?
+       AND l.user_id = ?
+       AND i.device_id IN (${placeholders})
+       AND LOWER(i.chat_jid) <> 'status@broadcast'
+       AND LOWER(i.chat_jid) NOT LIKE '%@newsletter'
+       AND LOWER(i.chat_jid) NOT LIKE '%@g.us'
+       AND NOT (COALESCE(cds.deleted_before_ms, 0) > 0 AND COALESCE(css.last_message_ms, i.added_at) <= cds.deleted_before_ms)
+     ORDER BY MAX(COALESCE(ca.last_activity_ms, 0), COALESCE(css.last_message_ms, 0), i.added_at) DESC${limitClause}`,
+    ...args,
+  );
+
+  return rows.map((row) => {
+    const effectiveMs = Math.max(
+      Number(row.last_activity_ms) || 0,
+      Number(row.sync_last_ms) || 0,
+      Number(row.cached_max_ms) || 0,
+      Number(row.added_at) || 0,
+    );
+    const lastMessageTime =
+      (row.sync_last_time && row.sync_last_time.trim()) ||
+      (effectiveMs > 0 ? new Date(effectiveMs).toISOString() : '');
+    const fallbackPhone = row.chat_jid.split('@')[0]?.split(':')[0] || row.chat_jid;
+    const resolvedName =
+      (row.cached_title && row.cached_title.trim()) ||
+      (row.cached_sender_name && row.cached_sender_name.trim()) ||
+      fallbackPhone;
+    return {
+      device_id: row.device_id,
+      jid: row.chat_jid,
+      name: resolvedName,
+      last_message_time: lastMessageTime,
+      last_activity_ms: effectiveMs,
+      added_at: Number(row.added_at) || 0,
+    };
+  });
+}
+
 export function listChatListsForUser(userId: number): ChatListSummary[] {
+  ensureDefaultPrivateListForUser(userId);
   return queryAll<ChatListSummary>(
     `SELECT l.id,
             l.name,

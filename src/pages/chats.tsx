@@ -12,6 +12,7 @@ import {toast} from 'sonner';
 import {bulkUnifiedChatsLifecycle, DEFAULT_UNIFIED_CHATS_QUERY_KEY, listUnifiedChats} from '@/api/client';
 import type {
   UnifiedChat,
+  UnifiedChatsResponse,
   UnifiedChatTab,
 } from '@/api/types';
 import {
@@ -109,7 +110,11 @@ function SplitWorkspacePane({
   }, [activeTab, canViewAll]);
 
   const effectiveAssignedTo =
-    activeTab === 'me' && canViewAll ? assignedToFilter : undefined;
+    activeTab === 'me'
+      ? 'me'
+      : activeTab === 'open' && canViewAll
+        ? assignedToFilter
+        : undefined;
 
   const paginated = usePaginatedChats({
     deviceIds: pane.deviceIds,
@@ -273,11 +278,36 @@ function SplitWorkspacePane({
               }
             }}
             onSelect={(chat) => {
-              if (!isChatRedactedForUser(chat, user?.id, canViewAll)) {
+              const redacted = isChatRedactedForUser(chat, user?.id, canViewAll);
+              if (!redacted) {
                 paginated.markExtraChatRead(chat.device_id, chat.jid);
+                queryClient.setQueriesData<UnifiedChatsResponse>(
+                  {queryKey: ['unified-chats']},
+                  (old) => {
+                    if (!old) return old;
+                    let removed = 0;
+                    const nextData = old.data.map((item) => {
+                      if (
+                        item.device_id === chat.device_id &&
+                        item.jid === chat.jid &&
+                        (item.unread_count ?? 0) > 0
+                      ) {
+                        removed = item.unread_count ?? 0;
+                        return {...item, unread_count: 0};
+                      }
+                      return item;
+                    });
+                    if (removed === 0) return old;
+                    const totalUnread =
+                      typeof old.total_unread === 'number'
+                        ? Math.max(0, old.total_unread - removed)
+                        : nextData.reduce((sum, item) => sum + (item.unread_count ?? 0), 0);
+                    return {...old, data: nextData, total_unread: totalUnread};
+                  },
+                );
               }
               setAdHocChat(null);
-              setRetainedChat(chat);
+              setRetainedChat(redacted ? chat : {...chat, unread_count: 0});
               setSelectedKey(chatUniqueKey(chat));
             }}
           />
@@ -376,7 +406,11 @@ export default function ChatsPage() {
   }, [navigate, searchParams, searchParamsKey]);
 
   const effectiveAssignedTo =
-    activeTab === 'me' && canViewAll ? assignedToFilter : undefined;
+    activeTab === 'me'
+      ? 'me'
+      : activeTab === 'open' && canViewAll
+        ? assignedToFilter
+        : undefined;
 
   const paginated = usePaginatedChats({
     deviceIds: selectedDeviceIds,
@@ -512,6 +546,18 @@ export default function ChatsPage() {
         invalidateScoped('unified-messages');
         invalidateScoped('unified-chat-notes');
         invalidateScoped('unified-chat-schedules');
+        void queryClient.invalidateQueries({queryKey: ['assignable-agents']});
+      } else if (code === 'CHAT_DAILY_RESET') {
+        invalidateChats();
+        if (target.deviceId) {
+          void queryClient.invalidateQueries({queryKey: ['chat-lifecycle', target.deviceId]});
+          void queryClient.invalidateQueries({queryKey: ['unified-messages', target.deviceId]});
+          void queryClient.invalidateQueries({queryKey: ['unified-chat-notes', target.deviceId]});
+          void queryClient.invalidateQueries({queryKey: ['unified-chat-schedules', target.deviceId]});
+        } else {
+          void queryClient.invalidateQueries({queryKey: ['chat-lifecycle']});
+          void queryClient.invalidateQueries({queryKey: ['unified-messages']});
+        }
         void queryClient.invalidateQueries({queryKey: ['assignable-agents']});
       } else if (code === 'INBOX_POLICY_UPDATED') {
         void queryClient.invalidateQueries({queryKey: ['inbox-policy']});
@@ -700,11 +746,36 @@ export default function ChatsPage() {
               }
             }}
             onSelect={(chat) => {
-              if (!isChatRedactedForUser(chat, user?.id, canViewAll)) {
+              const redacted = isChatRedactedForUser(chat, user?.id, canViewAll);
+              if (!redacted) {
                 paginated.markExtraChatRead(chat.device_id, chat.jid);
+                queryClient.setQueriesData<UnifiedChatsResponse>(
+                  {queryKey: ['unified-chats']},
+                  (old) => {
+                    if (!old) return old;
+                    let removed = 0;
+                    const nextData = old.data.map((item) => {
+                      if (
+                        item.device_id === chat.device_id &&
+                        item.jid === chat.jid &&
+                        (item.unread_count ?? 0) > 0
+                      ) {
+                        removed = item.unread_count ?? 0;
+                        return {...item, unread_count: 0};
+                      }
+                      return item;
+                    });
+                    if (removed === 0) return old;
+                    const totalUnread =
+                      typeof old.total_unread === 'number'
+                        ? Math.max(0, old.total_unread - removed)
+                        : nextData.reduce((sum, item) => sum + (item.unread_count ?? 0), 0);
+                    return {...old, data: nextData, total_unread: totalUnread};
+                  },
+                );
               }
               setAdHocChat(null);
-              setRetainedChat(chat);
+              setRetainedChat(redacted ? chat : {...chat, unread_count: 0});
               setSelectedKey(chatUniqueKey(chat));
               setMobileShowMessages(true);
             }}

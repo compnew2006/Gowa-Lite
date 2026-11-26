@@ -1,9 +1,12 @@
 import {
   clearChatCatchup,
+  countChatsInListForDevices,
   getChatDeviceStatesMap,
+  getPrivateChatListIdForUser,
   getUnreadCountsForUser,
   getUserChatListMemberships,
   getUserChatPreferencesMap,
+  listDbChatsInList,
   parseTimestampMs,
   syncChatWatermarks,
   upsertCachedMessages,
@@ -43,7 +46,7 @@ import {
 } from './chat-sync.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
 
-const VALID_UNIFIED_TABS = new Set<UnifiedChatTab>(['all', 'me', 'pending', 'closed']);
+const VALID_UNIFIED_TABS = new Set<UnifiedChatTab>(['all', 'me', 'open', 'pending', 'closed', 'private']);
 
 export type RemoteUnifiedChat = GowaChatInfo & {
   device_id: string;
@@ -86,7 +89,7 @@ export function parseUnifiedChatsQuery(
       throw new GowaError(
         400,
         'VALIDATION_ERROR',
-        'قيمة التبويب غير صالحة (المسموح: all, me, pending, closed)',
+        'قيمة التبويب غير صالحة (المسموح: all, me, open, pending, closed, private)',
       );
     }
     requestedTab = rawTab as UnifiedChatTab;
@@ -298,7 +301,10 @@ export async function fetchRemoteChatsForDevices(params: {
   let totalRemoteChats = 0;
   let anyDeviceHasMore = false;
   const remoteFetchOffset =
-    query.requestedTab === 'closed' || (query.requestedTab === 'me' && !query.hasMedia)
+    query.requestedTab === 'closed' ||
+    query.requestedTab === 'open' ||
+    query.requestedTab === 'private' ||
+    (query.requestedTab === 'me' && !query.hasMedia)
       ? 0
       : query.offset;
 
@@ -354,6 +360,7 @@ export function computeUnifiedTabCounts(params: {
   anyDeviceHasMore: boolean;
   skipRemoteScan: boolean;
   effectiveMeOwnerId: number | null;
+  userId?: number;
   query: ParsedUnifiedChatsQuery;
 }): UnifiedTabCounts {
   const {
@@ -365,21 +372,27 @@ export function computeUnifiedTabCounts(params: {
     anyDeviceHasMore,
     skipRemoteScan,
     effectiveMeOwnerId,
+    userId,
     query,
   } = params;
 
   let dbClosedCount = 0;
   let dbMeOpenCount = 0;
+  let dbAllOpenCount = 0;
   if (skipRemoteScan) {
     const stats = getAssignmentStatsForDevices(targetDeviceIds, effectiveMeOwnerId);
     dbClosedCount = stats.closed;
     dbMeOpenCount = stats.meOpen;
+    dbAllOpenCount = query.isSupervisor ? stats.allOpen : stats.meOpen;
   } else {
     for (const row of assignmentsMap.values()) {
       if (isExcludedFromUnifiedChats(row.chat_jid)) continue;
       if (row.status === 'closed') {
         dbClosedCount += 1;
-      } else if (row.status === 'open') {
+      } else if (row.status === 'open' && row.assigned_user_id !== null) {
+        if (query.isSupervisor || (userId !== undefined && row.assigned_user_id === userId) || effectiveMeOwnerId === null || row.assigned_user_id === effectiveMeOwnerId) {
+          dbAllOpenCount += 1;
+        }
         if (effectiveMeOwnerId === null || row.assigned_user_id === effectiveMeOwnerId) {
           dbMeOpenCount += 1;
         }
@@ -404,6 +417,8 @@ export function computeUnifiedTabCounts(params: {
     (query.offset === 0 ||
       query.isSearchMode ||
       query.requestedTab === 'closed' ||
+      query.requestedTab === 'open' ||
+      query.requestedTab === 'private' ||
       query.requestedTab === 'me');
 
   // When remote wasn't scanned completely, subtract only confirmed remote open/closed chats
@@ -428,13 +443,20 @@ export function computeUnifiedTabCounts(params: {
     dbClosedExtraNotInRemote = Math.max(0, dbClosedCount - remoteClosedInFetched);
   }
 
+  const privateListId = userId ? getPrivateChatListIdForUser(userId) : null;
+  const privateCount = userId
+    ? countChatsInListForDevices(userId, privateListId, targetDeviceIds)
+    : 0;
+
   return {
     all: query.isSupervisor
       ? effectiveTotalRemote + dbClosedExtraNotInRemote + dbOpenExtraNotInRemote
       : 0,
     me: dbMeOpenCount,
+    open: dbAllOpenCount,
     pending: pendingCount,
     closed: dbClosedCount,
+    private: privateCount,
   };
 }
 
@@ -559,6 +581,101 @@ export function paginateUnifiedChats(params: {
       };
     }
     const list = buildFromDbEntries('open', effectiveMeOwnerId);
+    const paged = list.slice(query.offset, query.offset + query.limit);
+    return {pagedChats: paged, totalAvailable: list.length, hasMore: query.offset + paged.length < list.length};
+  }
+
+  if (query.requestedTab === 'open') {
+    const openOwnerId = query.isSupervisor ? (query.assignedFilterUserId ?? null) : userId;
+    if (canDirectSqlPaginate) {
+      const paged = buildFromDbEntries('open', openOwnerId, query.limit, query.offset);
+      const totalOpen = openOwnerId === null ? tabCounts.open : paged.length;
+      return {
+        pagedChats: paged,
+        totalAvailable: openOwnerId === null ? tabCounts.open : totalOpen,
+        hasMore: openOwnerId === null ? query.offset + paged.length < tabCounts.open : false,
+      };
+    }
+    const list = buildFromDbEntries('open', openOwnerId);
+    const paged = list.slice(query.offset, query.offset + query.limit);
+    return {pagedChats: paged, totalAvailable: list.length, hasMore: query.offset + paged.length < list.length};
+  }
+
+  if (query.requestedTab === 'private') {
+    const privateListId = getPrivateChatListIdForUser(userId);
+    if (!privateListId) {
+      return {pagedChats: [], totalAvailable: 0, hasMore: false};
+    }
+    const buildPrivateEntries = (dbLimit?: number, dbOffset?: number): RemoteUnifiedChat[] => {
+      const entries = listDbChatsInList({
+        userId,
+        listId: privateListId,
+        deviceIds: targetDeviceIds,
+        limit: dbLimit,
+        offset: dbOffset,
+      });
+      const merged: RemoteUnifiedChat[] = [];
+      for (const entry of entries) {
+        const key = `${entry.device_id}::${entry.jid}`;
+        const devState = deviceStatesMap.get(key);
+        if (devState && devState.deleted_before_ms > 0) {
+          const entryMs = parseTimestampMs(entry.last_message_time);
+          if (entryMs > 0 && entryMs <= devState.deleted_before_ms) continue;
+        }
+        const remote = remoteByKey.get(key);
+        if (query.hasMedia && !remote) continue;
+
+        const info = deviceInfoMap.get(entry.device_id);
+        const displayName = info?.displayName ?? entry.device_id;
+        const baseArchived =
+          devState?.archived_override !== null && devState?.archived_override !== undefined
+            ? devState.archived_override
+            : remote
+              ? Boolean(remote.archived)
+              : false;
+        const candidate: RemoteUnifiedChat = remote
+          ? {
+              ...remote,
+              archived: baseArchived,
+              name: remote.name?.trim() || entry.name,
+              last_message_time: remote.last_message_time || entry.last_message_time,
+              is_pinned: Boolean(devState?.is_pinned ?? remote.is_pinned),
+              pinned_at_ms: devState?.pinned_at_ms ?? remote.pinned_at_ms ?? 0,
+              is_blocked: Boolean(devState?.is_blocked ?? remote.is_blocked),
+            }
+          : {
+              jid: entry.jid,
+              name: entry.name,
+              last_message_time: entry.last_message_time,
+              ephemeral_expiration: 0,
+              created_at: '',
+              updated_at: entry.last_message_time,
+              archived: baseArchived,
+              device_id: entry.device_id,
+              device_display_name: displayName,
+              device_state: info?.device.state ?? 'disconnected',
+              is_pinned: Boolean(devState?.is_pinned),
+              pinned_at_ms: devState?.pinned_at_ms ?? 0,
+              is_blocked: Boolean(devState?.is_blocked),
+            };
+        if (query.isSearchMode && !matchesUnifiedChatSearch(candidate, displayName, query.rawSearch)) {
+          continue;
+        }
+        merged.push(candidate);
+      }
+      sortChatsDesc(merged);
+      return merged;
+    };
+
+    if (canDirectSqlPaginate) {
+      const paged = buildPrivateEntries(query.limit, query.offset);
+      return {
+        pagedChats: paged,
+        totalAvailable: tabCounts.private,
+        hasMore: query.offset + paged.length < tabCounts.private,
+      };
+    }
+    const list = buildPrivateEntries();
     const paged = list.slice(query.offset, query.offset + query.limit);
     return {pagedChats: paged, totalAvailable: list.length, hasMore: query.offset + paged.length < list.length};
   }

@@ -1,6 +1,11 @@
-import {Eye, Link2, Loader2, Lock, Megaphone, Plus, RefreshCw, Search} from 'lucide-react';
-import type {AccountSummary, UnifiedDirectoryItem} from '@/api/types';
+import {AlertTriangle, Eye, Link2, Loader2, Lock, Megaphone, Plus, RefreshCw, Search} from 'lucide-react';
+import type {
+  AccountSummary,
+  UnifiedDirectoryAccountRef,
+  UnifiedDirectoryItem,
+} from '@/api/types';
 import {ContactAvatar} from '@/components/contact-avatar';
+import {Button} from '@/components/ui/button';
 import {
   AccountMultiSelect,
   accountDotTone,
@@ -13,8 +18,23 @@ import {cn} from '@/lib/utils';
 
 export type DirectoryKindFilter = 'all' | 'group' | 'newsletter';
 
-export function directoryItemKey(item: Pick<UnifiedDirectoryItem, 'kind' | 'device_id' | 'jid'>): string {
-  return `${item.kind}::${item.device_id}::${item.jid}`;
+export function directoryItemKey(item: Pick<UnifiedDirectoryItem, 'kind' | 'jid'>): string {
+  return `${item.kind}::${item.jid.trim().toLowerCase()}`;
+}
+
+export function getDirectoryItemAccounts(
+  item: UnifiedDirectoryItem,
+): UnifiedDirectoryAccountRef[] {
+  if (item.accounts && item.accounts.length > 0) {
+    return item.accounts;
+  }
+  return [
+    {
+      device_id: item.device_id,
+      device_display_name: item.device_display_name,
+      device_state: item.device_state,
+    },
+  ];
 }
 
 export function GroupsSidebar({
@@ -22,6 +42,7 @@ export function GroupsSidebar({
   groupsCount,
   newslettersCount,
   accounts,
+  deviceErrors = [],
   selectedKey,
   selectedDeviceIds,
   kindFilter,
@@ -44,6 +65,7 @@ export function GroupsSidebar({
   groupsCount: number;
   newslettersCount: number;
   accounts: AccountSummary[];
+  deviceErrors?: Array<{device_id: string; display_name: string; message: string}>;
   selectedKey: string | null;
   selectedDeviceIds: string[];
   kindFilter: DirectoryKindFilter;
@@ -71,7 +93,8 @@ export function GroupsSidebar({
       item.kind === 'group'
         ? item.group.Topic
         : item.newsletter.thread_metadata?.description?.text;
-    return matchesNormalizedQuery([item.name, item.jid, item.device_display_name, extra], search);
+    const accountNames = getDirectoryItemAccounts(item).map((acc) => acc.device_display_name);
+    return matchesNormalizedQuery([item.name, item.jid, ...accountNames, extra], search);
   });
 
   return (
@@ -191,7 +214,28 @@ export function GroupsSidebar({
             <span>{t.groups.loadingDirectory}</span>
           </div>
         ) : errorMessage ? (
-          <div className="p-6 text-center text-sm text-destructive">{errorMessage}</div>
+          <div className="m-2 flex flex-col items-center gap-3 rounded-xl border border-destructive/30 bg-destructive/10 p-5 text-center text-sm text-destructive">
+            <AlertTriangle className="size-5 shrink-0" />
+            <p className="leading-relaxed">{errorMessage}</p>
+            <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={isFetching}>
+              <RefreshCw className={cn('size-3.5', isFetching && 'animate-spin')} />
+              <span>{t.retry}</span>
+            </Button>
+          </div>
+        ) : items.length === 0 && deviceErrors.length > 0 ? (
+          <div className="m-2 flex flex-col items-center gap-3 rounded-xl border border-destructive/30 bg-destructive/10 p-5 text-center text-sm text-destructive">
+            <AlertTriangle className="size-5 shrink-0" />
+            <div className="space-y-1">
+              <p className="font-medium">{t.groups.partialLoadError(deviceErrors.length)}</p>
+              <p className="text-xs opacity-90">
+                {deviceErrors.map((e) => `${e.display_name}: ${e.message}`).join(' · ')}
+              </p>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={isFetching}>
+              <RefreshCw className={cn('size-3.5', isFetching && 'animate-spin')} />
+              <span>{t.retry}</span>
+            </Button>
+          </div>
         ) : items.length === 0 ? (
           <div className="p-6 text-center text-sm text-muted-foreground">{t.groups.empty}</div>
         ) : visibleItems.length === 0 ? (
@@ -199,15 +243,91 @@ export function GroupsSidebar({
             {t.groups.noSearchMatches}
           </div>
         ) : (
-          <ul className="space-y-0.5">
+          <>
+            {deviceErrors.length > 0 && (
+              <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                <span className="min-w-0 truncate">
+                  {t.groups.partialLoadError(deviceErrors.length)} {deviceErrors[0]?.display_name}
+                </span>
+                <button
+                  type="button"
+                  onClick={onRefresh}
+                  disabled={isFetching}
+                  className="inline-flex shrink-0 cursor-pointer items-center gap-1 font-medium underline hover:opacity-80 disabled:opacity-50"
+                >
+                  <RefreshCw className={cn('size-3', isFetching && 'animate-spin')} />
+                  <span>{t.retry}</span>
+                </button>
+              </div>
+            )}
+            <ul className="space-y-0.5">
             {visibleItems.map((item) => {
               const key = directoryItemKey(item);
               const isSelected = selectedKey === key;
               const isNewsletter = item.kind === 'newsletter';
               const unreadCount = !isNewsletter ? (item.unread_count ?? 0) : 0;
+              const rowAccounts = getDirectoryItemAccounts(item);
+              const isMultiAccount = rowAccounts.length > 1;
               const countLabel = isNewsletter
                 ? t.misc.subscribersCount(item.subscribers_count)
                 : t.groups.membersCount(item.participant_count);
+
+              const renderAccountBadge = (acc: UnifiedDirectoryAccountRef) => (
+                <span
+                  key={acc.device_id}
+                  title={acc.device_display_name}
+                  className={cn(
+                    'inline-flex min-w-0 items-center gap-1.5 rounded-md border border-border/80 bg-background/70 px-2 py-0.5 text-[11px] font-medium text-foreground/90',
+                    isMultiAccount ? 'max-w-[48%]' : 'max-w-[65%]',
+                  )}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      'size-1.5 shrink-0 rounded-full',
+                      accountDotTone(acc.device_id),
+                    )}
+                  />
+                  <span className="truncate">
+                    {shortAccountWidgetLabel(acc.device_display_name)}
+                  </span>
+                </span>
+              );
+
+              const renderMetaTail = () =>
+                isNewsletter ? (
+                  <span className="truncate text-[11px] text-primary">
+                    · {t.groups.channelTag}
+                  </span>
+                ) : (
+                  <>
+                    {item.group.IsLocked && (
+                      <span className="inline-flex shrink-0 items-center gap-0.5 text-[11px] text-amber-600 dark:text-amber-400">
+                        · <Lock className="size-3" />
+                      </span>
+                    )}
+                    {item.group.IsAnnounce && (
+                      <span className="inline-flex shrink-0 items-center gap-0.5 text-[11px] text-sky-600 dark:text-sky-400">
+                        · <Megaphone className="size-3" />
+                      </span>
+                    )}
+                    <span
+                      dir="ltr"
+                      className="min-w-0 flex-1 truncate font-mono text-[11px] tabular-nums"
+                    >
+                      {item.jid}
+                    </span>
+                    {unreadCount > 0 && (
+                      <span
+                        aria-label={t.chats.unreadLabel(unreadCount)}
+                        title={t.chats.unreadLabel(unreadCount)}
+                        className="ms-auto inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-live px-1.5 text-[11px] font-semibold text-white tabular-nums"
+                      >
+                        {String(unreadCount)}
+                      </span>
+                    )}
+                  </>
+                );
 
               return (
                 <li key={key}>
@@ -252,63 +372,28 @@ export function GroupsSidebar({
                         </span>
                       </div>
 
-                      <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <span
-                          title={item.device_display_name}
-                          className="inline-flex min-w-0 max-w-[65%] items-center gap-1.5 rounded-md border border-border/80 bg-background/70 px-2 py-0.5 text-[11px] font-medium text-foreground/90"
-                        >
-                          <span
-                            aria-hidden="true"
-                            className={cn(
-                              'size-1.5 shrink-0 rounded-full',
-                              accountDotTone(item.device_id),
-                            )}
-                          />
-                          <span className="truncate">
-                            {shortAccountWidgetLabel(item.device_display_name)}
-                          </span>
-                        </span>
-
-                        {isNewsletter ? (
-                          <span className="truncate text-[11px] text-primary">
-                            · {t.groups.channelTag}
-                          </span>
-                        ) : (
-                          <>
-                            {item.group.IsLocked && (
-                              <span className="inline-flex shrink-0 items-center gap-0.5 text-[11px] text-amber-600 dark:text-amber-400">
-                                · <Lock className="size-3" />
-                              </span>
-                            )}
-                            {item.group.IsAnnounce && (
-                              <span className="inline-flex shrink-0 items-center gap-0.5 text-[11px] text-sky-600 dark:text-sky-400">
-                                · <Megaphone className="size-3" />
-                              </span>
-                            )}
-                            <span
-                              dir="ltr"
-                              className="min-w-0 flex-1 truncate font-mono text-[11px] tabular-nums"
-                            >
-                              {item.jid}
-                            </span>
-                            {unreadCount > 0 && (
-                              <span
-                                aria-label={t.chats.unreadLabel(unreadCount)}
-                                title={t.chats.unreadLabel(unreadCount)}
-                                className="ms-auto inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-live px-1.5 text-[11px] font-semibold text-white tabular-nums"
-                              >
-                                {String(unreadCount)}
-                              </span>
-                            )}
-                          </>
-                        )}
-                      </div>
+                      {isMultiAccount ? (
+                        <>
+                          <div className="mt-1 flex flex-wrap items-center gap-1">
+                            {rowAccounts.map(renderAccountBadge)}
+                          </div>
+                          <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                            {renderMetaTail()}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                          {rowAccounts.map(renderAccountBadge)}
+                          {renderMetaTail()}
+                        </div>
+                      )}
                     </div>
                   </button>
                 </li>
               );
             })}
           </ul>
+          </>
         )}
       </div>
     </div>

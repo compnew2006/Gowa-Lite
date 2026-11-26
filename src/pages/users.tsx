@@ -1,21 +1,24 @@
-import {useMemo, useState, type FormEvent} from 'react';
+import {useEffect, useMemo, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
-import {Loader2, Pencil, Plus, Search, Smartphone, Trash2} from 'lucide-react';
+import {Loader2, Pencil, Plus, Search, Smartphone, Star, Trash2} from 'lucide-react';
 import {toast} from 'sonner';
 import {
   createUser,
   deleteUser,
+  getUserRatings,
   listAssignableAccounts,
   listRoles,
   listUsers,
+  listUsersRatings,
   updateUser,
 } from '@/api/client';
-import type {RoleRecord, User} from '@/api/types';
+import type {RoleRecord, User, UserRatingSummary} from '@/api/types';
 import {SettingsTabs} from '@/components/settings-tabs';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
+import {Skeleton} from '@/components/ui/skeleton';
 import {Switch} from '@/components/ui/switch';
 import {
   summarizeAssignedAccounts,
@@ -23,6 +26,7 @@ import {
   type DeviceAccessMode,
 } from '@/features/users/device-access-helpers';
 import {DeviceAccessSelector} from '@/features/users/device-access-selector';
+import {onWsEvent} from '@/lib/events';
 import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -65,11 +69,34 @@ export default function UsersPage() {
   const [quickTriedSubmit, setQuickTriedSubmit] = useState(false);
 
   const [deletingUser, setDeletingUser] = useState<User | null>(null);
+  const [ratingsUser, setRatingsUser] = useState<User | null>(null);
 
   const usersQuery = useQuery({
     queryKey: ['users'],
     queryFn: listUsers,
   });
+
+  const ratingsQuery = useQuery({
+    queryKey: ['users-ratings'],
+    queryFn: listUsersRatings,
+  });
+
+  const userRatingDetailQuery = useQuery({
+    queryKey: ['user-ratings-detail', ratingsUser?.id ?? null],
+    queryFn: () => getUserRatings(ratingsUser!.id),
+    enabled: ratingsUser !== null,
+  });
+
+  useEffect(
+    () =>
+      onWsEvent((event) => {
+        if (event.code === 'CHAT_CLOSE_RATING_UPDATED') {
+          void queryClient.invalidateQueries({queryKey: ['users-ratings']});
+          void queryClient.invalidateQueries({queryKey: ['user-ratings-detail']});
+        }
+      }),
+    [queryClient],
+  );
 
   const rolesQuery = useQuery({
     queryKey: ['roles'],
@@ -113,6 +140,19 @@ export default function UsersPage() {
     }
     return map;
   }, [accounts]);
+
+  const ratingSummaryByUserId = useMemo(() => {
+    const map = new Map<number, UserRatingSummary>();
+    for (const entry of ratingsQuery.data ?? []) {
+      map.set(entry.user_id, entry);
+    }
+    return map;
+  }, [ratingsQuery.data]);
+
+  const formatScoreNumber = useMemo(
+    () => new Intl.NumberFormat(lang, {maximumFractionDigits: 1}),
+    [lang],
+  );
 
   const users = usersQuery.data ?? [];
 
@@ -357,6 +397,7 @@ export default function UsersPage() {
               <th className="px-4 py-3 font-medium">{t.users.colUsername}</th>
               <th className="px-4 py-3 font-medium">{t.users.colRole}</th>
               <th className="px-4 py-3 font-medium">{t.users.colAccounts}</th>
+              <th className="px-4 py-3 font-medium">{t.users.colRatings}</th>
               <th className="px-4 py-3 font-medium">{t.users.colStatus}</th>
               <th className="px-4 py-3 font-medium">{t.users.colCreatedAt}</th>
               {(canWrite || canDelete) && (
@@ -367,19 +408,19 @@ export default function UsersPage() {
           <tbody className="divide-y divide-border">
             {usersQuery.isLoading ? (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
                   {t.loading}
                 </td>
               </tr>
             ) : users.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
                   {t.users.empty}
                 </td>
               </tr>
             ) : filteredUsers.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
                   {t.users.noFilteredUsers}
                 </td>
               </tr>
@@ -387,6 +428,7 @@ export default function UsersPage() {
               filteredUsers.map((u) => {
                 const accountsSummary = formatAccountsSummary(u.allowed_device_ids);
                 const fullTooltip = formatAccountsFullTooltip(u.allowed_device_ids);
+                const ratingSummary = ratingSummaryByUserId.get(u.id);
                 return (
                   <tr key={u.id} className="hover:bg-muted/35">
                     <td className="px-4 py-3 font-medium text-foreground">
@@ -416,6 +458,25 @@ export default function UsersPage() {
                         <span title={fullTooltip} className="text-muted-foreground">
                           {accountsSummary}
                         </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-xs tabular-nums">
+                      {ratingSummary && ratingSummary.count > 0 && ratingSummary.average !== null ? (
+                        <button
+                          type="button"
+                          onClick={() => setRatingsUser(u)}
+                          className="inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1 font-medium text-foreground underline decoration-border underline-offset-4 transition-colors hover:bg-muted hover:decoration-primary focus-visible:outline-2 focus-visible:outline-ring"
+                        >
+                          <Star className="size-3.5 text-primary" aria-hidden />
+                          <span>
+                            {t.users.ratingsSummary(
+                              formatScoreNumber.format(ratingSummary.average),
+                              ratingSummary.count,
+                            )}
+                          </span>
+                        </button>
+                      ) : (
+                        <span className="text-muted-foreground">{t.users.noRatingsYet}</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-xs">
@@ -744,6 +805,112 @@ export default function UsersPage() {
             {t.confirmDelete}
           </Button>
         </div>
+      </Dialog>
+
+      {/* User Ratings Detail Dialog */}
+      <Dialog
+        open={ratingsUser !== null}
+        onOpenChange={(open) => !open && setRatingsUser(null)}
+        title={ratingsUser ? t.users.ratingsDialogTitle(ratingsUser.display_name) : ''}
+        description={t.users.ratingsDialogDesc}
+        className="sm:max-w-lg"
+      >
+        {userRatingDetailQuery.isPending ? (
+          <Skeleton className="h-32 w-full" />
+        ) : !userRatingDetailQuery.data ? (
+          <div className="flex flex-wrap items-center gap-2 py-2">
+            <p role="alert" className="text-sm text-destructive">{t.users.ratingsLoadError}</p>
+            <Button variant="outline" size="sm" onClick={() => void userRatingDetailQuery.refetch()}>
+              {t.refresh}
+            </Button>
+          </div>
+        ) : (
+          <div className="flex max-h-[75vh] flex-col gap-4 overflow-y-auto pe-1">
+            <dl className="grid grid-cols-2 gap-4 border-y border-border py-3">
+              <div>
+                <dt className="text-xs text-muted-foreground">{t.users.ratingsAverageLabel}</dt>
+                <dd className="mt-1 text-lg font-semibold tabular-nums">
+                  {userRatingDetailQuery.data.average === null
+                    ? '—'
+                    : formatScoreNumber.format(userRatingDetailQuery.data.average)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">{t.users.ratingsTotalLabel}</dt>
+                <dd className="mt-1 text-lg font-semibold tabular-nums">
+                  {formatScoreNumber.format(userRatingDetailQuery.data.count)}
+                </dd>
+              </div>
+            </dl>
+
+            {userRatingDetailQuery.data.by_account.length > 0 && (
+              <div>
+                <h4 className="mb-1.5 text-sm font-medium text-foreground">
+                  {t.users.ratingsByAccountTitle}
+                </h4>
+                <ul className="divide-y divide-border rounded-lg border border-border px-3">
+                  {userRatingDetailQuery.data.by_account.map((acc) => (
+                    <li
+                      key={acc.device_id}
+                      className="flex items-center justify-between gap-3 py-2 text-sm"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-foreground">
+                          {accountNameMap.get(acc.device_id) || acc.device_name}
+                        </p>
+                        <p className="text-xs text-muted-foreground tabular-nums">
+                          {t.accounts.closeRatings.ratingsCountSuffix(acc.count)}
+                        </p>
+                      </div>
+                      <span className="inline-flex shrink-0 items-center gap-1 font-medium tabular-nums">
+                        <Star className="size-3.5 text-primary" aria-hidden />
+                        <bdi>
+                          {formatScoreNumber.format(acc.average)} / {formatScoreNumber.format(5)}
+                        </bdi>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div>
+              <h4 className="mb-1.5 text-sm font-medium text-foreground">
+                {t.users.ratingsRecentTitle}
+              </h4>
+              {userRatingDetailQuery.data.recent.length === 0 ? (
+                <p className="text-sm text-muted-foreground">{t.users.ratingsEmpty}</p>
+              ) : (
+                <ul className="divide-y divide-border">
+                  {userRatingDetailQuery.data.recent.map((rating) => (
+                    <li
+                      key={rating.id}
+                      className="flex items-center justify-between gap-3 py-2 text-sm"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-foreground">
+                          {accountNameMap.get(rating.device_id) || rating.device_name}
+                        </p>
+                        <time
+                          dateTime={rating.rated_at}
+                          className="text-xs text-muted-foreground"
+                        >
+                          {formatDate(rating.rated_at, lang)}
+                        </time>
+                      </div>
+                      <span className="inline-flex shrink-0 items-center gap-1 font-medium tabular-nums">
+                        <Star className="size-3.5 text-primary" aria-hidden />
+                        <bdi>
+                          {formatScoreNumber.format(rating.score)} / {formatScoreNumber.format(5)}
+                        </bdi>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
       </Dialog>
     </div>
   );

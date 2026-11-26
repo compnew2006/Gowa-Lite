@@ -17,7 +17,7 @@ import {
   useQueryClient,
   type InfiniteData,
 } from '@tanstack/react-query';
-import {Hand, History, Loader2, Lock, Paperclip, RotateCcw, Trash2} from 'lucide-react';
+import {Hand, Loader2, Lock, Paperclip, RefreshCw, RotateCcw, Trash2} from 'lucide-react';
 import {toast} from 'sonner';
 import {
   blockUnifiedChat,
@@ -201,7 +201,10 @@ export function MessageView({
   const [replyingTo, setReplyingTo] = useState<MessageInfo | null>(null);
   const [reactionPickerMessageId, setReactionPickerMessageId] = useState<string | null>(null);
   const pendingReactions = useRef(new Set<string>());
+  const autoHistoryRequestedRef = useRef<Set<string>>(new Set());
   const [historyPollUntil, setHistoryPollUntil] = useState(0);
+  const [autoHistoryActive, setAutoHistoryActive] = useState(false);
+  const [autoHistoryFailed, setAutoHistoryFailed] = useState(false);
   const [drawerTab, setDrawerTab] = useState<ContextDrawerTab | null>(null);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
@@ -219,6 +222,8 @@ export function MessageView({
     setReplyingTo(null);
     setReactionPickerMessageId(null);
     setHistoryPollUntil(0);
+    setAutoHistoryActive(false);
+    setAutoHistoryFailed(false);
     setScheduleDialogOpen(false);
     setAssignDialogOpen(false);
     setRevokingMessage(null);
@@ -358,6 +363,63 @@ export function MessageView({
   const displayName = chatDisplayName(resolvedChat);
   const isDeviceReady = chat.device_state === 'logged_in';
   const {hasNextPage, isFetchingNextPage, fetchNextPage} = query;
+
+  useEffect(() => {
+    if (
+      !query.isSuccess ||
+      query.isFetching ||
+      isContentRedacted ||
+      normalizedSearch ||
+      mediaOnly ||
+      !isDeviceReady ||
+      messages.length > 0
+    ) {
+      return;
+    }
+    const requestKey = `${chat.device_id}::${chat.jid}`;
+    if (autoHistoryRequestedRef.current.has(requestKey)) return;
+    autoHistoryRequestedRef.current.add(requestKey);
+
+    let cancelled = false;
+    setAutoHistoryFailed(false);
+    setAutoHistoryActive(true);
+    setHistoryPollUntil(Date.now() + HISTORY_POLL_WINDOW_MS);
+
+    void requestUnifiedChatHistory(chat.device_id, chat.jid, PAGE_SIZE).catch(() => {
+      if (cancelled) return;
+      setAutoHistoryActive(false);
+      setHistoryPollUntil(0);
+      setAutoHistoryFailed(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    chat.device_id,
+    chat.jid,
+    isContentRedacted,
+    isDeviceReady,
+    mediaOnly,
+    messages.length,
+    normalizedSearch,
+    query.isFetching,
+    query.isSuccess,
+  ]);
+
+  useEffect(() => {
+    if (!autoHistoryActive) return;
+    if (messages.length > 0) {
+      setAutoHistoryActive(false);
+      setHistoryPollUntil(0);
+      return;
+    }
+    const remaining = Math.max(0, historyPollUntil - Date.now());
+    const timer = window.setTimeout(() => {
+      setAutoHistoryActive(false);
+    }, remaining || HISTORY_POLL_WINDOW_MS);
+    return () => window.clearTimeout(timer);
+  }, [autoHistoryActive, historyPollUntil, messages.length]);
 
   const lifecycleEvents = useMemo(() => {
     if (!isLifecycleSupported || isContentRedacted || normalizedSearch || mediaOnly) return [];
@@ -1036,34 +1098,43 @@ export function MessageView({
               {toApiError(query.error).message}
             </div>
           ) : timelineItems.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-1.5 p-10 text-center text-sm text-muted-foreground">
-              <p>{t.chats.noMessagesYet}</p>
-              <p className="text-xs">{t.chats.noMessagesHint}</p>
-            </div>
+            autoHistoryActive || historyMutation.isPending ? (
+              <div className="flex flex-col items-center justify-center gap-2 p-10 text-center text-sm text-muted-foreground">
+                <Loader2 className="size-5 animate-spin text-primary" />
+                <p className="font-medium text-foreground/90">{t.chats.fetchingHistoryFromPhone}</p>
+                <p className="text-xs">{t.chats.noMessagesHint}</p>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center gap-2 p-10 text-center text-sm text-muted-foreground">
+                <p>{t.chats.noMessagesYet}</p>
+                <p className="text-xs">{t.chats.noMessagesHint}</p>
+                {autoHistoryFailed && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setAutoHistoryFailed(false);
+                      historyMutation.mutate();
+                    }}
+                    className="mt-1"
+                  >
+                    <RefreshCw className="size-3.5" />
+                    <span>{t.retry}</span>
+                  </Button>
+                )}
+              </div>
+            )
           ) : (
             <div ref={timelineContentRef} className="flex flex-col gap-2">
-              <div className="mx-auto flex w-full max-w-4xl justify-center px-4 pb-1 sm:px-8 lg:px-14">
-                {isFetchingNextPage ? (
+              {isFetchingNextPage && (
+                <div className="mx-auto flex w-full max-w-4xl justify-center px-4 pb-1 sm:px-8 lg:px-14">
                   <div className="flex items-center gap-2 rounded-lg bg-card/90 px-3 py-1 text-xs text-muted-foreground shadow-2xs">
                     <Loader2 className="size-3.5 animate-spin" />
                     <span>{t.chats.loadingOlderMessages}</span>
                   </div>
-                ) : !hasNextPage && total > 0 ? (
-                  <button
-                    type="button"
-                    disabled={historyMutation.isPending}
-                    onClick={() => historyMutation.mutate()}
-                    className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-card/90 px-3 py-1 text-xs text-muted-foreground shadow-2xs transition-colors hover:text-foreground disabled:opacity-50"
-                  >
-                    {historyMutation.isPending ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
-                      <History className="size-3.5" />
-                    )}
-                    <span>{t.chats.fetchOlderFromPhone}</span>
-                  </button>
-                ) : null}
-              </div>
+                </div>
+              )}
 
               {timelineItems.map((item, index) => {
                 const showDate =

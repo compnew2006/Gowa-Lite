@@ -2,6 +2,10 @@ import {createHmac, timingSafeEqual} from 'node:crypto';
 import express, {type Router} from 'express';
 import {createApiRouter, handleRouteError} from '../middleware/auth.ts';
 import {
+  handleIncomingCallOffer,
+  isCallOfferEventCode,
+} from '../services/call-auto-reject.ts';
+import {
   asReactionRecord,
   isGowaReactionEvent,
   readGowaReaction,
@@ -34,15 +38,17 @@ export function registerGowaWebhookRoutes(wsBridge: GowaWsBridge): Router {
       const code = typeof envelope?.event === 'string' ? envelope.event : '';
       const isReaction = isGowaReactionEvent(code);
       const messageCode = MESSAGE_CODES.get(code);
-      if (!isReaction && !messageCode) {
+      const isCallOffer = isCallOfferEventCode(code);
+      if (!isReaction && !messageCode && !isCallOffer) {
         res.sendStatus(204);
         return;
       }
       const change = isReaction ? readGowaReaction(envelope) : undefined;
       const payload = asReactionRecord(envelope?.payload);
+      const callPayload = isCallOffer ? payload ?? envelope : undefined;
       const upstreamId = typeof envelope?.device_id === 'string' ? envelope.device_id.trim() : '';
       const sessionId = typeof envelope?.session_id === 'string' ? envelope.session_id.trim() : '';
-      if ((!upstreamId && !sessionId) || (isReaction && !change) || (messageCode && !payload)) {
+      if ((!upstreamId && !sessionId) || (isReaction && !change) || (messageCode && !payload) || (isCallOffer && !callPayload)) {
         res.status(400).json({
           code: isReaction ? 'INVALID_REACTION' : 'INVALID_WEBHOOK_PAYLOAD',
           message: 'Invalid GOWA webhook payload',
@@ -57,6 +63,8 @@ export function registerGowaWebhookRoutes(wsBridge: GowaWsBridge): Router {
           if (event) wsBridge.broadcast(event);
         } else if (messageCode) {
           wsBridge.relayScopedEvent(deviceId, {code: messageCode, message: '', result: payload});
+        } else if (isCallOffer && callPayload) {
+          await handleIncomingCallOffer(deviceId, callPayload, (event) => wsBridge.broadcast(event));
         }
       }
       res.sendStatus(204);

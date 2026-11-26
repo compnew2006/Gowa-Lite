@@ -2,6 +2,7 @@ import {http, results} from '@/lib/http';
 import type {
   AccountCloseRatings,
   AccountContact,
+  AccountDailyResetSettings,
   AccountSummary,
   AssignableAccountsCatalog,
   AssignableAgent,
@@ -9,6 +10,7 @@ import type {
   AvatarResponse,
   BulkLifecycleResponse,
   BusinessProfileResponse,
+  CallAutoRejectSettings,
   ChatAssignmentInfo,
   ChatInfo,
   ChatLifecycleEvent,
@@ -18,6 +20,7 @@ import type {
   CheckResponse,
   ConversationNote,
   CreateSchedulePayload,
+  DailyResetRunResult,
   DeviceStatus,
   DirectoryResponse,
   DownloadedMedia,
@@ -52,8 +55,10 @@ import type {
   UnifiedGroupsResponse,
   UnifiedStatusesResponse,
   User,
+  UserCloseRatings,
   UserCreatePayload,
   UserInfoResponse,
+  UserRatingSummary,
   UserUpdatePayload,
 } from '@/api/types';
 
@@ -115,6 +120,18 @@ export function updateMyTheme(theme: ThemePreference): Promise<User> {
 // Users & RBAC Roles
 export function listUsers(): Promise<User[]> {
   return results(http.get('/users'));
+}
+
+export function listUsersRatings(): Promise<UserRatingSummary[]> {
+  return results(http.get('/users/ratings'));
+}
+
+export function getUserRatings(userId: number): Promise<UserCloseRatings> {
+  return results(http.get(`/users/${userId}/ratings`));
+}
+
+export function getMyRatings(): Promise<UserCloseRatings> {
+  return results(http.get('/me/ratings'));
 }
 
 export function createUser(payload: UserCreatePayload): Promise<User> {
@@ -197,8 +214,26 @@ export function getAccountCloseRatings(deviceId: string): Promise<AccountCloseRa
   return results(http.get(`/devices/${enc(deviceId)}/close-ratings`));
 }
 
-export function saveAccountCloseRatings(deviceId: string, enabled: boolean): Promise<AccountCloseRatings> {
-  return results(http.put(`/devices/${enc(deviceId)}/close-ratings`, {enabled}));
+export function saveAccountCloseRatings(
+  deviceId: string,
+  payload: {enabled?: boolean; prompt_message?: string},
+): Promise<AccountCloseRatings> {
+  return results(http.put(`/devices/${enc(deviceId)}/close-ratings`, payload));
+}
+
+export function getAccountDailyReset(deviceId: string): Promise<AccountDailyResetSettings> {
+  return results(http.get(`/devices/${enc(deviceId)}/daily-reset`));
+}
+
+export function saveAccountDailyReset(
+  deviceId: string,
+  payload: {enabled: boolean; reset_hour: number; timezone: string},
+): Promise<AccountDailyResetSettings> {
+  return results(http.put(`/devices/${enc(deviceId)}/daily-reset`, payload));
+}
+
+export function runAccountDailyResetNow(deviceId: string): Promise<DailyResetRunResult> {
+  return results(http.post(`/devices/${enc(deviceId)}/daily-reset/run`));
 }
 
 export function listUnifiedAccounts(): Promise<AccountSummary[]> {
@@ -1101,6 +1136,19 @@ export async function unsubscribeNewsletterLiveUpdates(
   await http.delete(`/devices/${enc(deviceId)}/newsletters/live-updates`, {
     params: {newsletter_id: newsletterId},
   });
+}
+
+export async function getCallAutoRejectSettings(
+  deviceId: string,
+): Promise<CallAutoRejectSettings> {
+  return results(http.get(`/devices/${enc(deviceId)}/call/auto-reject`));
+}
+
+export async function saveCallAutoRejectSettings(
+  deviceId: string,
+  payload: {enabled?: boolean; reply_message?: string; reset_message?: boolean},
+): Promise<CallAutoRejectSettings> {
+  return results(http.put(`/devices/${enc(deviceId)}/call/auto-reject`, payload));
 }
 
 export async function rejectCall(

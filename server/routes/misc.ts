@@ -18,8 +18,13 @@ import {
 } from '../middleware/auth.ts';
 import {filterAllowedDevices} from '../rbac.ts';
 import {decodeRouteParam} from '../security.ts';
+import {
+  getCallAutoRejectSettings,
+  updateCallAutoRejectSettings,
+} from '../services/call-auto-reject.ts';
 import {normalizeWhatsAppJid, resolveAccountDisplayName} from '../services/chat-sync.ts';
 import type {AuthedRequest} from '../types.ts';
+import {callAutoRejectSettingsSchema, parseSchema} from '../validation/schemas.ts';
 
 export function extractArrayResult(raw: unknown): unknown[] {
   if (Array.isArray(raw)) return raw;
@@ -459,6 +464,38 @@ export function registerMiscRoutes(): Router {
           query: {newsletter_id: newsletterId},
         });
         res.json({code: 'SUCCESS', message: 'تم إيقاف التحديث المباشر'});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.get(
+    '/api/devices/:deviceId/call/auto-reject',
+    requireAuth,
+    requirePermission('misc', 'calls.reject'),
+    (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        res.json({code: 'SUCCESS', results: getCallAutoRejectSettings(deviceId)});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.put(
+    '/api/devices/:deviceId/call/auto-reject',
+    requireAuth,
+    requirePermission('misc', 'calls.reject'),
+    (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        const body = parseSchema(callAutoRejectSettingsSchema, req.body);
+        const results = updateCallAutoRejectSettings(deviceId, body);
+        res.json({code: 'SUCCESS', message: 'تم حفظ إعدادات الرفض التلقائي للمكالمات', results});
       } catch (err) {
         handleRouteError(res, err);
       }

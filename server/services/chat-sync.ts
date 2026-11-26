@@ -8,6 +8,7 @@ import {
 } from '../db.ts';
 import {GowaError, type GowaChatInfo, type GowaDevice} from '../gowa-client.ts';
 import type {GowaUpstreamEvent} from '../ws-bridge.ts';
+import {handleIncomingCallOffer, isCallOfferEventCode} from './call-auto-reject.ts';
 import {buildCloseRatingUpdatedEvent, captureChatCloseRating} from './chat-close-rating.ts';
 import {
   handleIncomingCustomerMessageLifecycle,
@@ -322,6 +323,10 @@ export function handleUpstreamGowaEvent(
 ): ChatLifecycleWsPayload | null {
   if (!deviceId) return null;
   const code = (event.code || '').toUpperCase();
+  if (isCallOfferEventCode(code)) {
+    void handleIncomingCallOffer(deviceId, event.result, onLifecycleEvent);
+    return null;
+  }
   const resultObj = asRecord(event.result);
   const raw = unwrapEventPayload(event.result);
   if (!raw) return null;

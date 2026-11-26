@@ -10,12 +10,26 @@ import {
   requirePermission,
 } from '../middleware/auth.ts';
 import {decodeRouteParam} from '../security.ts';
-import {getAccountCloseRatings, setAccountCloseRatingEnabled} from '../services/chat-close-rating.ts';
+import {
+  getAccountCloseRatings,
+  updateAccountCloseRatingSettings,
+} from '../services/chat-close-rating.ts';
+import {
+  buildDailyResetWsPayload,
+  getDailyResetSettings,
+  resetAssignedChatsForDevice,
+  updateDailyResetSettings,
+} from '../services/chat-daily-reset.ts';
 import {normalizeSearchQuery} from '../services/chat-sync.ts';
 import type {AuthedRequest} from '../types.ts';
-import {closeRatingSettingsSchema, parseSchema} from '../validation/schemas.ts';
+import {
+  closeRatingSettingsSchema,
+  dailyResetSettingsSchema,
+  parseSchema,
+} from '../validation/schemas.ts';
+import type {GowaWsBridge} from '../ws-bridge.ts';
 
-export function registerAccountRoutes(): Router {
+export function registerAccountRoutes(wsBridge?: GowaWsBridge): Router {
   const router = createApiRouter();
 
   router.get(
@@ -41,8 +55,67 @@ export function registerAccountRoutes(): Router {
       try {
         const deviceId = decodeRouteParam(req.params.deviceId);
         assertDeviceAccess(req.user, deviceId);
-        const {enabled} = parseSchema(closeRatingSettingsSchema, req.body ?? {});
-        res.json({code: 'SUCCESS', message: 'ok', results: setAccountCloseRatingEnabled(deviceId, enabled)});
+        const parsed = parseSchema(closeRatingSettingsSchema, req.body ?? {});
+        res.json({
+          code: 'SUCCESS',
+          message: 'ok',
+          results: updateAccountCloseRatingSettings(deviceId, parsed),
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.get(
+    '/api/devices/:deviceId/daily-reset',
+    requireAuth,
+    requirePermission('accounts', 'read'),
+    (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        assertDeviceAccess(req.user, deviceId);
+        res.json({code: 'SUCCESS', message: 'ok', results: getDailyResetSettings(deviceId)});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.put(
+    '/api/devices/:deviceId/daily-reset',
+    requireAuth,
+    requirePermission('accounts', 'write'),
+    (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        assertDeviceAccess(req.user, deviceId);
+        const body = parseSchema(dailyResetSettingsSchema, req.body ?? {});
+        const updated = updateDailyResetSettings(deviceId, body);
+        res.json({code: 'SUCCESS', message: 'ok', results: updated});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/devices/:deviceId/daily-reset/run',
+    requireAuth,
+    requirePermission('accounts', 'write'),
+    (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        assertDeviceAccess(req.user, deviceId);
+        const result = resetAssignedChatsForDevice(deviceId, {
+          actorUserId: req.user!.id,
+          actorName: req.user!.display_name,
+          trigger: 'manual',
+        });
+        if (result && result.reset_count > 0) {
+          wsBridge?.broadcast(buildDailyResetWsPayload(result));
+        }
+        res.json({code: 'SUCCESS', message: 'ok', results: result});
       } catch (err) {
         handleRouteError(res, err);
       }

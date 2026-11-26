@@ -185,6 +185,24 @@ export function AppShell() {
         }
       }
 
+      if (code === 'CHAT_DAILY_RESET' && event.result && typeof event.result === 'object') {
+        const payload = event.result as {device_id?: string; chat_jids?: unknown};
+        const devId = payload.device_id || event.device_id || '';
+        if (devId && Array.isArray(payload.chat_jids)) {
+          for (const rawJid of payload.chat_jids) {
+            if (typeof rawJid === 'string' && rawJid) {
+              lifecycleMapRef.current.set(`${devId}::${rawJid}`, {
+                status: 'pending',
+                assigned_user_id: null,
+              });
+            }
+          }
+        }
+        if (!location.pathname.startsWith('/chats')) {
+          void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+        }
+      }
+
       const target = extractWsEventTarget(event);
       const isGroupTarget = Boolean(target.chatJid?.toLowerCase().endsWith('@g.us'));
       const isMessageOrRevokeEvent =
