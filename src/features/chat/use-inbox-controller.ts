@@ -6,6 +6,7 @@ import type {UnifiedChat, UnifiedChatTab} from '@/api/types';
 import {chatLifecycleQueryKeys} from '@/features/chat/message-query-keys';
 import {chatDisplayName} from '@/features/chat/display-name';
 import {markPrivateChatReadInInboxCache} from '@/features/chat/inbox-queries';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {messageHistoryOptions} from '@/features/chat/message-history-query';
 import {chatUniqueKey, resolveSelectedUnifiedChat} from '@/features/chat/selected-chat';
 import {usePaginatedChats} from '@/features/chat/use-paginated-chats';
@@ -86,7 +87,7 @@ export function useInboxController(deviceIds: string[], canViewAll: boolean) {
         } else {
           toast.error(res.failed[0]?.message || t.chats.bulkPartialToast(0, failCount));
         }
-        await queryClient.invalidateQueries({queryKey: ['unified-chats']});
+        await queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
         void queryClient.invalidateQueries({queryKey: chatLifecycleQueryKeys.all});
       } catch (err) {
         toast.error(toApiError(err).message);

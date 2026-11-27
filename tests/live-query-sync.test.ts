@@ -191,3 +191,45 @@ test('incoming MESSAGE_RECEIVED patches multi-page unfiltered history without in
   assert.equal(client.getQueryState(baseKey)?.isInvalidated, false);
   assert.equal(client.getQueryState(searchKey)?.isInvalidated, true);
 });
+
+test('redacted incoming events revalidate the scoped history without patching it', () => {
+  const client = new QueryClient();
+  const baseKey = messageHistoryOptions('one', jid).queryKey;
+  const otherAccountKey = messageHistoryOptions('two', jid).queryKey;
+  const initial = {
+    pageParams: [0],
+    pages: [{
+      data: [],
+      pagination: {limit: 40, offset: 0, total: 0},
+      chat_info: {
+        jid,
+        name: 'Test',
+        last_message_time: '',
+        ephemeral_expiration: 0,
+        created_at: '',
+        updated_at: '',
+        archived: false,
+      },
+    }],
+  };
+  const payload = {id: 'm-redacted', chat_jid: jid, content: '', media_type: ''};
+  client.setQueryData(otherAccountKey, initial);
+
+  for (const result of [
+    {...payload, content_redacted: true},
+    {content_redacted: true, payload},
+    {payload: {...payload, content_redacted: true}},
+  ]) {
+    client.setQueryData(baseKey, initial);
+    syncLiveQueryCache(client, {
+      code: 'MESSAGE_RECEIVED',
+      message: '',
+      device_id: 'one',
+      result,
+    });
+
+    assert.deepEqual(client.getQueryData(baseKey), initial);
+    assert.equal(client.getQueryState(baseKey)?.isInvalidated, true);
+    assert.equal(client.getQueryState(otherAccountKey)?.isInvalidated, false);
+  }
+});

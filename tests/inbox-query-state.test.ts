@@ -58,7 +58,7 @@ describe('inbox query state', () => {
         tab: 'open',
         assignedTo: 'me',
       }),
-      ['unified-chats', ['device-1'], 'alice', true, 'open', 'me'],
+      ['unified-chats', ['device-1'], 'Alice', true, 'open', 'me'],
     );
   });
 

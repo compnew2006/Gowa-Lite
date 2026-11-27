@@ -177,7 +177,9 @@ export function extractWsIncomingMessage(
   const resultObj = asRecord(event.result);
   const payload = unwrapGowaPayload(event.result);
   const source = payload ?? resultObj;
-  if (!source) return null;
+  if (!source || source.content_redacted === true || resultObj?.content_redacted === true) {
+    return null;
+  }
 
   const id = firstNonEmptyString(
     source.id,

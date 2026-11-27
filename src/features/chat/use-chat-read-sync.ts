@@ -3,6 +3,7 @@ import {useQueryClient} from '@tanstack/react-query';
 import {markUnifiedChatRead, markUnifiedGroupRead} from '@/api/client';
 import type {UnifiedChat, UnifiedGroupsResponse} from '@/api/types';
 import {markPrivateChatReadInInboxCache} from '@/features/chat/inbox-queries';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {extractWsEventTarget, onWsEvent} from '@/lib/events';
 import {toWhatsAppJid} from '@/lib/phone';
 
@@ -83,7 +84,7 @@ export function useChatReadSync(chat: UnifiedChat, isContentRedacted = false): v
 
     void markUnifiedChatRead(chat.device_id, chat.jid)
       .then(() => {
-        void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+        void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
       })
       .catch(() => {
         // Non-blocking: sidebar will resync on next fetch
