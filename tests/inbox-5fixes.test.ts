@@ -43,9 +43,10 @@ describe('Gowa Lite 5 Targeted Fixes Verification', () => {
 
     const headerBtnCount = (headerSrc.match(/fetchOlderFromPhone/g) ?? []).length;
     assert.ok(headerBtnCount >= 2, 'Header button should use fetchOlderFromPhone label/title');
-    assert.equal(viewSrc.includes('fetchOlderFromPhone'), false, 'Duplicate inline fetchOlderFromPhone button must be removed from MessageView');
+    assert.equal(viewSrc.includes('fetchOlderFromPhone'), true, 'MessageView empty state must keep manual fetchOlderFromPhone action');
     assert.equal(viewSrc.includes('requestUnifiedChatHistory('), true, 'MessageView must automatically request history when empty');
     assert.equal(viewSrc.includes('fetchingHistoryFromPhone'), true, 'MessageView must render loading state while fetching history');
+    assert.equal(viewSrc.includes('noHistoryOnPhone'), true, 'MessageView must show explicit no-history-on-phone state when phone has no history');
   });
 
   it('Issue 2: separates secondaryPhone onto its own line, guards green unread badge to >0, and clears on chat open', () => {
@@ -121,7 +122,7 @@ describe('Gowa Lite 5 Targeted Fixes Verification', () => {
     }
   });
 
-  describe('Integration: Server Media Range/Cache, Groups Fast Directory & Lifecycle + Private Tabs', () => {
+  describe('Integration: Server Media Range/Cache, Groups Fast Directory & Lifecycle Tabs', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gowa-lite-5fixes-'));
     const dbPath = path.join(tmpDir, 'test.db');
 
@@ -461,11 +462,11 @@ describe('Gowa Lite 5 Targeted Fixes Verification', () => {
       assert.equal(fullRes.rawBuffer.toString('utf8'), sampleMediaBytes.toString('utf8'));
       assert.equal(gowaBinaryFetchCalls, 1, 'Upstream binary asset should be fetched only once across Range/full requests');
 
-      // 4. Issue 5: Real lifecycle transitions + distinct All / Me / Open / Pending / Closed / Private tabs
+      // 4. Issue 5: Real lifecycle transitions + distinct All / Me / Open / Pending / Closed tabs (no Private tab)
       const initialChats = await api('/api/unified/chats?tab=all', {token});
       assert.equal(initialChats.status, 200);
       const initPayload = initialChats.body?.results as {
-        tab_counts: {all: number; me: number; open: number; pending: number; closed: number; private: number};
+        tab_counts: {all: number; me: number; open: number; pending: number; closed: number};
         chat_lists: Array<{id: number; name: string}>;
       };
       assert.deepEqual(initPayload.tab_counts, {
@@ -474,10 +475,12 @@ describe('Gowa Lite 5 Targeted Fixes Verification', () => {
         open: 0,
         pending: 3,
         closed: 0,
-        private: 0,
       });
-      const privateList = initPayload.chat_lists.find((l) => l.name === 'الخاص');
-      assert.ok(privateList, 'Default private list "الخاص" should be seeded automatically');
+      assert.equal(
+        initPayload.chat_lists.some((l) => l.name === 'الخاص' || l.name.toLowerCase() === 'private'),
+        false,
+        'Default private list "الخاص" must not be seeded',
+      );
 
       // Sup1 claims Open Beta -> me: 1, open: 1, pending: 2
       const claim1 = await api('/api/unified/chats/dev-1/966501000002@s.whatsapp.net/claim', {
@@ -503,19 +506,11 @@ describe('Gowa Lite 5 Targeted Fixes Verification', () => {
       });
       assert.equal(close3.status, 200);
 
-      // Assign Open Beta to Private list -> private: 1
-      const assignPrivate = await api('/api/unified/chats/dev-1/966501000002@s.whatsapp.net/lists', {
-        method: 'PUT',
-        token,
-        body: {list_ids: [privateList.id]},
-      });
-      assert.equal(assignPrivate.status, 200);
-
       const afterLifecycle = await api('/api/unified/chats?tab=all', {token});
       assert.equal(afterLifecycle.status, 200);
       assert.deepEqual(
         (afterLifecycle.body?.results as {tab_counts: unknown}).tab_counts,
-        {all: 3, me: 1, open: 2, pending: 0, closed: 1, private: 1},
+        {all: 3, me: 1, open: 2, pending: 0, closed: 1},
       );
 
       // Verify each tab's returned rows match its real semantics
@@ -534,11 +529,8 @@ describe('Gowa Lite 5 Targeted Fixes Verification', () => {
         ['966501000003@s.whatsapp.net'],
       );
 
-      const privateTab = await api('/api/unified/chats?tab=private', {token});
-      assert.deepEqual(
-        ((privateTab.body?.results as {data: Array<{jid: string}>}).data).map((c) => c.jid),
-        ['966501000002@s.whatsapp.net'],
-      );
+      const removedPrivateTab = await api('/api/unified/chats?tab=private', {token});
+      assert.equal(removedPrivateTab.status, 400);
 
       // Simulate customer reply on closed chat -> auto-reopens to pending
       const wsClient = mockWsClients.get('dev-1');

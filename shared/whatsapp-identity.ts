@@ -66,3 +66,28 @@ export function normalizeWhatsAppJid(raw: string): string {
   }
   return '';
 }
+
+export function matchesNormalizedSearch(
+  haystackParts: Array<string | undefined | null>,
+  rawQuery: string,
+): boolean {
+  const normalized = normalizeSearchQuery(rawQuery).toLowerCase();
+  if (!normalized) return true;
+
+  const isDigitsOnly = /^\d+$/.test(normalized);
+  const strippedLeadingZero = isDigitsOnly ? normalized.replace(/^0+/, '') : '';
+
+  for (const part of haystackParts) {
+    if (!part) continue;
+    const lowered = normalizeArabicDigits(part).toLowerCase();
+    if (lowered.includes(normalized)) return true;
+    if (isDigitsOnly) {
+      const compactDigits = lowered.replace(/[^\d]/g, '');
+      if (compactDigits.includes(normalized)) return true;
+      if (strippedLeadingZero.length >= 3 && compactDigits.includes(strippedLeadingZero)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}

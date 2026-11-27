@@ -1,13 +1,12 @@
 import {
   clearChatCatchup,
-  countChatsInListForDevices,
   getChatDeviceStatesMap,
-  getPrivateChatListIdForUser,
+  getChatsMessagePresenceMap,
   getUnreadCountsForUser,
   getUserChatListMemberships,
   getUserChatPreferencesMap,
-  listDbChatsInList,
   parseTimestampMs,
+  setChatMessagePresence,
   syncChatWatermarks,
   upsertCachedMessages,
   type ChatDeviceState,
@@ -46,7 +45,7 @@ import {
 } from './chat-sync.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
 
-const VALID_UNIFIED_TABS = new Set<UnifiedChatTab>(['all', 'me', 'open', 'pending', 'closed', 'private']);
+const VALID_UNIFIED_TABS = new Set<UnifiedChatTab>(['all', 'me', 'open', 'pending', 'closed']);
 
 export type RemoteUnifiedChat = GowaChatInfo & {
   device_id: string;
@@ -89,7 +88,7 @@ export function parseUnifiedChatsQuery(
       throw new GowaError(
         400,
         'VALIDATION_ERROR',
-        'قيمة التبويب غير صالحة (المسموح: all, me, open, pending, closed, private)',
+        'قيمة التبويب غير صالحة (المسموح: all, me, open, pending, closed)',
       );
     }
     requestedTab = rawTab as UnifiedChatTab;
@@ -303,7 +302,6 @@ export async function fetchRemoteChatsForDevices(params: {
   const remoteFetchOffset =
     query.requestedTab === 'closed' ||
     query.requestedTab === 'open' ||
-    query.requestedTab === 'private' ||
     (query.requestedTab === 'me' && !query.hasMedia)
       ? 0
       : query.offset;
@@ -418,7 +416,6 @@ export function computeUnifiedTabCounts(params: {
       query.isSearchMode ||
       query.requestedTab === 'closed' ||
       query.requestedTab === 'open' ||
-      query.requestedTab === 'private' ||
       query.requestedTab === 'me');
 
   // When remote wasn't scanned completely, subtract only confirmed remote open/closed chats
@@ -443,11 +440,6 @@ export function computeUnifiedTabCounts(params: {
     dbClosedExtraNotInRemote = Math.max(0, dbClosedCount - remoteClosedInFetched);
   }
 
-  const privateListId = userId ? getPrivateChatListIdForUser(userId) : null;
-  const privateCount = userId
-    ? countChatsInListForDevices(userId, privateListId, targetDeviceIds)
-    : 0;
-
   return {
     all: query.isSupervisor
       ? effectiveTotalRemote + dbClosedExtraNotInRemote + dbOpenExtraNotInRemote
@@ -456,7 +448,6 @@ export function computeUnifiedTabCounts(params: {
     open: dbAllOpenCount,
     pending: pendingCount,
     closed: dbClosedCount,
-    private: privateCount,
   };
 }
 
@@ -601,85 +592,6 @@ export function paginateUnifiedChats(params: {
     return {pagedChats: paged, totalAvailable: list.length, hasMore: query.offset + paged.length < list.length};
   }
 
-  if (query.requestedTab === 'private') {
-    const privateListId = getPrivateChatListIdForUser(userId);
-    if (!privateListId) {
-      return {pagedChats: [], totalAvailable: 0, hasMore: false};
-    }
-    const buildPrivateEntries = (dbLimit?: number, dbOffset?: number): RemoteUnifiedChat[] => {
-      const entries = listDbChatsInList({
-        userId,
-        listId: privateListId,
-        deviceIds: targetDeviceIds,
-        limit: dbLimit,
-        offset: dbOffset,
-      });
-      const merged: RemoteUnifiedChat[] = [];
-      for (const entry of entries) {
-        const key = `${entry.device_id}::${entry.jid}`;
-        const devState = deviceStatesMap.get(key);
-        if (devState && devState.deleted_before_ms > 0) {
-          const entryMs = parseTimestampMs(entry.last_message_time);
-          if (entryMs > 0 && entryMs <= devState.deleted_before_ms) continue;
-        }
-        const remote = remoteByKey.get(key);
-        if (query.hasMedia && !remote) continue;
-
-        const info = deviceInfoMap.get(entry.device_id);
-        const displayName = info?.displayName ?? entry.device_id;
-        const baseArchived =
-          devState?.archived_override !== null && devState?.archived_override !== undefined
-            ? devState.archived_override
-            : remote
-              ? Boolean(remote.archived)
-              : false;
-        const candidate: RemoteUnifiedChat = remote
-          ? {
-              ...remote,
-              archived: baseArchived,
-              name: remote.name?.trim() || entry.name,
-              last_message_time: remote.last_message_time || entry.last_message_time,
-              is_pinned: Boolean(devState?.is_pinned ?? remote.is_pinned),
-              pinned_at_ms: devState?.pinned_at_ms ?? remote.pinned_at_ms ?? 0,
-              is_blocked: Boolean(devState?.is_blocked ?? remote.is_blocked),
-            }
-          : {
-              jid: entry.jid,
-              name: entry.name,
-              last_message_time: entry.last_message_time,
-              ephemeral_expiration: 0,
-              created_at: '',
-              updated_at: entry.last_message_time,
-              archived: baseArchived,
-              device_id: entry.device_id,
-              device_display_name: displayName,
-              device_state: info?.device.state ?? 'disconnected',
-              is_pinned: Boolean(devState?.is_pinned),
-              pinned_at_ms: devState?.pinned_at_ms ?? 0,
-              is_blocked: Boolean(devState?.is_blocked),
-            };
-        if (query.isSearchMode && !matchesUnifiedChatSearch(candidate, displayName, query.rawSearch)) {
-          continue;
-        }
-        merged.push(candidate);
-      }
-      sortChatsDesc(merged);
-      return merged;
-    };
-
-    if (canDirectSqlPaginate) {
-      const paged = buildPrivateEntries(query.limit, query.offset);
-      return {
-        pagedChats: paged,
-        totalAvailable: tabCounts.private,
-        hasMore: query.offset + paged.length < tabCounts.private,
-      };
-    }
-    const list = buildPrivateEntries();
-    const paged = list.slice(query.offset, query.offset + query.limit);
-    return {pagedChats: paged, totalAvailable: list.length, hasMore: query.offset + paged.length < list.length};
-  }
-
   sortChatsDesc(allChats);
   if (query.requestedTab === 'pending') {
     const list = allChats.filter(
@@ -796,10 +708,67 @@ export async function runInitialUnreadCatchup(params: {
             const reopenEvent = handleIncomingCustomerMessageLifecycle(deviceId, chatJid, latestCustomerMs);
             if (reopenEvent) wsBridge.broadcast(reopenEvent);
           }
+        } else {
+          setChatMessagePresence(
+            changed.device_id,
+            changed.chat_jid,
+            false,
+            changed.new_last_message_ms
+              ? new Date(changed.new_last_message_ms).toISOString()
+              : undefined,
+          );
         }
         clearChatCatchup(changed.device_id, changed.chat_jid);
       } catch {
         // Keep needs_catchup = 1 so the next poll automatically retries
+      }
+    }),
+  );
+}
+
+export async function resolveMissingChatMessagePresence(params: {
+  pagedChats: RemoteUnifiedChat[];
+  devices: GowaDevice[];
+  user: PublicUser;
+}): Promise<void> {
+  const {pagedChats, devices, user} = params;
+  if (pagedChats.length === 0) return;
+
+  const onlineDeviceSet = new Set(
+    devices.filter((d) => d.state === 'logged_in' || d.state === 'connected').map((d) => d.id),
+  );
+  const chatKeys = pagedChats.map((c) => ({device_id: c.device_id, chat_jid: c.jid}));
+  const presenceMap = getChatsMessagePresenceMap(chatKeys);
+
+  const unknownChats = pagedChats.filter((chat) => {
+    const key = `${chat.device_id}::${chat.jid}`;
+    const known = presenceMap.get(key);
+    if (typeof known === 'boolean') return false;
+    if (parseTimestampMs(chat.last_message_time) <= 0) return false;
+    return onlineDeviceSet.has(chat.device_id) && hasDeviceAccess(user, chat.device_id);
+  });
+  if (unknownChats.length === 0) return;
+
+  const CONCURRENCY = 16;
+  let cursor = 0;
+  const workerCount = Math.min(CONCURRENCY, unknownChats.length);
+
+  await Promise.all(
+    Array.from({length: workerCount}, async () => {
+      while (cursor < unknownChats.length) {
+        const chat = unknownChats[cursor++];
+        if (!chat) break;
+        try {
+          const probe = await gowaFetch<{data?: GowaMessageInfo[]; pagination?: GowaPagination}>(
+            `/chat/${encodeURIComponent(chat.jid)}/messages`,
+            {deviceId: chat.device_id, query: {limit: 1, offset: 0}, timeoutMs: 2_500},
+          );
+          const hasMessages =
+            (probe?.data?.length ?? 0) > 0 || (probe?.pagination?.total ?? 0) > 0;
+          setChatMessagePresence(chat.device_id, chat.jid, hasMessages, chat.last_message_time);
+        } catch {
+          // Leave unknown so next poll can retry without breaking chat listing
+        }
       }
     }),
   );
@@ -814,6 +783,7 @@ export function enrichUnifiedChatsWithUnreadAndLifecycle(params: {
   const chatKeys = pagedChats.map((c) => ({device_id: c.device_id, chat_jid: c.jid}));
   const uniqueDeviceIds = Array.from(new Set(pagedChats.map((c) => c.device_id).filter(Boolean)));
   const unreadByChat = getUnreadCountsForUser(user, chatKeys);
+  const presenceByChat = getChatsMessagePresenceMap(chatKeys);
   const deviceStatesMap = getChatDeviceStatesMap(uniqueDeviceIds);
   const userPrefsMap = getUserChatPreferencesMap(user.id, uniqueDeviceIds);
   const listMembershipsMap = getUserChatListMemberships(user.id, uniqueDeviceIds);
@@ -828,6 +798,13 @@ export function enrichUnifiedChatsWithUnreadAndLifecycle(params: {
   const enrichedChats = pagedChats.map((chat) => {
     const key = `${chat.device_id}::${chat.jid}`;
     const unreadCount = unreadByChat.get(key) ?? 0;
+    const knownPresence = presenceByChat.get(key);
+    const hasMessages =
+      parseTimestampMs(chat.last_message_time) <= 0
+        ? false
+        : typeof knownPresence === 'boolean'
+          ? knownPresence
+          : undefined;
     const assignment = lifecycleByChat.get(key) ?? assignmentsMap.get(key);
     const devState = deviceStatesMap.get(key);
     const userPref = userPrefsMap.get(key);
@@ -839,6 +816,7 @@ export function enrichUnifiedChatsWithUnreadAndLifecycle(params: {
     totalUnread += unreadCount;
     return {
       ...chat,
+      ...(hasMessages !== undefined ? {has_messages: hasMessages} : {}),
       archived: effectiveArchived,
       is_pinned: Boolean(devState?.is_pinned ?? chat.is_pinned),
       pinned_at_ms: devState?.pinned_at_ms ?? chat.pinned_at_ms ?? 0,

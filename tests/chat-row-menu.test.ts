@@ -227,11 +227,11 @@ describe('Chat Row Context Menu (Unit)', () => {
     assert.deepEqual(assigned, [vipList.id]);
     const listsWithVip = dbMod.listChatListsForUser(userA.id);
     assert.equal(listsWithVip.find((l) => l.id === vipList.id)?.chat_count, 1);
-    assert.ok(listsWithVip.some((l) => l.name === 'الخاص'));
+    assert.equal(listsWithVip.some((l) => l.name === 'الخاص'), false);
     assert.equal(dbMod.deleteChatListForUser(userA.id, vipList.id), true);
     const listsAfterDelete = dbMod.listChatListsForUser(userA.id);
     assert.equal(listsAfterDelete.some((l) => l.id === vipList.id), false);
-    assert.ok(listsAfterDelete.some((l) => l.name === 'الخاص'));
+    assert.equal(listsAfterDelete.some((l) => l.name === 'الخاص'), false);
 
     // Clear chat hides earlier messages while preserving newer ones
     const tOld = '2026-11-24T01:00:00.000Z';

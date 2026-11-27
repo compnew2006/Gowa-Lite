@@ -58,6 +58,7 @@ import {ChatRowMenu, type ChatRowMenuAction} from '@/features/chat/chat-row-menu
 import {
   formatSecondaryChatPhone,
   shouldShowAccountFilter,
+  shouldShowChatRowTimestamp,
   shouldShowRowAccountName,
   shouldShowRowLifecycle,
 } from '@/features/chat/chat-ui-helpers';
@@ -67,7 +68,7 @@ import {
   getOtherAccountsForChat,
   type OtherAccountRef,
 } from '@/features/chat/other-accounts';
-import {formatShortTime, isZeroTime} from '@/lib/format';
+import {formatShortTime} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {matchesNormalizedQuery} from '@/lib/phone';
@@ -285,9 +286,9 @@ const ChatListRow = memo(function ChatListRow({
   const isMuted = Boolean(
     chat.muted_until_ms && (chat.muted_until_ms === -1 || chat.muted_until_ms > Date.now()),
   );
-  const timeLabel = isZeroTime(chat.last_message_time)
-    ? ''
-    : formatShortTime(chat.last_message_time, lang);
+  const timeLabel = shouldShowChatRowTimestamp(chat)
+    ? formatShortTime(chat.last_message_time, lang)
+    : '';
 
   const lifecycle = chat.lifecycle;
   const lcStatus = lifecycle?.status ?? 'pending';
@@ -598,7 +599,6 @@ export function ChatList({
     list.push({id: 'open', label: t.chats.tabOpen, count: tabCounts?.open});
     list.push({id: 'pending', label: t.chats.tabPending, count: tabCounts?.pending});
     list.push({id: 'closed', label: t.chats.tabClosed, count: tabCounts?.closed});
-    list.push({id: 'private', label: t.chats.tabPrivate, count: tabCounts?.private});
     return list;
   }, [
     canViewAll,
@@ -607,7 +607,6 @@ export function ChatList({
     t.chats.tabMe,
     t.chats.tabOpen,
     t.chats.tabPending,
-    t.chats.tabPrivate,
     tabCounts,
   ]);
 
@@ -1230,11 +1229,7 @@ export function ChatList({
           <div className="p-6 text-center text-sm text-destructive">{errorMessage}</div>
         ) : visibleChats.length === 0 ? (
           <div className="p-6 text-center text-sm text-muted-foreground">
-            {archivedOnly
-              ? t.chats.archivedEmpty
-              : activeTab === 'private' && !search.trim()
-                ? t.chats.privateListEmpty
-                : t.chats.noMatchingChats}
+            {archivedOnly ? t.chats.archivedEmpty : t.chats.noMatchingChats}
           </div>
         ) : (
           <ul className="space-y-0.5">

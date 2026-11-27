@@ -1,5 +1,11 @@
 import {toWhatsAppJid} from '@/lib/phone';
 import type {ReactionInfo} from '@/api/types';
+import {
+  asRecord,
+  extractGowaProtocolContext,
+  firstNonEmptyString,
+  unwrapGowaPayload,
+} from '../../shared/gowa-payload.ts';
 
 export type WsEventCode =
   | 'BRIDGE_STATUS'
@@ -67,43 +73,10 @@ export function extractWsReaction(event: WsEvent): {deviceId: string; chatJid: s
   };
 }
 
-function asRecord(val: unknown): Record<string, unknown> | null {
-  return val && typeof val === 'object' && !Array.isArray(val)
-    ? (val as Record<string, unknown>)
-    : null;
-}
-
-function firstNonEmptyString(...values: unknown[]): string {
-  for (const v of values) {
-    if (typeof v === 'string' && v.trim()) {
-      return v.trim();
-    }
-  }
-  return '';
-}
-
-function unwrapWsObject(result: unknown): Record<string, unknown> | null {
-  const obj = asRecord(result);
-  if (!obj) return null;
-  const payload = asRecord(obj.payload);
-  if (payload) return payload;
-  const message = asRecord(obj.message);
-  if (message) return message;
-  return obj;
-}
-
 export function extractWsEventTarget(event: WsEvent): {deviceId?: string; chatJid?: string} {
   const resultObj = asRecord(event.result);
-  const payload = unwrapWsObject(event.result);
-  const nestedMessage = asRecord(payload?.message) ?? asRecord(resultObj?.message);
-  const protocolMsg =
-    asRecord(payload?.protocol_message) ??
-    asRecord(payload?.protocolMessage) ??
-    asRecord(nestedMessage?.protocolMessage) ??
-    asRecord(nestedMessage?.protocol_message) ??
-    asRecord(resultObj?.protocol_message) ??
-    asRecord(resultObj?.protocolMessage);
-  const protocolKey = asRecord(protocolMsg?.key);
+  const payload = unwrapGowaPayload(event.result);
+  const {protocolKey} = extractGowaProtocolContext(resultObj, payload);
 
   const rawDeviceId = firstNonEmptyString(
     event.device_id,
@@ -145,24 +118,10 @@ const REVOKED_WS_CODES = new Set([
 export function extractWsRevokeTarget(event: WsEvent): WsRevokeTarget | null {
   const code = (event.code || '').toUpperCase();
   const resultObj = asRecord(event.result);
-  const payload = unwrapWsObject(event.result);
+  const payload = unwrapGowaPayload(event.result);
   if (!payload) return null;
 
-  const nestedMessage = asRecord(payload.message) ?? asRecord(resultObj?.message);
-  const protocolMsg =
-    asRecord(payload.protocol_message) ??
-    asRecord(payload.protocolMessage) ??
-    asRecord(nestedMessage?.protocolMessage) ??
-    asRecord(nestedMessage?.protocol_message) ??
-    asRecord(resultObj?.protocol_message) ??
-    asRecord(resultObj?.protocolMessage);
-  const protocolKey = asRecord(protocolMsg?.key);
-  const protocolType = protocolMsg?.type;
-  const isProtocolRevoke =
-    protocolMsg !== null &&
-    (protocolType === 0 ||
-      String(protocolType || '').toUpperCase() === 'REVOKE' ||
-      String(protocolType || '').toUpperCase() === 'MESSAGE_REVOKE');
+  const {protocolKey, isProtocolRevoke} = extractGowaProtocolContext(resultObj, payload);
 
   const rawAction = firstNonEmptyString(payload.action, resultObj?.action).toLowerCase();
   const rawMediaType = firstNonEmptyString(payload.media_type, resultObj?.media_type).toLowerCase();

@@ -17,7 +17,7 @@ import {
   useQueryClient,
   type InfiniteData,
 } from '@tanstack/react-query';
-import {Hand, Loader2, Lock, Paperclip, RefreshCw, RotateCcw, Trash2} from 'lucide-react';
+import {Hand, History, Loader2, Lock, Paperclip, RotateCcw, Trash2} from 'lucide-react';
 import {toast} from 'sonner';
 import {
   blockUnifiedChat,
@@ -50,6 +50,11 @@ import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import type {ContextDrawerTab} from '@/features/chat/chat-context-drawer';
 import {chatDisplayName} from '@/features/chat/display-name';
+import {
+  isNoHistoryOnPhoneError,
+  shouldTriggerAutoHistoryFetch,
+  type EmptyHistoryStatus,
+} from '@/features/chat/empty-history';
 import {MediaSelectionBar} from '@/features/chat/media-selection-bar';
 import {MessageBubble} from '@/features/chat/message-bubble';
 import {
@@ -126,6 +131,7 @@ function formatLifecycleEventText(
 const PAGE_SIZE = 40;
 const HISTORY_POLL_MS = 2_000;
 const HISTORY_POLL_WINDOW_MS = 30_000;
+const MIN_HISTORY_LOADING_MS = 450;
 const REACTION_FALLBACK_POLL_MS = 12_000;
 const SCROLL_TOP_THRESHOLD_PX = 140;
 
@@ -159,6 +165,7 @@ function computeNextMessagePageParam(
 
 export function MessageView({
   chat,
+  openNonce = 0,
   onBack,
   alwaysShowBack = false,
   embeddedInGroup = false,
@@ -166,6 +173,7 @@ export function MessageView({
   onSwitchAccount,
 }: {
   chat: UnifiedChat;
+  openNonce?: number;
   onBack?: () => void;
   alwaysShowBack?: boolean;
   embeddedInGroup?: boolean;
@@ -201,15 +209,30 @@ export function MessageView({
   const [replyingTo, setReplyingTo] = useState<MessageInfo | null>(null);
   const [reactionPickerMessageId, setReactionPickerMessageId] = useState<string | null>(null);
   const pendingReactions = useRef(new Set<string>());
-  const autoHistoryRequestedRef = useRef<Set<string>>(new Set());
+  const lastAutoTriggerKeyRef = useRef<string | null>(null);
+  const lastResetOpenKeyRef = useRef<string | null>(null);
+  const historyRequestIdRef = useRef(0);
+  const minLoadingTimerRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
   const [historyPollUntil, setHistoryPollUntil] = useState(0);
-  const [autoHistoryActive, setAutoHistoryActive] = useState(false);
-  const [autoHistoryFailed, setAutoHistoryFailed] = useState(false);
+  const [emptyHistoryStatus, setEmptyHistoryStatus] = useState<EmptyHistoryStatus>('idle');
+  const [emptyHistoryError, setEmptyHistoryError] = useState('');
   const [drawerTab, setDrawerTab] = useState<ContextDrawerTab | null>(null);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [revokingMessage, setRevokingMessage] = useState<MessageInfo | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<MessageInfo | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (minLoadingTimerRef.current !== null) {
+        window.clearTimeout(minLoadingTimerRef.current);
+        minLoadingTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setSearchOpen(false);
@@ -221,9 +244,6 @@ export function MessageView({
     dragCounterRef.current = 0;
     setReplyingTo(null);
     setReactionPickerMessageId(null);
-    setHistoryPollUntil(0);
-    setAutoHistoryActive(false);
-    setAutoHistoryFailed(false);
     setScheduleDialogOpen(false);
     setAssignDialogOpen(false);
     setRevokingMessage(null);
@@ -232,6 +252,19 @@ export function MessageView({
     prevScrollAnchorRef.current = null;
     stickToBottomRef.current = true;
   }, [chat.device_id, chat.jid]);
+
+  useEffect(() => {
+    const triggerKey = `${chat.device_id}::${chat.jid}::${openNonce}`;
+    if (lastResetOpenKeyRef.current === triggerKey) return;
+    lastResetOpenKeyRef.current = triggerKey;
+    if (minLoadingTimerRef.current !== null) {
+      window.clearTimeout(minLoadingTimerRef.current);
+      minLoadingTimerRef.current = null;
+    }
+    setHistoryPollUntil(0);
+    setEmptyHistoryStatus('idle');
+    setEmptyHistoryError('');
+  }, [chat.device_id, chat.jid, openNonce]);
 
   useEffect(() => {
     initialScrolledRef.current = false;
@@ -364,37 +397,81 @@ export function MessageView({
   const isDeviceReady = chat.device_state === 'logged_in';
   const {hasNextPage, isFetchingNextPage, fetchNextPage} = query;
 
+  const requestEmptyChatHistory = useCallback(
+    (source: 'auto' | 'manual') => {
+      if (minLoadingTimerRef.current !== null) {
+        window.clearTimeout(minLoadingTimerRef.current);
+        minLoadingTimerRef.current = null;
+      }
+      const reqId = ++historyRequestIdRef.current;
+      const startedAt = Date.now();
+      setEmptyHistoryError('');
+      setEmptyHistoryStatus('loading');
+      setHistoryPollUntil(Date.now() + HISTORY_POLL_WINDOW_MS);
+
+      return requestUnifiedChatHistory(chat.device_id, chat.jid, PAGE_SIZE)
+        .then((res) => {
+          if (!mountedRef.current || historyRequestIdRef.current !== reqId) return res;
+          if (source === 'manual') {
+            toast.success(t.chats.historyRequestedToast);
+          }
+          return res;
+        })
+        .catch((err: unknown) => {
+          if (!mountedRef.current || historyRequestIdRef.current !== reqId) {
+            if (source === 'manual') throw err;
+            return undefined;
+          }
+          const apiErr = toApiError(err);
+          const noHistory = isNoHistoryOnPhoneError(apiErr.status, apiErr.message);
+          const remainingMs = Math.max(0, MIN_HISTORY_LOADING_MS - (Date.now() - startedAt));
+          const applyFailureState = () => {
+            if (!mountedRef.current || historyRequestIdRef.current !== reqId) return;
+            minLoadingTimerRef.current = null;
+            setHistoryPollUntil(0);
+            if (noHistory) {
+              setEmptyHistoryStatus('empty');
+              setEmptyHistoryError('');
+              if (source === 'manual') {
+                toast.info(t.chats.noHistoryOnPhone);
+              }
+            } else {
+              setEmptyHistoryStatus('error');
+              setEmptyHistoryError(apiErr.message);
+              if (source === 'manual') {
+                toast.error(apiErr.message);
+              }
+            }
+          };
+          if (remainingMs > 0) {
+            minLoadingTimerRef.current = window.setTimeout(applyFailureState, remainingMs);
+          } else {
+            applyFailureState();
+          }
+          return undefined;
+        });
+    },
+    [chat.device_id, chat.jid, t.chats.historyRequestedToast, t.chats.noHistoryOnPhone],
+  );
+
   useEffect(() => {
+    const triggerKey = `${chat.device_id}::${chat.jid}::${openNonce}`;
     if (
-      !query.isSuccess ||
-      query.isFetching ||
-      isContentRedacted ||
-      normalizedSearch ||
-      mediaOnly ||
-      !isDeviceReady ||
-      messages.length > 0
+      !shouldTriggerAutoHistoryFetch({
+        isSuccess: query.isSuccess,
+        isFetching: query.isFetching,
+        isContentRedacted,
+        hasSearchOrMediaFilter: Boolean(normalizedSearch || mediaOnly),
+        isDeviceReady,
+        messageCount: messages.length,
+        currentTriggerKey: triggerKey,
+        lastTriggeredKey: lastAutoTriggerKeyRef.current,
+      })
     ) {
       return;
     }
-    const requestKey = `${chat.device_id}::${chat.jid}`;
-    if (autoHistoryRequestedRef.current.has(requestKey)) return;
-    autoHistoryRequestedRef.current.add(requestKey);
-
-    let cancelled = false;
-    setAutoHistoryFailed(false);
-    setAutoHistoryActive(true);
-    setHistoryPollUntil(Date.now() + HISTORY_POLL_WINDOW_MS);
-
-    void requestUnifiedChatHistory(chat.device_id, chat.jid, PAGE_SIZE).catch(() => {
-      if (cancelled) return;
-      setAutoHistoryActive(false);
-      setHistoryPollUntil(0);
-      setAutoHistoryFailed(true);
-    });
-
-    return () => {
-      cancelled = true;
-    };
+    lastAutoTriggerKeyRef.current = triggerKey;
+    void requestEmptyChatHistory('auto');
   }, [
     chat.device_id,
     chat.jid,
@@ -403,23 +480,32 @@ export function MessageView({
     mediaOnly,
     messages.length,
     normalizedSearch,
+    openNonce,
     query.isFetching,
     query.isSuccess,
+    requestEmptyChatHistory,
   ]);
 
   useEffect(() => {
-    if (!autoHistoryActive) return;
     if (messages.length > 0) {
-      setAutoHistoryActive(false);
-      setHistoryPollUntil(0);
+      if (emptyHistoryStatus !== 'idle') {
+        setEmptyHistoryStatus('idle');
+        setEmptyHistoryError('');
+      }
+      if (historyPollUntil > 0) {
+        setHistoryPollUntil(0);
+      }
       return;
     }
+    if (emptyHistoryStatus !== 'loading' || historyPollUntil <= 0) return;
     const remaining = Math.max(0, historyPollUntil - Date.now());
     const timer = window.setTimeout(() => {
-      setAutoHistoryActive(false);
+      if (!mountedRef.current) return;
+      setHistoryPollUntil(0);
+      setEmptyHistoryStatus('empty');
     }, remaining || HISTORY_POLL_WINDOW_MS);
     return () => window.clearTimeout(timer);
-  }, [autoHistoryActive, historyPollUntil, messages.length]);
+  }, [emptyHistoryStatus, historyPollUntil, messages.length]);
 
   const lifecycleEvents = useMemo(() => {
     if (!isLifecycleSupported || isContentRedacted || normalizedSearch || mediaOnly) return [];
@@ -786,8 +872,12 @@ export function MessageView({
   });
 
   const historyMutation = useMutation({
-    mutationFn: () => requestUnifiedChatHistory(chat.device_id, chat.jid, PAGE_SIZE),
-    onSuccess: () => {
+    mutationFn: async () => {
+      if (messages.length === 0) {
+        await requestEmptyChatHistory('manual');
+        return;
+      }
+      await requestUnifiedChatHistory(chat.device_id, chat.jid, PAGE_SIZE);
       toast.success(t.chats.historyRequestedToast);
       setHistoryPollUntil(Date.now() + HISTORY_POLL_WINDOW_MS);
     },
@@ -1098,29 +1188,37 @@ export function MessageView({
               {toApiError(query.error).message}
             </div>
           ) : timelineItems.length === 0 ? (
-            autoHistoryActive || historyMutation.isPending ? (
-              <div className="flex flex-col items-center justify-center gap-2 p-10 text-center text-sm text-muted-foreground">
+            emptyHistoryStatus === 'loading' || historyMutation.isPending ? (
+              <div className="flex flex-col items-center justify-center gap-2.5 p-10 text-center text-sm text-muted-foreground">
                 <Loader2 className="size-5 animate-spin text-primary" />
                 <p className="font-medium text-foreground/90">{t.chats.fetchingHistoryFromPhone}</p>
-                <p className="text-xs">{t.chats.noMessagesHint}</p>
+                <p className="max-w-md text-xs leading-relaxed">{t.chats.noMessagesHint}</p>
               </div>
             ) : (
-              <div className="flex flex-col items-center justify-center gap-2 p-10 text-center text-sm text-muted-foreground">
-                <p>{t.chats.noMessagesYet}</p>
-                <p className="text-xs">{t.chats.noMessagesHint}</p>
-                {autoHistoryFailed && (
+              <div className="flex flex-col items-center justify-center gap-2.5 p-10 text-center text-sm text-muted-foreground">
+                <p className="font-medium text-foreground/90">{t.chats.noMessagesYet}</p>
+                {emptyHistoryStatus === 'empty' && !normalizedSearch && !mediaOnly && (
+                  <p className="rounded-lg border border-border/80 bg-card/85 px-3 py-1.5 text-xs font-medium text-foreground/85">
+                    {t.chats.noHistoryOnPhone}
+                  </p>
+                )}
+                {emptyHistoryStatus === 'error' && emptyHistoryError && (
+                  <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
+                    {emptyHistoryError}
+                  </p>
+                )}
+                <p className="max-w-md text-xs leading-relaxed">{t.chats.noMessagesHint}</p>
+                {!normalizedSearch && !mediaOnly && (
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      setAutoHistoryFailed(false);
-                      historyMutation.mutate();
-                    }}
+                    disabled={!isDeviceReady || historyMutation.isPending}
+                    onClick={() => historyMutation.mutate()}
                     className="mt-1"
                   >
-                    <RefreshCw className="size-3.5" />
-                    <span>{t.retry}</span>
+                    <History className="size-3.5" />
+                    <span>{t.chats.fetchOlderFromPhone}</span>
                   </Button>
                 )}
               </div>

@@ -7,6 +7,16 @@ export function formatSecondaryChatPhone(displayName: string, phone: string): st
   return cleanPhone;
 }
 
+export function shouldShowChatRowTimestamp(chat: {
+  last_message_time: string | null | undefined;
+  has_messages?: boolean;
+}): boolean {
+  if (chat.has_messages === false) return false;
+  if (!chat.last_message_time) return false;
+  const millis = new Date(chat.last_message_time).getTime();
+  return !Number.isNaN(millis) && millis > 0;
+}
+
 export function shouldShowAccountFilter(
   accountsCount: number,
   selectedDeviceIdsCount: number,

@@ -23,19 +23,11 @@ import {
   updateCallAutoRejectSettings,
 } from '../services/call-auto-reject.ts';
 import {normalizeWhatsAppJid, resolveAccountDisplayName} from '../services/chat-sync.ts';
+import {extractGowaArray as extractArrayResult} from '../../shared/gowa-payload.ts';
 import type {AuthedRequest} from '../types.ts';
 import {callAutoRejectSettingsSchema, parseSchema} from '../validation/schemas.ts';
 
-export function extractArrayResult(raw: unknown): unknown[] {
-  if (Array.isArray(raw)) return raw;
-  if (raw && typeof raw === 'object') {
-    const obj = raw as {data?: unknown; messages?: unknown; items?: unknown};
-    if (Array.isArray(obj.data)) return obj.data;
-    if (Array.isArray(obj.messages)) return obj.messages;
-    if (Array.isArray(obj.items)) return obj.items;
-  }
-  return [];
-}
+export {extractArrayResult};
 
 export function registerMiscRoutes(): Router {
   const router = createApiRouter();

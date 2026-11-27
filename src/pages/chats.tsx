@@ -99,6 +99,7 @@ function SplitWorkspacePane({
   const [assignedToFilter, setAssignedToFilter] = useState<'all' | 'me'>('all');
   const [isBulkPending, setIsBulkPending] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [chatOpenNonce, setChatOpenNonce] = useState(0);
   const [retainedChat, setRetainedChat] = useState<UnifiedChat | null>(null);
   const [adHocChat, setAdHocChat] = useState<{deviceId: string; jid: string} | null>(null);
   const [newChatOpen, setNewChatOpen] = useState(false);
@@ -222,6 +223,7 @@ function SplitWorkspacePane({
           <MessageView
             key={chatUniqueKey(selectedChat)}
             chat={selectedChat}
+            openNonce={chatOpenNonce}
             alwaysShowBack
             otherAccounts={getOtherAccountsForChat(
               globalJidAccountsMap,
@@ -231,6 +233,7 @@ function SplitWorkspacePane({
             onSwitchAccount={(targetDeviceId, jid) => {
               setAdHocChat({deviceId: targetDeviceId, jid});
               setSelectedKey(`${targetDeviceId}::${jid}`);
+              setChatOpenNonce((n) => n + 1);
             }}
             onBack={() => setSelectedKey(null)}
           />
@@ -309,6 +312,7 @@ function SplitWorkspacePane({
               setAdHocChat(null);
               setRetainedChat(redacted ? chat : {...chat, unread_count: 0});
               setSelectedKey(chatUniqueKey(chat));
+              setChatOpenNonce((n) => n + 1);
             }}
           />
         )}
@@ -324,6 +328,7 @@ function SplitWorkspacePane({
             onStartChat={(deviceId, jid) => {
               setAdHocChat({deviceId, jid});
               setSelectedKey(`${deviceId}::${jid}`);
+              setChatOpenNonce((n) => n + 1);
             }}
           />
         </Suspense>
@@ -355,6 +360,7 @@ export default function ChatsPage() {
   const [assignedToFilter, setAssignedToFilter] = useState<'all' | 'me'>('all');
   const [isBulkPending, setIsBulkPending] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [chatOpenNonce, setChatOpenNonce] = useState(0);
   const [retainedChat, setRetainedChat] = useState<UnifiedChat | null>(null);
   const [adHocChat, setAdHocChat] = useState<{deviceId: string; jid: string} | null>(null);
   const [newChatOpen, setNewChatOpen] = useState(false);
@@ -395,6 +401,7 @@ export default function ChatsPage() {
       setMode('unified');
       setAdHocChat({deviceId: paramDevice, jid: resolvedJid});
       setSelectedKey(`${paramDevice}::${resolvedJid}`);
+      setChatOpenNonce((n) => n + 1);
       setMobileShowMessages(true);
     } else if (paramDevice) {
       setMode('unified');
@@ -777,6 +784,7 @@ export default function ChatsPage() {
               setAdHocChat(null);
               setRetainedChat(redacted ? chat : {...chat, unread_count: 0});
               setSelectedKey(chatUniqueKey(chat));
+              setChatOpenNonce((n) => n + 1);
               setMobileShowMessages(true);
             }}
           />
@@ -786,6 +794,7 @@ export default function ChatsPage() {
             <MessageView
               key={chatUniqueKey(selectedChat)}
               chat={selectedChat}
+              openNonce={chatOpenNonce}
               otherAccounts={getOtherAccountsForChat(
                 jidAccountsMap,
                 selectedChat.device_id,
@@ -794,6 +803,7 @@ export default function ChatsPage() {
               onSwitchAccount={(targetDeviceId, jid) => {
                 setAdHocChat({deviceId: targetDeviceId, jid});
                 setSelectedKey(`${targetDeviceId}::${jid}`);
+                setChatOpenNonce((n) => n + 1);
                 setMobileShowMessages(true);
               }}
               onBack={() => setMobileShowMessages(false)}
@@ -818,6 +828,7 @@ export default function ChatsPage() {
             onStartChat={(deviceId, jid) => {
               setAdHocChat({deviceId, jid});
               setSelectedKey(`${deviceId}::${jid}`);
+              setChatOpenNonce((n) => n + 1);
               setMobileShowMessages(true);
             }}
           />

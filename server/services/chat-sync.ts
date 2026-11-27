@@ -19,10 +19,15 @@ import {
   isGroupJid,
   isNewsletterJid,
   isStatusBroadcastJid,
-  normalizeArabicDigits,
-  normalizeSearchQuery,
+  matchesNormalizedSearch,
   normalizeWhatsAppJid,
 } from '../../shared/whatsapp-identity.ts';
+import {
+  asRecord,
+  extractGowaProtocolContext,
+  firstNonEmptyString,
+  unwrapGowaPayload,
+} from '../../shared/gowa-payload.ts';
 
 export {
   isExcludedFromUnifiedChats,
@@ -205,59 +210,18 @@ export function matchesUnifiedChatSearch(
   rawQuery: string,
   contactName?: string,
 ): boolean {
-  const normalized = normalizeSearchQuery(rawQuery).toLowerCase();
-  if (!normalized) return true;
-
-  const isDigitsOnly = /^\d+$/.test(normalized);
-  const strippedLeadingZero = isDigitsOnly ? normalized.replace(/^0+/, '') : '';
   const at = chat.jid.indexOf('@');
   const localJid = at === -1 ? chat.jid : chat.jid.slice(0, at);
   const phonePart = localJid.split(':')[0] ?? localJid;
-
-  const candidates = [chat.name, contactName, phonePart, chat.jid, deviceDisplayName];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const lowered = normalizeArabicDigits(candidate).toLowerCase();
-    if (lowered.includes(normalized)) return true;
-    if (isDigitsOnly) {
-      const compactDigits = lowered.replace(/[^\d]/g, '');
-      if (compactDigits.includes(normalized)) return true;
-      if (strippedLeadingZero.length >= 3 && compactDigits.includes(strippedLeadingZero)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-function asRecord(val: unknown): Record<string, unknown> | null {
-  return val && typeof val === 'object' && !Array.isArray(val)
-    ? (val as Record<string, unknown>)
-    : null;
-}
-
-function firstNonEmptyString(...values: unknown[]): string {
-  for (const v of values) {
-    if (typeof v === 'string' && v.trim()) {
-      return v.trim();
-    }
-  }
-  return '';
-}
-
-function unwrapEventPayload(result: unknown): Record<string, unknown> | null {
-  const obj = asRecord(result);
-  if (!obj) return null;
-  const payload = asRecord(obj.payload);
-  if (payload) return payload;
-  const message = asRecord(obj.message);
-  if (message) return message;
-  return obj;
+  return matchesNormalizedSearch(
+    [chat.name, contactName, phonePart, chat.jid, deviceDisplayName],
+    rawQuery,
+  );
 }
 
 export function readGowaEventChatJid(result: unknown, protocolKey?: Record<string, unknown> | null): string {
   const outer = asRecord(result);
-  const payload = unwrapEventPayload(result);
+  const payload = unwrapGowaPayload(result);
   const message = asRecord(payload?.message);
   const jid = firstNonEmptyString(
     payload?.chat_jid, payload?.chat_id, payload?.remote_jid, payload?.remoteJid, payload?.revoked_chat,
@@ -271,7 +235,7 @@ export function readGowaEventChatJid(result: unknown, protocolKey?: Record<strin
 
 export function readGowaIncomingMessageId(result: unknown): string {
   const outer = asRecord(result);
-  const payload = unwrapEventPayload(result);
+  const payload = unwrapGowaPayload(result);
   return firstNonEmptyString(payload?.id, payload?.message_id, outer?.id, outer?.message_id);
 }
 
@@ -328,24 +292,10 @@ export function handleUpstreamGowaEvent(
     return null;
   }
   const resultObj = asRecord(event.result);
-  const raw = unwrapEventPayload(event.result);
+  const raw = unwrapGowaPayload(event.result);
   if (!raw) return null;
 
-  const nestedMessage = asRecord(raw.message) ?? asRecord(resultObj?.message);
-  const protocolMsg =
-    asRecord(raw.protocol_message) ??
-    asRecord(raw.protocolMessage) ??
-    asRecord(nestedMessage?.protocolMessage) ??
-    asRecord(nestedMessage?.protocol_message) ??
-    asRecord(resultObj?.protocol_message) ??
-    asRecord(resultObj?.protocolMessage);
-  const protocolKey = asRecord(protocolMsg?.key);
-  const protocolType = protocolMsg?.type;
-  const isProtocolRevoke =
-    protocolMsg !== null &&
-    (protocolType === 0 ||
-      String(protocolType || '').toUpperCase() === 'REVOKE' ||
-      String(protocolType || '').toUpperCase() === 'MESSAGE_REVOKE');
+  const {protocolKey, isProtocolRevoke} = extractGowaProtocolContext(resultObj, raw);
 
   const revokedCodes = new Set([
     'MESSAGE_REVOKED',

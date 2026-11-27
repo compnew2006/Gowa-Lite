@@ -197,6 +197,7 @@ export interface UnifiedChat extends ChatInfo {
   device_id: string;
   device_display_name: string;
   device_state: DeviceState;
+  has_messages?: boolean;
   unread_count?: number;
   lifecycle?: ChatAssignmentSummary;
   is_pinned?: boolean;
@@ -215,7 +216,7 @@ export interface UnifiedChatsPagination {
   next_offset?: number;
 }
 
-export type UnifiedChatTab = 'all' | 'me' | 'open' | 'pending' | 'closed' | 'private';
+export type UnifiedChatTab = 'all' | 'me' | 'open' | 'pending' | 'closed';
 
 export interface UnifiedTabCounts {
   all: number;
@@ -223,7 +224,6 @@ export interface UnifiedTabCounts {
   open: number;
   pending: number;
   closed: number;
-  private: number;
 }
 
 export interface UnifiedChatsResponse {
