@@ -218,33 +218,56 @@ async function fetchSingleDeviceChats(params: {
     return {chats, totalRemote, hasMore};
   }
 
-  const byJid = new Map<string, GowaChatInfo>();
-  const directHitJids = new Set<string>();
-  const PAGE_LIMIT = 100;
-  const MAX_SCAN_CHATS = 1000;
-
-  const [directSearchRes, contactsRes] = await Promise.all([
-    query.search
-      ? gowaFetch<{data: GowaChatInfo[]; pagination: GowaPagination}>('/chats', {
-          deviceId: dev.id,
-          query: {limit: 100, offset: 0, search: query.search, has_media: query.hasMedia ? true : undefined},
-        }).catch(() => null)
-      : Promise.resolve(null),
-    gowaFetch<{data?: Array<{jid?: string; name?: string}>} | null>('/user/my/contacts', {
+  const isPhoneSearch = /^\d{3,}$/.test(query.search);
+  const fetchContactNames = async () => {
+    const contacts = await gowaFetch<{data?: Array<{jid?: string; name?: string}>}>('/user/my/contacts', {
       deviceId: dev.id,
       timeoutMs: 4_000,
-    }).catch(() => null),
-  ]);
+    }).catch(() => null);
+    const names = new Map<string, string>();
+    for (const {jid, name} of contacts?.data ?? []) {
+      if (jid && name) names.set(jid, name);
+    }
+    return names;
+  };
+  const pendingContactNames = isPhoneSearch ? null : fetchContactNames();
+  const directSearchRes = query.search
+    ? await gowaFetch<{data: GowaChatInfo[]; pagination: GowaPagination}>('/chats', {
+        deviceId: dev.id,
+        query: {limit: 100, offset: 0, search: query.search, has_media: query.hasMedia ? true : undefined},
+      }).catch(() => null)
+    : null;
 
-  for (const chat of directSearchRes?.data ?? []) {
-    byJid.set(chat.jid, chat);
-    directHitJids.add(chat.jid);
-  }
-  const contactNameByJid = new Map<string, string>();
-  for (const c of contactsRes?.data ?? []) {
-    if (c.jid && c.name) contactNameByJid.set(c.jid, c.name);
+  const directHits = new Map((directSearchRes?.data ?? []).map((chat) => [chat.jid, chat]));
+  const mapVisibleChat = (chat: GowaChatInfo, contactName?: string) =>
+    isExcludedFromUnifiedChats(chat.jid)
+      ? null
+      : applyChatDeviceStateToRemote(
+          {...chat, name: chat.name?.trim() || contactName || chat.name},
+          dev.id,
+          displayName,
+          dev.state,
+          deviceStatesMap.get(`${dev.id}::${chat.jid}`),
+        );
+
+  if (isPhoneSearch) {
+    const visibleHits = [...directHits.values()].map((chat) => mapVisibleChat(chat)).filter((chat) => chat !== null);
+    if (visibleHits.length > 0) {
+      if (visibleHits.some((chat) => !chat.name?.trim())) {
+        const names = await fetchContactNames();
+        for (const chat of visibleHits) {
+          chat.name = chat.name?.trim() || names.get(chat.jid) || chat.name;
+        }
+      }
+      return {chats: visibleHits, totalRemote: visibleHits.length, hasMore: false};
+    }
   }
 
+  const byJid = new Map(directHits);
+  const contactNameByJid = await (pendingContactNames ?? fetchContactNames());
+
+  const PAGE_LIMIT = 100;
+  const MAX_SCAN_CHATS = 1000;
   for (let scanOffset = 0; scanOffset < MAX_SCAN_CHATS; scanOffset += PAGE_LIMIT) {
     const page = await gowaFetch<{data: GowaChatInfo[]; pagination: GowaPagination}>('/chats', {
       deviceId: dev.id,
@@ -259,22 +282,12 @@ async function fetchSingleDeviceChats(params: {
   }
 
   for (const chat of byJid.values()) {
-    if (isExcludedFromUnifiedChats(chat.jid)) continue;
     const contactName = contactNameByJid.get(chat.jid);
     if (
-      directHitJids.has(chat.jid) ||
+      directHits.has(chat.jid) ||
       matchesUnifiedChatSearch(chat, displayName, query.rawSearch, contactName)
     ) {
-      const mapped = applyChatDeviceStateToRemote(
-        {
-          ...chat,
-          name: chat.name?.trim() || contactName || chat.name,
-        },
-        dev.id,
-        displayName,
-        dev.state,
-        deviceStatesMap.get(`${dev.id}::${chat.jid}`),
-      );
+      const mapped = mapVisibleChat(chat, contactName);
       if (mapped) chats.push(mapped);
     }
   }
