@@ -145,3 +145,53 @@ export function patchRevokedMessage(client: QueryClient, revoke: WsRevokeTarget)
       typeof rawJid === 'string' && (toWhatsAppJid(rawJid) || rawJid) === chatJid,
   }, (data) => applyRevokeToMessagePages(data, revoke));
 }
+
+export function upsertIncomingMessageInPages<
+  TPage extends {data: MessageInfo[]; content_redacted?: boolean},
+>(
+  oldData: InfiniteMessagePagesShape<TPage> | undefined,
+  incoming: MessageInfo,
+): InfiniteMessagePagesShape<TPage> | undefined {
+  if (!oldData || !Array.isArray(oldData.pages) || oldData.pages.length === 0) {
+    return oldData;
+  }
+  const firstPage = oldData.pages[0];
+  if (!firstPage || !Array.isArray(firstPage.data) || firstPage.content_redacted) {
+    return oldData;
+  }
+
+  for (let pageIndex = 0; pageIndex < oldData.pages.length; pageIndex += 1) {
+    const page = oldData.pages[pageIndex];
+    if (!page || !Array.isArray(page.data) || page.content_redacted) continue;
+    const existingIndex = page.data.findIndex((msg) => msg.id === incoming.id);
+    if (existingIndex >= 0) {
+      const existing = page.data[existingIndex];
+      const merged: MessageInfo = {
+        ...existing,
+        ...incoming,
+        reactions: incoming.reactions ?? existing.reactions,
+      };
+      if (
+        existing.content === merged.content &&
+        existing.media_type === merged.media_type &&
+        existing.timestamp === merged.timestamp &&
+        existing.is_from_me === merged.is_from_me
+      ) {
+        return oldData;
+      }
+      const nextData = [...page.data];
+      nextData[existingIndex] = merged;
+      const nextPages = [...oldData.pages];
+      nextPages[pageIndex] = {...page, data: nextData};
+      return {...oldData, pages: nextPages};
+    }
+  }
+
+  const nextFirstPage = {
+    ...firstPage,
+    data: [...firstPage.data, incoming],
+  };
+  const nextPages = [...oldData.pages];
+  nextPages[0] = nextFirstPage;
+  return {...oldData, pages: nextPages};
+}

@@ -106,3 +106,88 @@ test('reaction events patch only the target message and preserve the inbox cache
     assert.deepEqual(client.getQueryData(key), fixture);
   }
 });
+
+test('incoming MESSAGE_RECEIVED patches multi-page unfiltered history without invalidating older pages', () => {
+  const client = new QueryClient();
+  const baseKey = messageHistoryOptions('one', jid).queryKey;
+  const searchKey = messageQueryKeys.history('one', jid, 'invoice', false);
+  const chatInfo = {
+    jid,
+    name: 'Test',
+    last_message_time: '2026-11-27T01:00:00Z',
+    ephemeral_expiration: 0,
+    created_at: '2026-11-26T00:00:00Z',
+    updated_at: '2026-11-27T01:00:00Z',
+    archived: false,
+  };
+  const initialPages = {
+    pageParams: [0, 40],
+    pages: [
+      {
+        pagination: {limit: 40, offset: 0, total: 2},
+        chat_info: chatInfo,
+        data: [
+          {
+            id: 'm-new-1',
+            chat_jid: jid,
+            sender_jid: jid,
+            content: 'hello',
+            timestamp: '2026-11-27T01:00:00Z',
+            is_from_me: false,
+            media_type: '',
+            filename: '',
+            url: '',
+            file_length: 0,
+          },
+        ],
+      },
+      {
+        pagination: {limit: 40, offset: 40, total: 2},
+        chat_info: chatInfo,
+        data: [
+          {
+            id: 'm-old-1',
+            chat_jid: jid,
+            sender_jid: jid,
+            content: 'older',
+            timestamp: '2026-11-26T01:00:00Z',
+            is_from_me: false,
+            media_type: '',
+            filename: '',
+            url: '',
+            file_length: 0,
+          },
+        ],
+      },
+    ],
+  };
+
+  client.setQueryData(baseKey, initialPages);
+  client.setQueryData(searchKey, {pageParams: [0], pages: [{data: []}]});
+
+  syncLiveQueryCache(client, {
+    code: 'MESSAGE_RECEIVED',
+    message: '',
+    device_id: 'one',
+    result: {
+      id: 'm-new-2',
+      chat_jid: jid,
+      sender_jid: jid,
+      content: 'world',
+      timestamp: '2026-11-27T02:00:00Z',
+      is_from_me: false,
+      media_type: '',
+      filename: '',
+      url: '',
+      file_length: 0,
+    },
+  });
+
+  const updated = client.getQueryData<typeof initialPages>(baseKey);
+  assert.equal(updated?.pages.length, 2);
+  assert.equal(updated?.pages[0].data.length, 2);
+  assert.equal(updated?.pages[0].data[1].id, 'm-new-2');
+  assert.equal(updated?.pages[1], initialPages.pages[1]);
+  assert.equal(client.getQueryState(baseKey)?.isInvalidated, false);
+  assert.equal(client.getQueryState(searchKey)?.isInvalidated, true);
+});

@@ -570,6 +570,24 @@ export function MessageView({
     window.setTimeout(() => composerInputRef.current?.focus(), 0);
   }, []);
 
+  const handleToggleReactionPicker = useCallback((id: string) => {
+    setReactionPickerMessageId((prev) => (prev === id ? null : id));
+  }, []);
+
+  const handleCloseReactionPicker = useCallback(() => {
+    setReactionPickerMessageId(null);
+  }, []);
+
+  const handleForwardRequest = useCallback((msg: MessageInfo) => {
+    setReactionPickerMessageId(null);
+    setForwardingMessage(msg);
+  }, []);
+
+  const handleRevokeRequest = useCallback((msg: MessageInfo) => {
+    setReactionPickerMessageId(null);
+    setRevokingMessage(msg);
+  }, []);
+
   const handleJumpToMessage = useCallback((messageId: string) => {
     const container = scrollRef.current;
     if (!container) return;
@@ -651,7 +669,7 @@ export function MessageView({
         <div
           ref={scrollRef}
           onScroll={maybeLoadOlder}
-          className="wa-wallpaper relative min-h-0 flex-1 overflow-y-auto py-4"
+          className="wa-wallpaper relative min-h-0 flex-1 overflow-y-auto py-4 [overflow-anchor:none]"
         >
           {query.isLoading ? (
             <div className="flex items-center justify-center gap-2 p-10 text-sm text-muted-foreground">
@@ -779,8 +797,8 @@ export function MessageView({
           ) : (
             <div ref={timelineContentRef} className="flex flex-col gap-2">
               {isFetchingNextPage && (
-                <div className="mx-auto flex w-full max-w-4xl justify-center px-4 pb-1 sm:px-8 lg:px-14">
-                  <div className="flex items-center gap-2 rounded-lg bg-card/90 px-3 py-1 text-xs text-muted-foreground shadow-2xs">
+                <div className="pointer-events-none sticky top-2 z-10 mx-auto flex h-0 w-full max-w-4xl justify-center overflow-visible px-4 sm:px-8 lg:px-14">
+                  <div className="flex items-center gap-2 self-start rounded-full border border-border/70 bg-card/95 px-3 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur-xs">
                     <Loader2 className="size-3.5 animate-spin" />
                     <span>{t.chats.loadingOlderMessages}</span>
                   </div>
@@ -821,28 +839,12 @@ export function MessageView({
                         isDeviceReady={isDeviceReady}
                         canReactAndReply={canWriteChats && !isSendingBlocked}
                         isReactionPickerOpen={reactionPickerMessageId === item.message.id}
-                        onToggleReactionPicker={(id) =>
-                          setReactionPickerMessageId((prev) => (prev === id ? null : id))
-                        }
-                        onCloseReactionPicker={() => setReactionPickerMessageId(null)}
+                        onToggleReactionPicker={handleToggleReactionPicker}
+                        onCloseReactionPicker={handleCloseReactionPicker}
                         onReact={handleReact}
                         onReply={handleReply}
-                        onForward={
-                          canWriteChats
-                            ? (msg) => {
-                                setReactionPickerMessageId(null);
-                                setForwardingMessage(msg);
-                              }
-                            : undefined
-                        }
-                        onRevoke={
-                          canRevokeChats
-                            ? (msg) => {
-                                setReactionPickerMessageId(null);
-                                setRevokingMessage(msg);
-                              }
-                            : undefined
-                        }
+                        onForward={canWriteChats ? handleForwardRequest : undefined}
+                        onRevoke={canRevokeChats ? handleRevokeRequest : undefined}
                         onJumpToMessage={handleJumpToMessage}
                         selectMode={mediaBatch.selectMode}
                         isSelected={mediaBatch.selectedIds.has(item.message.id)}

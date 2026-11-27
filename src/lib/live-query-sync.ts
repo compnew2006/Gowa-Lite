@@ -1,13 +1,21 @@
-import type {QueryClient, QueryFilters} from '@tanstack/react-query';
+import type {Query, QueryClient, QueryFilters} from '@tanstack/react-query';
+import type {MessageInfo} from '@/api/types';
 import {
   applyMessageReaction,
   patchRevokedMessage,
   updateMessageReactions,
+  upsertIncomingMessageInPages,
   type InfiniteMessagePagesShape,
 } from '@/features/chat/message-reactions';
 import {chatLifecycleQueryKeys, messageQueryKeys} from '@/features/chat/message-query-keys';
 import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
-import {extractWsEventTarget, extractWsReaction, extractWsRevokeTarget, type WsEvent} from '@/lib/events';
+import {
+  extractWsEventTarget,
+  extractWsIncomingMessage,
+  extractWsReaction,
+  extractWsRevokeTarget,
+  type WsEvent,
+} from '@/lib/events';
 import {toWhatsAppJid} from '@/lib/phone';
 import {invalidateChatQueries} from '@/lib/query-client';
 
@@ -17,6 +25,23 @@ const MESSAGE_EVENTS = new Set([
   'MESSAGE_REVOKE', 'MESSAGE.REVOKE', 'CHAT_UPDATED',
 ]);
 const DEVICE_EVENTS = new Set(['LOGIN_SUCCESS', 'DEVICE_LOGGED_OUT', 'DEVICE_REMOVED', 'LIST_DEVICES']);
+
+function isUnfilteredPatchableMessageQuery(query: Query): boolean {
+  const [, , , search, mediaOnly] = query.queryKey;
+  if (typeof search === 'string' && search !== '') return false;
+  if (mediaOnly === true) return false;
+  const data = query.state.data as
+    | InfiniteMessagePagesShape<{data: MessageInfo[]; content_redacted?: boolean}>
+    | undefined;
+  return Boolean(
+    data &&
+      Array.isArray(data.pages) &&
+      data.pages.length > 0 &&
+      data.pages[0] &&
+      Array.isArray(data.pages[0].data) &&
+      !data.pages[0].content_redacted,
+  );
+}
 
 function invalidateInbox(client: QueryClient, deviceId: string | undefined): void {
   void client.invalidateQueries({
@@ -80,7 +105,38 @@ export function syncLiveQueryCache(client: QueryClient, event: WsEvent): void {
   if (revoke || MESSAGE_EVENTS.has(code)) {
     if (!jid || jid.endsWith('@g.us')) invalidate('unified-groups', 'unified-groups-unread');
     if (!jid?.endsWith('@g.us')) invalidateInbox(client, target.deviceId);
-    invalidateChat(messageQueryKeys.all[0]);
+
+    const incoming = !revoke ? extractWsIncomingMessage(event) : null;
+    if (incoming) {
+      const normalizedChatJid = toWhatsAppJid(incoming.chatJid) || incoming.chatJid;
+      const patchFilters: QueryFilters = {
+        queryKey: messageQueryKeys.device(incoming.deviceId),
+        predicate: (query) => {
+          const rawJid = query.queryKey[2];
+          return (
+            typeof rawJid === 'string' &&
+            (toWhatsAppJid(rawJid) || rawJid) === normalizedChatJid &&
+            isUnfilteredPatchableMessageQuery(query)
+          );
+        },
+      };
+      client.setQueriesData<InfiniteMessagePagesShape>(patchFilters, (data) =>
+        upsertIncomingMessageInPages(data, incoming.message),
+      );
+      void client.invalidateQueries({
+        queryKey: messageQueryKeys.device(incoming.deviceId),
+        predicate: (query) => {
+          const rawJid = query.queryKey[2];
+          return (
+            typeof rawJid === 'string' &&
+            (toWhatsAppJid(rawJid) || rawJid) === normalizedChatJid &&
+            !isUnfilteredPatchableMessageQuery(query)
+          );
+        },
+      });
+    } else {
+      invalidateChat(messageQueryKeys.all[0]);
+    }
   } else if (code === 'CONVERSATION_NOTE_UPDATED') {
     invalidateChat('unified-chat-notes');
   } else if (code === 'SCHEDULE_UPDATED') {

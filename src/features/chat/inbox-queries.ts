@@ -67,8 +67,8 @@ export function createUnifiedChatsQueryOptions({
     queryFn: () => listUnifiedChats(params),
     staleTime: isDefaultPage ? 25_000 : undefined,
     refetchInterval: isDefaultPage
-      ? false
-      : (query: {state: {error: unknown}}) => query.state.error ? false : 30_000,
+      ? (false as const)
+      : (query: {state: {error: unknown}}) => (query.state.error ? (false as const) : 30_000),
     ...options,
   };
 }

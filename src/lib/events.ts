@@ -1,5 +1,5 @@
 import {toWhatsAppJid} from '@/lib/phone';
-import type {ReactionInfo} from '@/api/types';
+import type {MessageInfo, ReactionInfo} from '@/api/types';
 import {
   asRecord,
   extractGowaProtocolContext,
@@ -162,6 +162,63 @@ export function extractWsRevokeTarget(event: WsEvent): WsRevokeTarget | null {
     messageId,
     revokedBy: revokedBy || undefined,
     revokedAt: revokedAt || undefined,
+  };
+}
+
+export function extractWsIncomingMessage(
+  event: WsEvent,
+): {deviceId: string; chatJid: string; message: MessageInfo} | null {
+  const code = (event.code || '').toUpperCase();
+  if (code !== 'MESSAGE_RECEIVED' && code !== 'MESSAGE') return null;
+
+  const target = extractWsEventTarget(event);
+  if (!target.deviceId || !target.chatJid) return null;
+
+  const resultObj = asRecord(event.result);
+  const payload = unwrapGowaPayload(event.result);
+  const source = payload ?? resultObj;
+  if (!source) return null;
+
+  const id = firstNonEmptyString(
+    source.id,
+    source.message_id,
+    resultObj?.id,
+    resultObj?.message_id,
+  );
+  if (!id) return null;
+
+  const hasNormalizedBody =
+    typeof source.content === 'string' || typeof source.media_type === 'string';
+  if (!hasNormalizedBody) return null;
+
+  const repliedTo = firstNonEmptyString(source.replied_to_id, source.replied_id);
+  const contextMetadata =
+    typeof source.context_metadata === 'string'
+      ? source.context_metadata
+      : repliedTo
+        ? JSON.stringify({replied_to_id: repliedTo})
+        : undefined;
+
+  const message: MessageInfo = {
+    id,
+    chat_jid: target.chatJid,
+    sender_jid: firstNonEmptyString(source.sender_jid, source.from, resultObj?.from),
+    sender_display_name:
+      firstNonEmptyString(source.sender_display_name, source.pushname) || undefined,
+    content: typeof source.content === 'string' ? source.content : '',
+    timestamp: firstNonEmptyString(source.timestamp) || new Date().toISOString(),
+    is_from_me: Boolean(source.is_from_me ?? source.from_me),
+    media_type: typeof source.media_type === 'string' ? source.media_type : '',
+    ...(contextMetadata ? {context_metadata: contextMetadata} : {}),
+    filename: typeof source.filename === 'string' ? source.filename : '',
+    url: typeof source.url === 'string' ? source.url : '',
+    file_length: typeof source.file_length === 'number' ? source.file_length : 0,
+  };
+
+  return {
+    deviceId: target.deviceId,
+    chatJid: target.chatJid,
+    message,
   };
 }
 

@@ -11,7 +11,7 @@ export interface ScrollableLike {
 
 export type TimelineScrollAction = 'none' | 'scroll_bottom' | 'preserve_anchor';
 
-export function isNearBottom(el: ScrollableLike, thresholdPx = 120): boolean {
+export function isNearBottom(el: ScrollableLike, thresholdPx = 48): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight < thresholdPx;
 }
 
@@ -19,6 +19,30 @@ export function scrollContainerToBottom(
   el: Pick<ScrollableLike, 'scrollHeight' | 'scrollTop'>,
 ): void {
   el.scrollTop = el.scrollHeight;
+}
+
+export function computeAnchorDeltaScrollTop({
+  currentScrollTop,
+  beforeOffsetTop,
+  afterOffsetTop,
+}: {
+  currentScrollTop: number;
+  beforeOffsetTop: number;
+  afterOffsetTop: number;
+}): number {
+  return currentScrollTop + (afterOffsetTop - beforeOffsetTop);
+}
+
+export function shouldFollowResizeToBottom({
+  stickToBottom,
+  hasPendingAnchor,
+  userScrollingUp,
+}: {
+  stickToBottom: boolean;
+  hasPendingAnchor: boolean;
+  userScrollingUp: boolean;
+}): boolean {
+  return stickToBottom && !hasPendingAnchor && !userScrollingUp;
 }
 
 export function computeTimelineScrollAction(params: {
