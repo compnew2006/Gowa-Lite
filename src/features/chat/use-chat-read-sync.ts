@@ -1,7 +1,8 @@
 import {useCallback, useEffect, useRef} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {markUnifiedChatRead, markUnifiedGroupRead} from '@/api/client';
-import type {UnifiedChat, UnifiedChatsResponse, UnifiedGroupsResponse} from '@/api/types';
+import type {UnifiedChat, UnifiedGroupsResponse} from '@/api/types';
+import {markPrivateChatReadInInboxCache} from '@/features/chat/inbox-queries';
 import {extractWsEventTarget, onWsEvent} from '@/lib/events';
 import {toWhatsAppJid} from '@/lib/phone';
 
@@ -78,26 +79,7 @@ export function useChatReadSync(chat: UnifiedChat, isContentRedacted = false): v
       return;
     }
 
-    queryClient.setQueriesData<UnifiedChatsResponse>(
-      {queryKey: ['unified-chats']},
-      (old) => {
-        if (!old) return old;
-        let removed = 0;
-        const nextData = old.data.map((item) => {
-          if (item.device_id === chat.device_id && item.jid === chat.jid) {
-            removed = item.unread_count ?? 0;
-            return {...item, unread_count: 0};
-          }
-          return item;
-        });
-        if (removed === 0) return old;
-        const totalUnread =
-          typeof old.total_unread === 'number'
-            ? Math.max(0, old.total_unread - removed)
-            : nextData.reduce((sum, item) => sum + (item.unread_count ?? 0), 0);
-        return {...old, data: nextData, total_unread: totalUnread};
-      },
-    );
+    markPrivateChatReadInInboxCache(queryClient, chat.device_id, chat.jid);
 
     void markUnifiedChatRead(chat.device_id, chat.jid)
       .then(() => {

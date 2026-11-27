@@ -51,6 +51,8 @@ import {
   repliedToId,
 } from '@/features/chat/message-reactions';
 import {MessageViewHeader} from '@/features/chat/message-view-header';
+import {chatLifecycleQueryKeys, messageQueryKeys} from '@/features/chat/message-query-keys';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import type {OtherAccountRef} from '@/features/chat/other-accounts';
 import {useMessageTimelineScroll} from '@/features/chat/use-message-timeline-scroll';
 
@@ -174,7 +176,7 @@ export function MessageView({
     lowerJid !== 'status@broadcast';
 
   const lifecycleQuery = useQuery({
-    queryKey: ['chat-lifecycle', chat.device_id, chat.jid],
+    queryKey: chatLifecycleQueryKeys.chat(chat.device_id, chat.jid),
     queryFn: () => getChatLifecycle(chat.device_id, chat.jid),
     enabled: isLifecycleSupported,
   });
@@ -365,10 +367,10 @@ export function MessageView({
 
   const invalidateLifecycleScope = useCallback(() => {
     void queryClient.invalidateQueries({
-      queryKey: ['chat-lifecycle', chat.device_id, chat.jid],
+      queryKey: chatLifecycleQueryKeys.chat(chat.device_id, chat.jid),
     });
     void queryClient.invalidateQueries({
-      queryKey: ['unified-messages', chat.device_id, chat.jid],
+      queryKey: messageQueryKeys.chat(chat.device_id, chat.jid),
     });
     void queryClient.invalidateQueries({
       queryKey: ['unified-chat-notes', chat.device_id, chat.jid],
@@ -376,7 +378,7 @@ export function MessageView({
     void queryClient.invalidateQueries({
       queryKey: ['unified-chat-schedules', chat.device_id, chat.jid],
     });
-    void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+    void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
     void queryClient.invalidateQueries({queryKey: ['assignable-agents', chat.device_id]});
   }, [chat.device_id, chat.jid, queryClient]);
 
@@ -386,7 +388,7 @@ export function MessageView({
         resetScroll();
       }
       queryClient.setQueryData<ChatLifecycleResponse>(
-        ['chat-lifecycle', chat.device_id, chat.jid],
+        chatLifecycleQueryKeys.chat(chat.device_id, chat.jid),
         (prev) => {
           const prevEvents = prev?.events ?? [];
           const nextEvents =

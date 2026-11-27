@@ -8,6 +8,8 @@ import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
+import {chatLifecycleQueryKeys} from '@/features/chat/message-query-keys';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {cn} from '@/lib/utils';
@@ -74,16 +76,16 @@ export function AssignChatDialog({
       }),
     onSuccess: (_res, targetUserId) => {
       toast.success(targetUserId === null ? t.chats.unassignedToast : t.chats.assignedToast);
-      void queryClient.invalidateQueries({queryKey: ['chat-lifecycle', deviceId, chatJid]});
-      void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+      void queryClient.invalidateQueries({queryKey: chatLifecycleQueryKeys.chat(deviceId, chatJid)});
+      void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
       void queryClient.invalidateQueries({queryKey: ['assignable-agents', deviceId]});
       onCompleted?.();
       onOpenChange(false);
     },
     onError: (err) => {
       toast.error(toApiError(err).message);
-      void queryClient.invalidateQueries({queryKey: ['chat-lifecycle', deviceId, chatJid]});
-      void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+      void queryClient.invalidateQueries({queryKey: chatLifecycleQueryKeys.chat(deviceId, chatJid)});
+      void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
     },
   });
 

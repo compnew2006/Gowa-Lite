@@ -226,19 +226,20 @@ describe('Server-Side Chat Content Redaction (Unit)', () => {
     };
 
     const key = 'dev-alpha::966555000111@s.whatsapp.net';
+    const otherAccountChat = {...pendingChat, device_id: 'dev-beta', device_display_name: 'Support Line'};
     const initial = resolveSelectedUnifiedChat({
       selectedKey: key,
-      chats: [pendingChat],
+      chats: [otherAccountChat, pendingChat],
       retainedChat: pendingChat,
       adHocChat: null,
       accounts,
     });
-    assert.equal(initial?.jid, pendingChat.jid);
+    assert.equal(initial, pendingChat);
 
-    // After claim/reopen, pending/closed list refetches without the chat — must NOT return null
+    // A refetch can remove the selected row while the same contact stays visible on another account.
     const afterRefetch = resolveSelectedUnifiedChat({
       selectedKey: key,
-      chats: [],
+      chats: [otherAccountChat],
       retainedChat: pendingChat,
       adHocChat: null,
       accounts: [{...accounts[0], state: 'disconnected'}],
@@ -246,6 +247,7 @@ describe('Server-Side Chat Content Redaction (Unit)', () => {
     assert.ok(afterRefetch, 'Selected chat must remain mounted after list refetch removes it');
     assert.equal(afterRefetch.jid, pendingChat.jid);
     assert.equal(afterRefetch.device_state, 'disconnected');
+    assert.equal(afterRefetch.device_id, pendingChat.device_id);
 
     const cleared = resolveSelectedUnifiedChat({
       selectedKey: null,

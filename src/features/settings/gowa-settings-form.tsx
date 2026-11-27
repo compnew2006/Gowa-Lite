@@ -8,6 +8,7 @@ import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
 import {useAuthStore} from '@/stores/auth';
 import {Button} from '@/components/ui/button';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 
@@ -50,7 +51,7 @@ export function GowaSettingsForm({canWrite}: {canWrite: boolean}) {
       setClearPassword(false);
       void queryClient.invalidateQueries({queryKey: ['gowa-settings']});
       void queryClient.invalidateQueries({queryKey: ['devices']});
-      void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+      void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
     },
     onError: (err) => toast.error(toApiError(err).message),
   });

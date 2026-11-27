@@ -2,13 +2,16 @@ import {useEffect, useMemo, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {AlertTriangle, Forward, Loader2} from 'lucide-react';
 import {toast} from 'sonner';
-import {DEFAULT_UNIFIED_CHATS_QUERY_KEY, forwardUnifiedMessage, listUnifiedChats} from '@/api/client';
+import {forwardUnifiedMessage} from '@/api/client';
 import type {MessageInfo} from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
 import {chatDisplayName, formatJidPhone} from '@/features/chat/display-name';
+import {messageQueryKeys} from '@/features/chat/message-query-keys';
+import {createUnifiedChatsQueryOptions} from '@/features/chat/inbox-queries';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {toWhatsAppJid} from '@/lib/phone';
@@ -35,10 +38,8 @@ export function ForwardMessageDialog({
   const [error, setError] = useState<string | null>(null);
 
   const chatsQuery = useQuery({
-    queryKey: DEFAULT_UNIFIED_CHATS_QUERY_KEY,
-    queryFn: () => listUnifiedChats({}),
+    ...createUnifiedChatsQueryOptions({options: {staleTime: 20_000}}),
     enabled: open,
-    staleTime: 20_000,
   });
 
   const accounts = useMemo(() => chatsQuery.data?.accounts ?? [], [chatsQuery.data?.accounts]);
@@ -81,9 +82,9 @@ export function ForwardMessageDialog({
     onSuccess: (_res, vars) => {
       toast.success(t.chats.forwardedToast);
       void queryClient.invalidateQueries({
-        queryKey: ['unified-messages', vars.targetDeviceId, vars.targetJid],
+        queryKey: messageQueryKeys.chat(vars.targetDeviceId, vars.targetJid),
       });
-      void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+      void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
       onOpenChange(false);
     },
     onError: (err) => {

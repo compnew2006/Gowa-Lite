@@ -13,7 +13,7 @@ import type {
 const enc = encodeURIComponent;
 
 // Unified Inbox
-export const DEFAULT_UNIFIED_CHATS_QUERY_KEY = ['unified-chats', [], '', false] as const;
+export {DEFAULT_UNIFIED_CHATS_QUERY_KEY} from '@/features/chat/inbox-query-keys';
 
 export function listUnifiedChats(params: {
   deviceIds?: string[];

@@ -70,6 +70,9 @@ import {
   getOtherAccountsForChat,
   type OtherAccountRef,
 } from '@/features/chat/other-accounts';
+import {messageQueryKeys} from '@/features/chat/message-query-keys';
+import {chatUniqueKey} from '@/features/chat/selected-chat';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {formatShortTime} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -77,11 +80,7 @@ import {matchesNormalizedQuery} from '@/lib/phone';
 import {cn} from '@/lib/utils';
 import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
-export {avatarToneClass};
-
-export function chatUniqueKey(chat: Pick<UnifiedChat, 'device_id' | 'jid'>): string {
-  return `${chat.device_id}::${chat.jid}`;
-}
+export {avatarToneClass, chatUniqueKey};
 
 export {AccountMultiSelect};
 export {accountDotTone, shortAccountWidgetLabel} from '@/features/accounts/account-display';
@@ -507,7 +506,7 @@ export function ChatList({
   }, [chats, listAssignChat]);
 
   const invalidateChats = useCallback(() => {
-    void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+    void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
   }, [queryClient]);
 
   const handleOpenMenu = useCallback((chat: UnifiedChat, anchor: {x: number; y: number}) => {
@@ -590,7 +589,7 @@ export function ChatList({
         await clearUnifiedChat(chat.device_id, chat.jid);
         toast.success(t.chats.clearedToast);
         void queryClient.invalidateQueries({
-          queryKey: ['unified-messages', chat.device_id, chat.jid],
+          queryKey: messageQueryKeys.chat(chat.device_id, chat.jid),
         });
         invalidateChats();
         onChatCleared?.(chat);
@@ -598,7 +597,7 @@ export function ChatList({
         await deleteUnifiedChat(chat.device_id, chat.jid);
         toast.success(t.chats.deletedToast);
         void queryClient.removeQueries({
-          queryKey: ['unified-messages', chat.device_id, chat.jid],
+          queryKey: messageQueryKeys.chat(chat.device_id, chat.jid),
         });
         invalidateChats();
         onChatDeleted?.(chat);

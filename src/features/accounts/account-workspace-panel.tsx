@@ -29,6 +29,7 @@ import {AccountCloseRatingPanel} from '@/features/accounts/account-close-rating-
 import {AccountDailyResetPanel} from '@/features/accounts/account-daily-reset-panel';
 import {RejectCallPanel} from '@/features/accounts/reject-call-panel';
 import {accountDotTone, accountStateToneClass} from '@/features/accounts/account-display';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -79,7 +80,7 @@ export function AccountWorkspacePanel({
     onSuccess: () => {
       toast.success(t.accounts.loggedOutToast);
       void queryClient.invalidateQueries({queryKey: ['devices']});
-      void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+      void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
     },
     onError: (err) => toast.error(toApiError(err).message),
   });
@@ -90,7 +91,7 @@ export function AccountWorkspacePanel({
       toast.success(t.accounts.deletedToast);
       setConfirmDelete(false);
       void queryClient.invalidateQueries({queryKey: ['devices']});
-      void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+      void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
       onDeleted(device.id);
     },
     onError: (err) => toast.error(toApiError(err).message),

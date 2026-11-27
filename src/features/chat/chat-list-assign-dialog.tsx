@@ -7,6 +7,7 @@ import type {ChatListSummary, UnifiedChat} from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import {chatDisplayName} from '@/features/chat/display-name';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {cn} from '@/lib/utils';
@@ -34,7 +35,7 @@ export function ChatListAssignDialog({
   }, [open, chat?.device_id, chat?.jid, chat?.list_ids]);
 
   const invalidate = () => {
-    void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+    void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
   };
 
   const createMutation = useMutation({

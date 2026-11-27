@@ -19,10 +19,8 @@ import {
 import {NavLink, Outlet, useLocation, useNavigate} from 'react-router-dom';
 import {toast} from 'sonner';
 import {
-  DEFAULT_UNIFIED_CHATS_QUERY_KEY,
   getAuthStatus,
   getUnifiedGroupsUnread,
-  listUnifiedChats,
   logoutUser,
   updateMyTheme,
 } from '@/api/client';
@@ -31,6 +29,7 @@ import {LanguageToggle} from '@/components/language-toggle';
 import {Button} from '@/components/ui/button';
 import {NotificationControls} from '@/features/notifications/notification-controls';
 import {formatNavUnreadCount, shouldShowNavUnreadBadge} from '@/features/chat/chat-ui-helpers';
+import {createUnifiedChatsQueryOptions} from '@/features/chat/inbox-queries';
 import {onWsEvent, type WsEvent} from '@/lib/events';
 import {syncLiveQueryCache} from '@/lib/live-query-sync';
 import {useI18n} from '@/lib/i18n';
@@ -67,13 +66,13 @@ export function AppShell() {
   const canReadChats = hasUserPermission(user, 'chats:read');
   const canReadGroups = hasUserPermission(user, 'groups:read');
 
-  const unreadQuery = useQuery({
-    queryKey: DEFAULT_UNIFIED_CHATS_QUERY_KEY,
-    queryFn: () => listUnifiedChats({}),
-    enabled: Boolean(user) && canReadChats,
-    refetchInterval: 30_000,
-    staleTime: 25_000,
-  });
+  const unreadQuery = useQuery(createUnifiedChatsQueryOptions({
+    options: {
+      enabled: Boolean(user) && canReadChats,
+      refetchInterval: 30_000,
+      staleTime: 25_000,
+    },
+  }));
   const totalUnread = unreadQuery.data?.total_unread ?? 0;
   const accounts = unreadQuery.data?.accounts ?? [];
 

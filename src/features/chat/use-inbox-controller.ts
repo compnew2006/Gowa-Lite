@@ -2,11 +2,12 @@ import {useCallback, useEffect, useMemo, useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {toast} from 'sonner';
 import {bulkUnifiedChatsLifecycle} from '@/api/requests/workflow';
-import type {UnifiedChat, UnifiedChatsResponse, UnifiedChatTab} from '@/api/types';
-import {chatUniqueKey} from '@/features/chat/chat-list';
+import type {UnifiedChat, UnifiedChatTab} from '@/api/types';
+import {chatLifecycleQueryKeys} from '@/features/chat/message-query-keys';
 import {chatDisplayName} from '@/features/chat/display-name';
+import {markPrivateChatReadInInboxCache} from '@/features/chat/inbox-queries';
 import {messageHistoryOptions} from '@/features/chat/message-history-query';
-import {resolveSelectedUnifiedChat} from '@/features/chat/selected-chat';
+import {chatUniqueKey, resolveSelectedUnifiedChat} from '@/features/chat/selected-chat';
 import {usePaginatedChats} from '@/features/chat/use-paginated-chats';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -86,7 +87,7 @@ export function useInboxController(deviceIds: string[], canViewAll: boolean) {
           toast.error(res.failed[0]?.message || t.chats.bulkPartialToast(0, failCount));
         }
         await queryClient.invalidateQueries({queryKey: ['unified-chats']});
-        void queryClient.invalidateQueries({queryKey: ['chat-lifecycle']});
+        void queryClient.invalidateQueries({queryKey: chatLifecycleQueryKeys.all});
       } catch (err) {
         toast.error(toApiError(err).message);
       } finally {
@@ -124,30 +125,7 @@ export function useInboxController(deviceIds: string[], canViewAll: boolean) {
     if (!redacted) {
       void queryClient.prefetchInfiniteQuery(messageHistoryOptions(chat.device_id, chat.jid));
       paginated.markExtraChatRead(chat.device_id, chat.jid);
-      queryClient.setQueriesData<UnifiedChatsResponse>(
-        {queryKey: ['unified-chats']},
-        (old) => {
-          if (!old) return old;
-          let removed = 0;
-          const nextData = old.data.map((item) => {
-            if (
-              item.device_id === chat.device_id &&
-              item.jid === chat.jid &&
-              (item.unread_count ?? 0) > 0
-            ) {
-              removed = item.unread_count ?? 0;
-              return {...item, unread_count: 0};
-            }
-            return item;
-          });
-          if (removed === 0) return old;
-          const totalUnread =
-            typeof old.total_unread === 'number'
-              ? Math.max(0, old.total_unread - removed)
-              : nextData.reduce((sum, item) => sum + (item.unread_count ?? 0), 0);
-          return {...old, data: nextData, total_unread: totalUnread};
-        },
-      );
+      markPrivateChatReadInInboxCache(queryClient, chat.device_id, chat.jid);
     }
     setAdHocChat(null);
     setRetainedChat(redacted ? chat : {...chat, unread_count: 0});
@@ -159,7 +137,7 @@ export function useInboxController(deviceIds: string[], canViewAll: boolean) {
     if (allowedDeviceIds?.length && !allowedDeviceIds.includes(deviceId)) return false;
     void queryClient.prefetchInfiniteQuery(messageHistoryOptions(deviceId, jid));
     setAdHocChat({deviceId, jid});
-    setSelectedKey(`${deviceId}::${jid}`);
+    setSelectedKey(chatUniqueKey({device_id: deviceId, jid}));
     setChatOpenNonce((n) => n + 1);
     return true;
   }, [allowedDeviceIds, queryClient]);

@@ -4,6 +4,8 @@ import {toast} from 'sonner';
 import {revokeUnifiedMessage, sendUnifiedMediaMessage, sendUnifiedMessageReaction, sendUnifiedTextMessage} from '@/api/requests/chats';
 import type {MessageInfo, UnifiedChat} from '@/api/types';
 import type {MessagesPage} from '@/features/chat/message-history-query';
+import {messageQueryKeys} from '@/features/chat/message-query-keys';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {applyMessageReaction, applyRevokeToMessagePages, updateMessageReactions} from '@/features/chat/message-reactions';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -56,7 +58,7 @@ export function useMessageActions({
       pendingKey: string;
     }) => sendUnifiedMessageReaction(deviceId, chatJid, messageId, emoji),
     onMutate: async ({deviceId, chatJid, messageId, emoji}) => {
-      const queryKey = ['unified-messages', deviceId, chatJid] as const;
+      const queryKey = messageQueryKeys.chat(deviceId, chatJid);
       await queryClient.cancelQueries({queryKey});
       const previous = queryClient.getQueriesData<InfiniteData<MessagesPage>>({queryKey});
       const optimistic = {emoji, sender_jid: deviceId, is_from_me: true, timestamp: new Date().toISOString()};
@@ -92,7 +94,7 @@ export function useMessageActions({
   const revokeMutation = useMutation({
     mutationFn: (messageId: string) => revokeUnifiedMessage(chat.device_id, chat.jid, messageId),
     onMutate: async (messageId) => {
-      const queryKey = ['unified-messages', chat.device_id, chat.jid] as const;
+      const queryKey = messageQueryKeys.chat(chat.device_id, chat.jid);
       await queryClient.cancelQueries({queryKey});
       const previous = queryClient.getQueriesData<InfiniteData<MessagesPage>>({queryKey});
       const revokedAt = new Date().toISOString();
@@ -125,9 +127,9 @@ export function useMessageActions({
     },
     onSettled: () => {
       void queryClient.invalidateQueries({
-        queryKey: ['unified-messages', chat.device_id, chat.jid],
+        queryKey: messageQueryKeys.chat(chat.device_id, chat.jid),
       });
-      void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+      void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
     },
   });
 

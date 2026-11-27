@@ -303,6 +303,7 @@ describe('Chat Row Context Menu (HTTP Integration)', () => {
   let chatATime = '2026-11-24T01:00:00.000Z';
   const chatBTime = '2026-11-24T03:00:00.000Z';
   const remoteCalls: Array<{path: string; body: Record<string, unknown>}> = [];
+  let deviceLoggedIn = true;
 
   async function api(pathName: string, options: RequestInit & {token?: string} = {}) {
     const headers = new Headers(options.headers);
@@ -361,7 +362,7 @@ describe('Chat Row Context Menu (HTTP Integration)', () => {
           JSON.stringify({
             code: 'SUCCESS',
             message: 'ok',
-            results: {device_id: 'dev-1', is_connected: true, is_logged_in: true},
+            results: {device_id: 'dev-1', is_connected: deviceLoggedIn, is_logged_in: deviceLoggedIn},
           }),
         );
         return;
@@ -708,5 +709,28 @@ describe('Chat Row Context Menu (HTTP Integration)', () => {
     const afterNewMsgChats = await api('/api/unified/chats', {token: adminToken});
     const afterNewMsgData = (afterNewMsgChats.body?.results as {data: Array<{jid: string}>}).data;
     assert.equal(afterNewMsgData.some((c) => c.jid === jidA), true);
+
+    // Local archive and pin changes remain available after the account disconnects.
+    deviceLoggedIn = false;
+    const remoteCount = remoteCalls.length;
+    for (const [jid, action, body] of [
+      [jidA, 'pin', {pinned: false}],
+      [jidB, 'archive', {archived: false}],
+    ] as const) {
+      const local = await api(`/api/unified/chats/dev-1/${encodeURIComponent(jid)}/${action}`, {
+        method: 'POST',
+        token: adminToken,
+        body: JSON.stringify(body),
+      });
+      assert.equal(local.status, 200);
+      assert.equal((local.body?.results as {synced_remote: boolean}).synced_remote, false);
+    }
+    assert.equal(remoteCalls.length, remoteCount);
+
+    const localList = await api('/api/unified/chats', {token: adminToken});
+    assert.equal(localList.status, 200);
+    const localRows = (localList.body?.results as typeof listBody).data;
+    assert.equal(localRows.find((chat) => chat.jid === jidA)?.is_pinned, false);
+    assert.equal(localRows.find((chat) => chat.jid === jidB)?.archived, false);
   });
 });

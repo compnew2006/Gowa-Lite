@@ -7,6 +7,7 @@ import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 
@@ -26,7 +27,7 @@ export function CreateDeviceDialog({compact = false}: {compact?: boolean}) {
     onSuccess: () => {
       toast.success(t.accounts.createdToast);
       void queryClient.invalidateQueries({queryKey: ['devices']});
-      void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+      void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
       setDeviceId('');
       setDisplayName('');
       setOpen(false);

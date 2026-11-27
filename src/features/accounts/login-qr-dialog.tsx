@@ -5,6 +5,7 @@ import {toast} from 'sonner';
 import {fetchAuthorizedBlobUrl, getDeviceStatus, loginDeviceQr} from '@/api/client';
 import type {LoginQr, RegistryDevice} from '@/api/types';
 import {Dialog} from '@/components/ui/dialog';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {onWsEvent} from '@/lib/events';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -32,7 +33,7 @@ export function LoginQrDialog({
     succeededRef.current = true;
     toast.success(t.accounts.linkedSuccessToast);
     void queryClient.invalidateQueries({queryKey: ['devices']});
-    void queryClient.invalidateQueries({queryKey: ['unified-chats']});
+    void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
     onOpenChange(false);
   }, [queryClient, onOpenChange, t.accounts.linkedSuccessToast]);
 

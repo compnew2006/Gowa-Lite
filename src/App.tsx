@@ -2,8 +2,9 @@ import {Suspense, lazy, useEffect} from 'react';
 import {Loader2} from 'lucide-react';
 import {Navigate, Route, Routes} from 'react-router-dom';
 import {Toaster} from 'sonner';
-import {DEFAULT_UNIFIED_CHATS_QUERY_KEY, getAuthStatus, listUnifiedChats} from '@/api/client';
+import {getAuthStatus} from '@/api/client';
 import {AppShell} from '@/components/layout/app-shell';
+import {createUnifiedChatsQueryOptions} from '@/features/chat/inbox-queries';
 import {bootingLabels, loadEnglishTranslations} from '@/lib/i18n';
 import {queryClient} from '@/lib/query-client';
 import {wsClient} from '@/lib/ws';
@@ -92,11 +93,9 @@ export default function App() {
             const requestedPath = window.location.hash.slice(1).split('?')[0];
             const initialPath = requestedPath && requestedPath !== '/' ? requestedPath : firstAllowedRoute(res.user);
             if (initialPath === '/chats') void loadChatsPage().catch(() => undefined);
-            void queryClient.prefetchQuery({
-              queryKey: DEFAULT_UNIFIED_CHATS_QUERY_KEY,
-              queryFn: () => listUnifiedChats({}),
-              staleTime: 25_000,
-            });
+            void queryClient.prefetchQuery(
+              createUnifiedChatsQueryOptions({options: {staleTime: 25_000}}),
+            );
           }
           setBootState({
             status: 'authenticated',

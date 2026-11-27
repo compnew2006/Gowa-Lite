@@ -11,7 +11,9 @@ import {Button} from '@/components/ui/button';
 import {Label} from '@/components/ui/label';
 import {Skeleton} from '@/components/ui/skeleton';
 import {Switch} from '@/components/ui/switch';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {formatDate} from '@/lib/format';
+import {chatLifecycleQueryKeys} from '@/features/chat/message-query-keys';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 
@@ -114,8 +116,8 @@ export function AccountDailyResetPanel({
       setConfirmRunNow(false);
       toast.success(copy.runNowSuccess(res.reset_count));
       void queryClient.invalidateQueries({queryKey});
-      void queryClient.invalidateQueries({queryKey: ['unified-chats']});
-      void queryClient.invalidateQueries({queryKey: ['chat-lifecycle']});
+      void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
+      void queryClient.invalidateQueries({queryKey: chatLifecycleQueryKeys.all});
       void queryClient.invalidateQueries({queryKey: ['assignable-agents']});
     },
     onError: (err) => toast.error(toApiError(err).message),

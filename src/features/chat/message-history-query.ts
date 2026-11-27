@@ -1,6 +1,7 @@
 import {infiniteQueryOptions} from '@tanstack/react-query';
 import {getUnifiedChatMessages} from '@/api/requests/chats';
 import type {ChatInfo, ChatRedactionReason, MessageInfo, Pagination} from '@/api/types';
+import {messageQueryKeys} from '@/features/chat/message-query-keys';
 
 export const PAGE_SIZE = 40;
 
@@ -34,7 +35,7 @@ function computeNextMessagePageParam(
 
 export function messageHistoryOptions(deviceId: string, jid: string, search = '', mediaOnly = false) {
   return infiniteQueryOptions({
-    queryKey: ['unified-messages', deviceId, jid, search, mediaOnly],
+    queryKey: messageQueryKeys.history(deviceId, jid, search, mediaOnly),
     initialPageParam: 0,
     queryFn: ({pageParam, signal}) =>
       getUnifiedChatMessages(deviceId, jid, {

@@ -5,6 +5,8 @@ import {
   updateMessageReactions,
   type InfiniteMessagePagesShape,
 } from '@/features/chat/message-reactions';
+import {chatLifecycleQueryKeys, messageQueryKeys} from '@/features/chat/message-query-keys';
+import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {extractWsEventTarget, extractWsReaction, extractWsRevokeTarget, type WsEvent} from '@/lib/events';
 import {toWhatsAppJid} from '@/lib/phone';
 import {invalidateChatQueries} from '@/lib/query-client';
@@ -18,7 +20,7 @@ const DEVICE_EVENTS = new Set(['LOGIN_SUCCESS', 'DEVICE_LOGGED_OUT', 'DEVICE_REM
 
 function invalidateInbox(client: QueryClient, deviceId: string | undefined): void {
   void client.invalidateQueries({
-    queryKey: ['unified-chats'],
+    queryKey: UNIFIED_CHATS_QUERY_PREFIX,
     predicate: ({queryKey: [, devices]}) =>
       !deviceId || !Array.isArray(devices) || devices.length === 0 || devices.includes(deviceId),
   });
@@ -28,7 +30,7 @@ function patchReaction(client: QueryClient, event: WsEvent): void {
   const change = extractWsReaction(event);
   if (!change) return;
   const filters: QueryFilters = {
-    queryKey: ['unified-messages', change.deviceId],
+    queryKey: messageQueryKeys.device(change.deviceId),
     predicate: ({queryKey: [, , jid], state}) =>
       typeof jid === 'string' && (toWhatsAppJid(jid) || jid) === change.chatJid &&
       Boolean((state.data as InfiniteMessagePagesShape | undefined)?.pages.some((page) =>
@@ -61,7 +63,7 @@ export function syncLiveQueryCache(client: QueryClient, event: WsEvent): void {
 
   if (DEVICE_EVENTS.has(code)) {
     invalidateInbox(client, target.deviceId);
-    invalidateChat('unified-messages');
+    invalidateChat(messageQueryKeys.all[0]);
     invalidate('devices', 'unified-accounts', 'unified-accounts-assign',
       'unified-groups', 'unified-groups-unread', 'misc-statuses');
     return;
@@ -78,7 +80,7 @@ export function syncLiveQueryCache(client: QueryClient, event: WsEvent): void {
   if (revoke || MESSAGE_EVENTS.has(code)) {
     if (!jid || jid.endsWith('@g.us')) invalidate('unified-groups', 'unified-groups-unread');
     if (!jid?.endsWith('@g.us')) invalidateInbox(client, target.deviceId);
-    invalidateChat('unified-messages');
+    invalidateChat(messageQueryKeys.all[0]);
   } else if (code === 'CONVERSATION_NOTE_UPDATED') {
     invalidateChat('unified-chat-notes');
   } else if (code === 'SCHEDULE_UPDATED') {
@@ -86,7 +88,12 @@ export function syncLiveQueryCache(client: QueryClient, event: WsEvent): void {
     invalidate('schedules');
   } else if (code === 'CHAT_LIFECYCLE_UPDATED' || code === 'CHAT_DAILY_RESET') {
     invalidateInbox(client, target.deviceId);
-    invalidateChat('chat-lifecycle', 'unified-messages', 'unified-chat-notes', 'unified-chat-schedules');
+    invalidateChat(
+      chatLifecycleQueryKeys.all[0],
+      messageQueryKeys.all[0],
+      'unified-chat-notes',
+      'unified-chat-schedules',
+    );
     invalidateChatQueries(client, 'assignable-agents', {deviceId: target.deviceId});
     if (code === 'CHAT_DAILY_RESET') invalidateChatQueries(client, 'account-daily-reset', {deviceId: target.deviceId});
   } else if (code === 'INBOX_POLICY_UPDATED') {

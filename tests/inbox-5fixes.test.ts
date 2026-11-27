@@ -76,12 +76,26 @@ describe('Gowa Lite 5 Targeted Fixes Verification', () => {
       path.resolve(process.cwd(), 'src/features/chat/use-inbox-controller.ts'),
       'utf8',
     );
+    const readSyncSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/features/chat/use-chat-read-sync.ts'),
+      'utf8',
+    );
 
     // secondaryPhone is rendered in its own <p dir="ltr" ...> block outside row 2's flex container
     assert.equal(chatListSrc.includes('{secondaryPhone && (\n              <p\n                dir="ltr"'), true);
     assert.equal(chatListSrc.includes('hasUnread && (\n                    <span'), true);
-    assert.equal(controllerSrc.includes("queryKey: ['unified-chats']"), true);
-    assert.equal(controllerSrc.includes('unread_count: 0'), true);
+    assert.match(
+      controllerSrc,
+      /if \(!redacted\) \{[\s\S]*?markPrivateChatReadInInboxCache\(/,
+      'opening a visible chat should patch unread inbox rows inside the existing redaction guard',
+    );
+    assert.match(readSyncSrc, /if \(isContentRedacted\) return;/);
+    assert.match(readSyncSrc, /if \(isGroup\) \{[\s\S]*?markUnifiedGroupRead\(/);
+    assert.match(
+      readSyncSrc,
+      /markPrivateChatReadInInboxCache\(queryClient, chat\.device_id, chat\.jid\)[\s\S]*?markUnifiedChatRead\(/,
+      'private-chat read should keep its existing server persistence call',
+    );
   });
 
   it('Issue 3b: frontend media cache deduplicates, throttles concurrency <= 4, retains entries, and revokes on LRU eviction', async () => {

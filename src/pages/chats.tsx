@@ -8,7 +8,6 @@ import {
   X,
 } from 'lucide-react';
 import {useNavigate, useSearchParams} from 'react-router-dom';
-import {DEFAULT_UNIFIED_CHATS_QUERY_KEY, listUnifiedChats} from '@/api/client';
 import {
   GowaSetupNotice,
   isGowaConnectionError,
@@ -16,9 +15,11 @@ import {
   WorkspaceEmptyState,
 } from '@/components/layout/split-workspace';
 import {Button} from '@/components/ui/button';
-import {ChatList, chatUniqueKey} from '@/features/chat/chat-list';
+import {ChatList} from '@/features/chat/chat-list';
 import {DeferredMessageView} from '@/features/chat/deferred-message-view';
 import {chatDisplayName} from '@/features/chat/display-name';
+import {createUnifiedChatsQueryOptions} from '@/features/chat/inbox-queries';
+import {chatUniqueKey} from '@/features/chat/selected-chat';
 
 import {
   buildJidAccountsMap,
@@ -245,13 +246,13 @@ export default function ChatsPage() {
   const hasActiveFilter =
     selectedDeviceIds.length > 0 || Boolean(search.trim()) || hasMedia;
 
-  const globalChatsQuery = useQuery({
-    queryKey: DEFAULT_UNIFIED_CHATS_QUERY_KEY,
-    queryFn: () => listUnifiedChats({}),
-    enabled: hasActiveFilter && !(apiErr && isGowaConnectionError(apiErr)),
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-  });
+  const globalChatsQuery = useQuery(createUnifiedChatsQueryOptions({
+    options: {
+      enabled: hasActiveFilter && !(apiErr && isGowaConnectionError(apiErr)),
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
+    },
+  }));
 
   const jidAccountsMap = useMemo(
     () => buildJidAccountsMap([...(globalChatsQuery.data?.data ?? []), ...chats]),

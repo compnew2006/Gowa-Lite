@@ -1,10 +1,14 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
-import {DEFAULT_UNIFIED_CHATS_QUERY_KEY, listUnifiedChats} from '@/api/client';
+import {listUnifiedChats} from '@/api/client';
 import type {UnifiedChat, UnifiedChatTab} from '@/api/types';
+import {
+  createUnifiedChatsQueryOptions,
+  UNIFIED_CHATS_PAGE_SIZE,
+} from '@/features/chat/inbox-queries';
 import {normalizeSearchInput} from '@/lib/phone';
 
-const CHATS_PAGE_SIZE = 100;
+const CHATS_PAGE_SIZE = UNIFIED_CHATS_PAGE_SIZE;
 
 export function mergePaginatedChats(
   firstPageChats: UnifiedChat[],
@@ -52,8 +56,6 @@ export function usePaginatedChats({
   const normalizedSearch = normalizeSearchInput(search);
   const resolvedTab = tab ?? '';
   const resolvedAssignedTo = assignedTo !== undefined && assignedTo !== '' ? String(assignedTo) : '';
-  const isDefaultPage = deviceIds.length === 0 && !normalizedSearch && !hasMedia &&
-    (!tab || tab === 'all') && !resolvedAssignedTo;
   const filterSignature = `${deviceIds.join(',')}::${normalizedSearch}::${hasMedia ? '1' : '0'}::${resolvedTab}::${resolvedAssignedTo}`;
 
   const [extraState, setExtraState] = useState<{
@@ -75,23 +77,9 @@ export function usePaginatedChats({
     setExtraState({signature: filterSignature, chats: []});
   }, [filterSignature]);
 
-  const query = useQuery({
-    queryKey: isDefaultPage
-      ? DEFAULT_UNIFIED_CHATS_QUERY_KEY
-      : ['unified-chats', deviceIds, normalizedSearch, hasMedia, resolvedTab, resolvedAssignedTo],
-    queryFn: () =>
-      listUnifiedChats(isDefaultPage ? {} : {
-        deviceIds: deviceIds.length > 0 ? deviceIds : undefined,
-        search: normalizedSearch || undefined,
-        has_media: hasMedia || undefined,
-        tab,
-        assignedTo: resolvedAssignedTo || undefined,
-        limit: CHATS_PAGE_SIZE,
-        offset: 0,
-      }),
-    staleTime: isDefaultPage ? 25_000 : undefined,
-    refetchInterval: (q) => (isDefaultPage || q.state.error ? false : 30_000),
-  });
+  const query = useQuery(createUnifiedChatsQueryOptions({
+    filters: {deviceIds, search, hasMedia, tab, assignedTo: resolvedAssignedTo},
+  }));
 
   const activeExtra = extraState.signature === filterSignature ? extraState : null;
   const pageZeroChats = query.data?.data ?? [];
