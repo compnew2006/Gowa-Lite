@@ -3,7 +3,6 @@ import {
   lazy,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -11,13 +10,11 @@ import {
   type FormEvent,
 } from 'react';
 import {
-  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
-  type InfiniteData,
 } from '@tanstack/react-query';
-import {Hand, History, Loader2, Lock, Paperclip, RotateCcw, Trash2} from 'lucide-react';
+import {Hand, History, Loader2, Lock, Paperclip, RotateCcw} from 'lucide-react';
 import {toast} from 'sonner';
 import {
   blockUnifiedChat,
@@ -25,36 +22,23 @@ import {
   closeUnifiedChat,
   getChatLifecycle,
   getInboxPolicy,
-  getUnifiedChatMessages,
   listUnifiedChatNotes,
   listUnifiedChatSchedules,
   releaseUnifiedChat,
   reopenUnifiedChat,
-  requestUnifiedChatHistory,
-  revokeUnifiedMessage,
-  sendUnifiedMediaMessage,
-  sendUnifiedMessageReaction,
-  sendUnifiedTextMessage,
 } from '@/api/client';
 import type {
   ChatAssignmentInfo,
-  ChatInfo,
   ChatLifecycleEvent,
   ChatLifecycleResponse,
   ChatRedactionReason,
   MessageInfo,
-  Pagination,
   UnifiedChat,
 } from '@/api/types';
 import {Button} from '@/components/ui/button';
-import {Dialog} from '@/components/ui/dialog';
+import {RevokeMessageDialog} from '@/features/chat/revoke-message-dialog';
 import type {ContextDrawerTab} from '@/features/chat/chat-context-drawer';
 import {chatDisplayName} from '@/features/chat/display-name';
-import {
-  isNoHistoryOnPhoneError,
-  shouldTriggerAutoHistoryFetch,
-  type EmptyHistoryStatus,
-} from '@/features/chat/empty-history';
 import {MediaSelectionBar} from '@/features/chat/media-selection-bar';
 import {MessageBubble} from '@/features/chat/message-bubble';
 import {
@@ -63,19 +47,12 @@ import {
   type ComposerLockState,
 } from '@/features/chat/message-composer';
 import {
-  applyMessageReaction,
   dayKey,
   repliedToId,
-  sortMessagesChronologically,
-  updateMessageReactions,
 } from '@/features/chat/message-reactions';
 import {MessageViewHeader} from '@/features/chat/message-view-header';
 import type {OtherAccountRef} from '@/features/chat/other-accounts';
-import {
-  computeTimelineScrollAction,
-  isNearBottom,
-  scrollContainerToBottom,
-} from '@/features/chat/scroll-behavior';
+import {useMessageTimelineScroll} from '@/features/chat/use-message-timeline-scroll';
 
 const AssignChatDialog = lazy(() =>
   import('@/features/chat/assign-chat-dialog').then((m) => ({default: m.AssignChatDialog})),
@@ -95,7 +72,8 @@ import {formatDay, formatShortTime} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {isDownloadableMedia} from '@/lib/media-download';
-import {normalizeSearchInput} from '@/lib/phone';
+import {useMessageActions} from '@/features/chat/use-message-actions';
+import {useMessageHistory} from '@/features/chat/use-message-history';
 import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
 type TimelineItem =
@@ -128,41 +106,6 @@ function formatLifecycleEventText(
   }
 }
 
-const PAGE_SIZE = 40;
-const HISTORY_POLL_MS = 2_000;
-const HISTORY_POLL_WINDOW_MS = 30_000;
-const MIN_HISTORY_LOADING_MS = 450;
-const REACTION_FALLBACK_POLL_MS = 12_000;
-const SCROLL_TOP_THRESHOLD_PX = 140;
-
-type MessagesPage = {
-  data: MessageInfo[];
-  pagination: Pagination;
-  chat_info: ChatInfo;
-  content_redacted?: boolean;
-  redaction_reason?: ChatRedactionReason;
-  reaction_webhook_configured?: boolean;
-};
-
-function computeNextMessagePageParam(
-  lastPage: MessagesPage,
-  allPages: MessagesPage[],
-): number | undefined {
-  if (typeof lastPage.pagination.next_offset === 'number') {
-    const rawCount = lastPage.pagination.raw_count ?? lastPage.data.length;
-    const liveTotal = lastPage.pagination.live_total;
-    if (rawCount === 0 || lastPage.data.length === 0) return undefined;
-    if (typeof liveTotal === 'number' && lastPage.pagination.next_offset >= liveTotal) {
-      return undefined;
-    }
-    return lastPage.pagination.next_offset;
-  }
-  const loadedCount = allPages.reduce((sum, page) => sum + page.data.length, 0);
-  const totalCount = lastPage.pagination.total ?? 0;
-  if (lastPage.data.length === 0 || loadedCount >= totalCount) return undefined;
-  return loadedCount;
-}
-
 export function MessageView({
   chat,
   openNonce = 0,
@@ -191,13 +134,7 @@ export function MessageView({
   const canReadNotes = hasUserPermission(user, 'notes:read');
   const canReadSchedules = hasUserPermission(user, 'schedules:read');
   const canWriteSchedules = hasUserPermission(user, 'schedules:write');
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const timelineContentRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLInputElement>(null);
-  const initialScrolledRef = useRef(false);
-  const prevScrollAnchorRef = useRef<{scrollHeight: number; scrollTop: number} | null>(null);
-  const stickToBottomRef = useRef(true);
-
   const dragCounterRef = useRef(0);
 
   const [searchOpen, setSearchOpen] = useState(false);
@@ -208,31 +145,11 @@ export function MessageView({
   const [isDragOver, setIsDragOver] = useState(false);
   const [replyingTo, setReplyingTo] = useState<MessageInfo | null>(null);
   const [reactionPickerMessageId, setReactionPickerMessageId] = useState<string | null>(null);
-  const pendingReactions = useRef(new Set<string>());
-  const lastAutoTriggerKeyRef = useRef<string | null>(null);
-  const lastResetOpenKeyRef = useRef<string | null>(null);
-  const historyRequestIdRef = useRef(0);
-  const minLoadingTimerRef = useRef<number | null>(null);
-  const mountedRef = useRef(true);
-  const [historyPollUntil, setHistoryPollUntil] = useState(0);
-  const [emptyHistoryStatus, setEmptyHistoryStatus] = useState<EmptyHistoryStatus>('idle');
-  const [emptyHistoryError, setEmptyHistoryError] = useState('');
   const [drawerTab, setDrawerTab] = useState<ContextDrawerTab | null>(null);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [revokingMessage, setRevokingMessage] = useState<MessageInfo | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<MessageInfo | null>(null);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      if (minLoadingTimerRef.current !== null) {
-        window.clearTimeout(minLoadingTimerRef.current);
-        minLoadingTimerRef.current = null;
-      }
-    };
-  }, []);
 
   useEffect(() => {
     setSearchOpen(false);
@@ -248,29 +165,7 @@ export function MessageView({
     setAssignDialogOpen(false);
     setRevokingMessage(null);
     setForwardingMessage(null);
-    initialScrolledRef.current = false;
-    prevScrollAnchorRef.current = null;
-    stickToBottomRef.current = true;
   }, [chat.device_id, chat.jid]);
-
-  useEffect(() => {
-    const triggerKey = `${chat.device_id}::${chat.jid}::${openNonce}`;
-    if (lastResetOpenKeyRef.current === triggerKey) return;
-    lastResetOpenKeyRef.current = triggerKey;
-    if (minLoadingTimerRef.current !== null) {
-      window.clearTimeout(minLoadingTimerRef.current);
-      minLoadingTimerRef.current = null;
-    }
-    setHistoryPollUntil(0);
-    setEmptyHistoryStatus('idle');
-    setEmptyHistoryError('');
-  }, [chat.device_id, chat.jid, openNonce]);
-
-  useEffect(() => {
-    initialScrolledRef.current = false;
-    prevScrollAnchorRef.current = null;
-    stickToBottomRef.current = true;
-  }, [search, mediaOnly]);
 
   const lowerJid = chat.jid.toLowerCase();
   const isLifecycleSupported =
@@ -308,43 +203,21 @@ export function MessageView({
           : 'pending'
       : undefined;
 
-  const normalizedSearch = normalizeSearchInput(search);
-
-  const query = useInfiniteQuery({
-    queryKey: ['unified-messages', chat.device_id, chat.jid, normalizedSearch, mediaOnly],
-    initialPageParam: 0,
-    queryFn: ({pageParam, signal}) =>
-      getUnifiedChatMessages(chat.device_id, chat.jid, {
-        limit: PAGE_SIZE,
-        offset: pageParam,
-        search: normalizedSearch || undefined,
-        media_only: mediaOnly || undefined,
-      }, signal),
-    getNextPageParam: computeNextMessagePageParam,
-    refetchInterval: (query) => {
-      if (Date.now() < historyPollUntil) return HISTORY_POLL_MS;
-      const page = query.state.data?.pages[0];
-      return page && !page.content_redacted && page.reaction_webhook_configured === false
-        ? REACTION_FALLBACK_POLL_MS
-        : false;
-    },
-  });
-
-  const firstPage = query.data?.pages[0];
-  const redactionReason = firstPage?.redaction_reason ?? redactionReasonFromLifecycle;
-  const isContentRedacted = Boolean(firstPage?.content_redacted || redactionReasonFromLifecycle);
-
+  const {
+    query, firstPage, messages, isDeviceReady, normalizedSearch, redactionReason,
+    isContentRedacted, historyMutation, emptyHistoryStatus, emptyHistoryError,
+  } = useMessageHistory({chat, openNonce, search, mediaOnly, redactionReasonFromLifecycle});
   useChatReadSync(chat, isContentRedacted);
 
   useEffect(() => {
-    initialScrolledRef.current = false;
-    prevScrollAnchorRef.current = null;
-    stickToBottomRef.current = true;
     if (isContentRedacted) {
       setSearchOpen(false);
       setSearch('');
       setMediaOnly(false);
       setDrawerTab(null);
+      setForwardingMessage(null);
+      setRevokingMessage(null);
+      setReplyingTo(null);
     }
   }, [isContentRedacted]);
 
@@ -369,16 +242,6 @@ export function MessageView({
     [schedulesQuery.data?.data],
   );
 
-  const messages = useMemo(() => {
-    if (isContentRedacted) return [];
-    const pages = query.data?.pages ?? [];
-    const byId = new Map<string, MessageInfo>();
-    for (const page of pages) {
-      for (const msg of page.data) byId.set(msg.id, msg);
-    }
-    return sortMessagesChronologically(Array.from(byId.values()));
-  }, [isContentRedacted, query.data?.pages]);
-
   const downloadableMessages = useMemo(
     () => (isContentRedacted ? [] : messages.filter(isDownloadableMedia)),
     [isContentRedacted, messages],
@@ -394,118 +257,7 @@ export function MessageView({
   const total = firstPage?.pagination.total ?? 0;
   const resolvedChat = firstPage?.chat_info?.jid === chat.jid ? firstPage.chat_info : chat;
   const displayName = chatDisplayName(resolvedChat);
-  const isDeviceReady = chat.device_state === 'logged_in';
   const {hasNextPage, isFetchingNextPage, fetchNextPage} = query;
-
-  const requestEmptyChatHistory = useCallback(
-    (source: 'auto' | 'manual') => {
-      if (minLoadingTimerRef.current !== null) {
-        window.clearTimeout(minLoadingTimerRef.current);
-        minLoadingTimerRef.current = null;
-      }
-      const reqId = ++historyRequestIdRef.current;
-      const startedAt = Date.now();
-      setEmptyHistoryError('');
-      setEmptyHistoryStatus('loading');
-      setHistoryPollUntil(Date.now() + HISTORY_POLL_WINDOW_MS);
-
-      return requestUnifiedChatHistory(chat.device_id, chat.jid, PAGE_SIZE)
-        .then((res) => {
-          if (!mountedRef.current || historyRequestIdRef.current !== reqId) return res;
-          if (source === 'manual') {
-            toast.success(t.chats.historyRequestedToast);
-          }
-          return res;
-        })
-        .catch((err: unknown) => {
-          if (!mountedRef.current || historyRequestIdRef.current !== reqId) {
-            if (source === 'manual') throw err;
-            return undefined;
-          }
-          const apiErr = toApiError(err);
-          const noHistory = isNoHistoryOnPhoneError(apiErr.status, apiErr.message);
-          const remainingMs = Math.max(0, MIN_HISTORY_LOADING_MS - (Date.now() - startedAt));
-          const applyFailureState = () => {
-            if (!mountedRef.current || historyRequestIdRef.current !== reqId) return;
-            minLoadingTimerRef.current = null;
-            setHistoryPollUntil(0);
-            if (noHistory) {
-              setEmptyHistoryStatus('empty');
-              setEmptyHistoryError('');
-              if (source === 'manual') {
-                toast.info(t.chats.noHistoryOnPhone);
-              }
-            } else {
-              setEmptyHistoryStatus('error');
-              setEmptyHistoryError(apiErr.message);
-              if (source === 'manual') {
-                toast.error(apiErr.message);
-              }
-            }
-          };
-          if (remainingMs > 0) {
-            minLoadingTimerRef.current = window.setTimeout(applyFailureState, remainingMs);
-          } else {
-            applyFailureState();
-          }
-          return undefined;
-        });
-    },
-    [chat.device_id, chat.jid, t.chats.historyRequestedToast, t.chats.noHistoryOnPhone],
-  );
-
-  useEffect(() => {
-    const triggerKey = `${chat.device_id}::${chat.jid}::${openNonce}`;
-    if (
-      !shouldTriggerAutoHistoryFetch({
-        isSuccess: query.isSuccess,
-        isFetching: query.isFetching,
-        isContentRedacted,
-        hasSearchOrMediaFilter: Boolean(normalizedSearch || mediaOnly),
-        isDeviceReady,
-        messageCount: messages.length,
-        currentTriggerKey: triggerKey,
-        lastTriggeredKey: lastAutoTriggerKeyRef.current,
-      })
-    ) {
-      return;
-    }
-    lastAutoTriggerKeyRef.current = triggerKey;
-    void requestEmptyChatHistory('auto');
-  }, [
-    chat.device_id,
-    chat.jid,
-    isContentRedacted,
-    isDeviceReady,
-    mediaOnly,
-    messages.length,
-    normalizedSearch,
-    openNonce,
-    query.isFetching,
-    query.isSuccess,
-    requestEmptyChatHistory,
-  ]);
-
-  useEffect(() => {
-    if (messages.length > 0) {
-      if (emptyHistoryStatus !== 'idle') {
-        setEmptyHistoryStatus('idle');
-        setEmptyHistoryError('');
-      }
-      if (historyPollUntil > 0) {
-        setHistoryPollUntil(0);
-      }
-      return;
-    }
-    if (emptyHistoryStatus !== 'loading' || historyPollUntil <= 0) return;
-    const remaining = Math.max(0, historyPollUntil - Date.now());
-    const timer = window.setTimeout(() => {
-      if (!mountedRef.current) return;
-      setHistoryPollUntil(0);
-      setEmptyHistoryStatus('empty');
-    }, remaining || HISTORY_POLL_WINDOW_MS);
-    return () => window.clearTimeout(timer);
-  }, [emptyHistoryStatus, historyPollUntil, messages.length]);
 
   const lifecycleEvents = useMemo(() => {
     if (!isLifecycleSupported || isContentRedacted || normalizedSearch || mediaOnly) return [];
@@ -600,74 +352,16 @@ export function MessageView({
 
   const isSendingBlocked = Boolean(lockState);
 
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    const action = computeTimelineScrollAction({
-      hasElement: Boolean(el),
+  const {scrollRef, timelineContentRef, maybeLoadOlder, resetScroll, scheduleScrollToBottom, followLatest} =
+    useMessageTimelineScroll({
+      scope: JSON.stringify([chat.device_id, chat.jid, search, mediaOnly]),
+      timelineRevision: timelineItems,
       itemCount: timelineItems.length,
       isContentRedacted,
-      initialScrolled: initialScrolledRef.current,
-      prevAnchor: prevScrollAnchorRef.current,
-      stickToBottom: stickToBottomRef.current,
+      hasNextPage,
+      isFetchingNextPage,
+      fetchNextPage,
     });
-    if (!el || action === 'none') return;
-
-    if (action === 'preserve_anchor' && prevScrollAnchorRef.current) {
-      const {scrollHeight: prevHeight, scrollTop: prevTop} = prevScrollAnchorRef.current;
-      const heightDelta = el.scrollHeight - prevHeight;
-      if (heightDelta > 0) el.scrollTop = prevTop + heightDelta;
-      prevScrollAnchorRef.current = null;
-      return;
-    }
-
-    if (action === 'scroll_bottom') {
-      const wasInitial = !initialScrolledRef.current;
-      scrollContainerToBottom(el);
-      initialScrolledRef.current = true;
-      if (wasInitial) {
-        stickToBottomRef.current = true;
-        window.requestAnimationFrame(() => {
-          if (scrollRef.current && stickToBottomRef.current && !prevScrollAnchorRef.current) {
-            scrollContainerToBottom(scrollRef.current);
-          }
-        });
-      }
-    }
-  }, [isContentRedacted, timelineItems]);
-
-  useEffect(() => {
-    if (isContentRedacted || timelineItems.length === 0 || typeof ResizeObserver === 'undefined') {
-      return;
-    }
-    const contentEl = timelineContentRef.current;
-    if (!contentEl) return;
-
-    const observer = new ResizeObserver(() => {
-      const scrollEl = scrollRef.current;
-      if (!scrollEl || !stickToBottomRef.current || prevScrollAnchorRef.current) return;
-      scrollContainerToBottom(scrollEl);
-    });
-    observer.observe(contentEl);
-    return () => observer.disconnect();
-  }, [isContentRedacted, timelineItems.length]);
-
-  const maybeLoadOlder = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    stickToBottomRef.current = isNearBottom(el);
-
-    if (
-      initialScrolledRef.current &&
-      el.scrollTop <= SCROLL_TOP_THRESHOLD_PX &&
-      hasNextPage &&
-      !isFetchingNextPage
-    ) {
-      prevScrollAnchorRef.current = {scrollHeight: el.scrollHeight, scrollTop: el.scrollTop};
-      void fetchNextPage().catch(() => {
-        prevScrollAnchorRef.current = null;
-      });
-    }
-  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
   const invalidateLifecycleScope = useCallback(() => {
     void queryClient.invalidateQueries({
@@ -686,51 +380,10 @@ export function MessageView({
     void queryClient.invalidateQueries({queryKey: ['assignable-agents', chat.device_id]});
   }, [chat.device_id, chat.jid, queryClient]);
 
-  const sendMutation = useMutation({
-    mutationFn: ({text, replyMessageId}: {text: string; replyMessageId?: string}) =>
-      sendUnifiedTextMessage(chat.device_id, chat.jid, text, replyMessageId),
-    onSuccess: () => {
-      setDraft('');
-      setReplyingTo(null);
-      stickToBottomRef.current = true;
-      void queryClient.invalidateQueries({
-        queryKey: ['unified-messages', chat.device_id, chat.jid],
-      });
-      invalidateLifecycleScope();
-    },
-    onError: (err) => {
-      toast.error(toApiError(err).message);
-      invalidateLifecycleScope();
-      void queryClient.invalidateQueries({queryKey: ['inbox-policy']});
-    },
-  });
-
-  const sendMediaMutation = useMutation({
-    mutationFn: ({file, caption}: {file: File; caption?: string}) =>
-      sendUnifiedMediaMessage(chat.device_id, chat.jid, {file, caption}),
-    onSuccess: () => {
-      setAttachment(null);
-      setDraft('');
-      setReplyingTo(null);
-      stickToBottomRef.current = true;
-      void queryClient.invalidateQueries({
-        queryKey: ['unified-messages', chat.device_id, chat.jid],
-      });
-      invalidateLifecycleScope();
-    },
-    onError: (err) => {
-      toast.error(toApiError(err).message);
-      invalidateLifecycleScope();
-      void queryClient.invalidateQueries({queryKey: ['inbox-policy']});
-    },
-  });
-
   const applyLifecycleMutationResult = useCallback(
     (data: {assignment: ChatAssignmentInfo; event?: ChatLifecycleEvent}) => {
       if (data.assignment.status === 'open') {
-        initialScrolledRef.current = false;
-        prevScrollAnchorRef.current = null;
-        stickToBottomRef.current = true;
+        resetScroll();
       }
       queryClient.setQueryData<ChatLifecycleResponse>(
         ['chat-lifecycle', chat.device_id, chat.jid],
@@ -748,14 +401,10 @@ export function MessageView({
       );
       invalidateLifecycleScope();
       if (data.assignment.status === 'open') {
-        window.requestAnimationFrame(() => {
-          if (scrollRef.current && stickToBottomRef.current && !prevScrollAnchorRef.current) {
-            scrollContainerToBottom(scrollRef.current);
-          }
-        });
+        scheduleScrollToBottom();
       }
     },
-    [chat.device_id, chat.jid, invalidateLifecycleScope, queryClient],
+    [chat.device_id, chat.jid, invalidateLifecycleScope, queryClient, resetScroll, scheduleScrollToBottom],
   );
 
   const claimMutation = useMutation({
@@ -829,99 +478,17 @@ export function MessageView({
     reopenMutation.isPending ||
     unblockMutation.isPending;
 
-  const reactionMutation = useMutation({
-    mutationFn: ({deviceId, chatJid, messageId, emoji}: {
-      deviceId: string;
-      chatJid: string;
-      messageId: string;
-      emoji: string;
-      pendingKey: string;
-    }) => sendUnifiedMessageReaction(deviceId, chatJid, messageId, emoji),
-    onMutate: async ({deviceId, chatJid, messageId, emoji}) => {
-      const queryKey = ['unified-messages', deviceId, chatJid] as const;
-      await queryClient.cancelQueries({queryKey});
-      const previous = queryClient.getQueriesData<InfiniteData<MessagesPage>>({queryKey});
-      const optimistic = {emoji, sender_jid: deviceId, is_from_me: true, timestamp: new Date().toISOString()};
-      queryClient.setQueriesData<InfiniteData<MessagesPage>>({queryKey}, (data) =>
-        updateMessageReactions(data, messageId, (reactions) =>
-          applyMessageReaction(reactions, optimistic),
-        ),
-      );
-      return {previous, optimistic};
+  const {sendMutation, sendMediaMutation, handleReact, revokeMutation} = useMessageActions({
+    chat,
+    isDeviceReady,
+    invalidateLifecycleScope,
+    onSent: (hasAttachment) => {
+      if (hasAttachment) setAttachment(null);
+      setDraft('');
+      setReplyingTo(null);
+      followLatest();
     },
-    onError: (err, {messageId}, context) => {
-      if (context) {
-        const {optimistic, previous} = context;
-        for (const [key, data] of previous) {
-          const original = data?.pages.flatMap((page) => page.data)
-            .find((message) => message.id === messageId)?.reactions?.find((reaction) => reaction.is_from_me);
-          queryClient.setQueryData<InfiniteData<MessagesPage>>(key, (current) =>
-            updateMessageReactions(current, messageId, (reactions) => {
-              const own = reactions?.find((reaction) => reaction.is_from_me);
-              if (own ? own.timestamp !== optimistic.timestamp : optimistic.emoji) return reactions;
-              return applyMessageReaction(reactions, original ?? {...optimistic, emoji: ''});
-            }),
-          );
-        }
-      }
-      toast.error(toApiError(err).message);
-    },
-    onSettled: (_data, _err, {pendingKey}) => {
-      pendingReactions.current.delete(pendingKey);
-    },
-  });
-
-  const historyMutation = useMutation({
-    mutationFn: async () => {
-      if (messages.length === 0) {
-        await requestEmptyChatHistory('manual');
-        return;
-      }
-      await requestUnifiedChatHistory(chat.device_id, chat.jid, PAGE_SIZE);
-      toast.success(t.chats.historyRequestedToast);
-      setHistoryPollUntil(Date.now() + HISTORY_POLL_WINDOW_MS);
-    },
-    onError: (err) => toast.error(toApiError(err).message),
-  });
-
-  const revokeMutation = useMutation({
-    mutationFn: (messageId: string) => revokeUnifiedMessage(chat.device_id, chat.jid, messageId),
-    onMutate: async (messageId) => {
-      const queryKey = ['unified-messages', chat.device_id, chat.jid] as const;
-      await queryClient.cancelQueries({queryKey});
-      const previous = queryClient.getQueriesData<InfiniteData<MessagesPage>>({queryKey});
-      queryClient.setQueriesData<InfiniteData<MessagesPage>>({queryKey}, (old) => {
-        if (!old) return old;
-        return {
-          ...old,
-          pages: old.pages.map((page) => ({
-            ...page,
-            data: page.data.map((msg) =>
-              msg.id === messageId
-                ? {...msg, is_revoked: true, revoked_at: new Date().toISOString()}
-                : msg,
-            ),
-          })),
-        };
-      });
-      return {previous};
-    },
-    onSuccess: () => {
-      toast.success(t.chats.revokedToast);
-      setRevokingMessage(null);
-    },
-    onError: (err, _vars, context) => {
-      if (context?.previous) {
-        for (const [key, data] of context.previous) queryClient.setQueryData(key, data);
-      }
-      toast.error(toApiError(err).message);
-    },
-    onSettled: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ['unified-messages', chat.device_id, chat.jid],
-      });
-      void queryClient.invalidateQueries({queryKey: ['unified-chats']});
-    },
+    onRevoked: () => setRevokingMessage(null),
   });
 
   const isAnySending = sendMutation.isPending || sendMediaMutation.isPending;
@@ -994,22 +561,6 @@ export function MessageView({
     setAttachment(dropped);
     window.setTimeout(() => composerInputRef.current?.focus(), 0);
   };
-
-  const reactToMessage = reactionMutation.mutate;
-  const handleReact = useCallback(
-    (message: MessageInfo, emoji: string) => {
-      if (!isDeviceReady) return;
-      const pendingKey = JSON.stringify([chat.device_id, chat.jid, message.id]);
-      if (pendingReactions.current.has(pendingKey)) return;
-      pendingReactions.current.add(pendingKey);
-      const myExisting = message.reactions?.find((r) => r.is_from_me && r.emoji === emoji);
-      reactToMessage({
-        deviceId: chat.device_id, chatJid: chat.jid, messageId: message.id,
-        emoji: myExisting ? '' : emoji, pendingKey,
-      });
-    },
-    [chat.device_id, chat.jid, isDeviceReady, reactToMessage],
-  );
 
   const handleReply = useCallback((message: MessageInfo) => {
     setReplyingTo(message);
@@ -1382,7 +933,7 @@ export function MessageView({
           />
         )}
 
-        {Boolean(forwardingMessage) && (
+        {forwardingMessage && !isContentRedacted && canWriteChats && (
           <ForwardMessageDialog
             open={Boolean(forwardingMessage)}
             onOpenChange={(nextOpen) => {
@@ -1408,47 +959,14 @@ export function MessageView({
         )}
       </Suspense>
 
-      <Dialog
-        open={Boolean(revokingMessage)}
-        onOpenChange={(nextOpen) => {
-          if (!nextOpen && !revokeMutation.isPending) setRevokingMessage(null);
-        }}
-        title={t.chats.revokeConfirmTitle}
-        description={t.chats.revokeConfirmDesc}
-      >
-        <div className="space-y-4">
-          {revokingMessage && (revokingMessage.content || revokingMessage.filename) && (
-            <div className="rounded-lg border border-border bg-secondary/50 px-3 py-2 text-xs text-foreground/90">
-              <p className="line-clamp-3">
-                {revokingMessage.content || revokingMessage.filename}
-              </p>
-            </div>
-          )}
-          <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={revokeMutation.isPending}
-              onClick={() => setRevokingMessage(null)}
-            >
-              {t.cancel}
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={!revokingMessage || revokeMutation.isPending}
-              onClick={() => revokingMessage && revokeMutation.mutate(revokingMessage.id)}
-            >
-              {revokeMutation.isPending ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Trash2 className="size-4" />
-              )}
-              <span>{t.chats.revokeMessage}</span>
-            </Button>
-          </div>
-        </div>
-      </Dialog>
+      {revokingMessage && !isContentRedacted && canRevokeChats && (
+        <RevokeMessageDialog
+          message={revokingMessage}
+          isPending={revokeMutation.isPending}
+          onClose={() => setRevokingMessage(null)}
+          onConfirm={revokeMutation.mutate}
+        />
+      )}
     </div>
   );
 }

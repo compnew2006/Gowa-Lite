@@ -26,6 +26,7 @@ import {
   asRecord,
   extractGowaProtocolContext,
   firstNonEmptyString,
+  readGowaPayloadChatJid,
   unwrapGowaPayload,
 } from '../../shared/gowa-payload.ts';
 
@@ -220,16 +221,7 @@ export function matchesUnifiedChatSearch(
 }
 
 export function readGowaEventChatJid(result: unknown, protocolKey?: Record<string, unknown> | null): string {
-  const outer = asRecord(result);
-  const payload = unwrapGowaPayload(result);
-  const message = asRecord(payload?.message);
-  const jid = firstNonEmptyString(
-    payload?.chat_jid, payload?.chat_id, payload?.remote_jid, payload?.remoteJid, payload?.revoked_chat,
-    protocolKey?.remote_jid, protocolKey?.remoteJid,
-    message?.chat_jid, message?.chat_id, message?.remote_jid, message?.remoteJid,
-    outer?.chat_jid, outer?.chat_id, outer?.remote_jid, outer?.remoteJid,
-    payload?.jid, message?.jid, outer?.jid, payload?.from, message?.from, outer?.from,
-  );
+  const jid = readGowaPayloadChatJid(asRecord(result), unwrapGowaPayload(result), protocolKey);
   return jid ? normalizeWhatsAppJid(jid) || jid : '';
 }
 

@@ -67,10 +67,10 @@ export function usePaginatedChats({
     chats: [],
   });
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const loadingMoreRef = useRef(false);
+  const loadingMoreRef = useRef<symbol | null>(null);
 
   useEffect(() => {
-    loadingMoreRef.current = false;
+    loadingMoreRef.current = null;
     setIsLoadingMore(false);
     setExtraState({signature: filterSignature, chats: []});
   }, [filterSignature]);
@@ -89,7 +89,8 @@ export function usePaginatedChats({
         limit: CHATS_PAGE_SIZE,
         offset: 0,
       }),
-    refetchInterval: (q) => (q.state.error ? false : 30_000),
+    staleTime: isDefaultPage ? 25_000 : undefined,
+    refetchInterval: (q) => (isDefaultPage || q.state.error ? false : 30_000),
   });
 
   const activeExtra = extraState.signature === filterSignature ? extraState : null;
@@ -115,8 +116,9 @@ export function usePaginatedChats({
 
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !hasMore) return;
+    const request = Symbol();
     const requestedSignature = filterSignature;
-    loadingMoreRef.current = true;
+    loadingMoreRef.current = request;
     setIsLoadingMore(true);
     try {
       const res = await listUnifiedChats({
@@ -128,6 +130,7 @@ export function usePaginatedChats({
         limit: CHATS_PAGE_SIZE,
         offset: nextOffset,
       });
+      if (loadingMoreRef.current !== request) return;
       const fetched = res.data ?? [];
       const resPagination = res.pagination;
       setExtraState((prev) => {
@@ -147,12 +150,16 @@ export function usePaginatedChats({
         };
       });
     } finally {
-      loadingMoreRef.current = false;
-      setIsLoadingMore(false);
+      if (loadingMoreRef.current === request) {
+        loadingMoreRef.current = null;
+        setIsLoadingMore(false);
+      }
     }
   }, [deviceIds, filterSignature, hasMedia, hasMore, nextOffset, normalizedSearch, resolvedAssignedTo, tab]);
 
   const refresh = useCallback(() => {
+    loadingMoreRef.current = null;
+    setIsLoadingMore(false);
     setExtraState({signature: filterSignature, chats: []});
     return query.refetch();
   }, [filterSignature, query]);

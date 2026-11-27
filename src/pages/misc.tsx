@@ -40,7 +40,6 @@ import {
   StatusDetailPanel,
   StatusGroupList,
 } from '@/features/misc/status-workspace';
-import {extractWsEventTarget, onWsEvent} from '@/lib/events';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {matchesNormalizedQuery} from '@/lib/phone';
@@ -120,24 +119,6 @@ export default function MiscPage() {
     retry: 1,
     refetchInterval: 60_000,
   });
-
-  useEffect(() => {
-    if (!canViewStatuses) return;
-    return onWsEvent((event) => {
-      if (
-        event.code === 'LOGIN_SUCCESS' ||
-        event.code === 'DEVICE_LOGGED_OUT' ||
-        event.code === 'DEVICE_REMOVED'
-      ) {
-        void queryClient.invalidateQueries({queryKey: ['misc-statuses']});
-        return;
-      }
-      const target = extractWsEventTarget(event);
-      if (target.chatJid?.toLowerCase() === 'status@broadcast') {
-        void queryClient.invalidateQueries({queryKey: ['misc-statuses']});
-      }
-    });
-  }, [canViewStatuses, queryClient]);
 
   const isChannelTab = mode === 'following' || mode === 'discover' || mode === 'lookup';
 

@@ -4,9 +4,7 @@ import {
   authenticateUserAsync,
   countActiveAdmins,
   createSession,
-  createUser,
   createUserAsync,
-  db,
   deleteSession,
   deleteUser,
   getGowaConfig,
@@ -16,6 +14,7 @@ import {
   getUserById,
   hasAnyUsers,
   hashPasswordAsync,
+  initializeFirstAdmin,
   listUsers,
   setGowaConfig,
   setUserPreferences,
@@ -131,9 +130,10 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
     const passwordHashOverride = await hashPasswordAsync(password);
 
     try {
-      db.exec('BEGIN IMMEDIATE');
-      if (hasAnyUsers()) {
-        db.exec('ROLLBACK');
+      const session = initializeFirstAdmin({
+        username, displayName, password, passwordHashOverride, gowaUrl, gowaUsername, gowaPassword,
+      });
+      if (!session) {
         authRateLimiter.recordFailure(clientIp);
         res.status(409).json({
           code: 'ALREADY_INITIALIZED',
@@ -142,26 +142,8 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
         return;
       }
 
-      const adminUser = createUser({
-        username,
-        display_name: displayName,
-        role: 'admin',
-        password,
-        passwordHashOverride,
-      });
-
-      if (gowaUrl) {
-        setGowaConfig({
-          url: gowaUrl,
-          username: gowaUsername,
-          password: gowaPassword,
-        });
-      }
-
-      const token = createSession(adminUser.id);
-      db.exec('COMMIT');
       authRateLimiter.clearSuccess(clientIp, username);
-      setSessionCookie(req, res, token);
+      setSessionCookie(req, res, session.token);
 
       if (gowaUrl) {
         wsBridge.resetAndReconnect();
@@ -170,14 +152,9 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
       res.status(201).json({
         code: 'SUCCESS',
         message: 'تم إنشاء حساب المسؤول الأول بنجاح',
-        results: {token, user: adminUser},
+        results: session,
       });
     } catch (err) {
-      try {
-        db.exec('ROLLBACK');
-      } catch {
-        // ignore
-      }
       handleRouteError(res, err);
     }
   });
@@ -390,6 +367,7 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
           allowed_device_ids: allowedDeviceIds,
           password,
         });
+        wsBridge.broadcast({code: 'USERS_UPDATED', message: '', result: null});
         res.status(201).json({code: 'SUCCESS', message: 'تم إضافة المستخدم بنجاح', results: created});
       } catch (err) {
         const msg = err instanceof Error ? err.message : '';
@@ -552,6 +530,7 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
           message: 'updated',
           result: {user: updated},
         });
+        wsBridge.broadcast({code: 'USERS_UPDATED', message: '', result: null});
       }
       res.json({code: 'SUCCESS', message: 'تم تحديث بيانات المستخدم', results: updated});
     },
@@ -591,6 +570,7 @@ export function registerAuthRoutes(wsBridge: GowaWsBridge): Router {
         return;
       }
       deleteUser(targetId);
+      wsBridge.broadcast({code: 'USERS_UPDATED', message: '', result: null});
       res.json({code: 'SUCCESS', message: 'تم حذف المستخدم'});
     },
   );

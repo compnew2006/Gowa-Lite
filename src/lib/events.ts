@@ -4,6 +4,7 @@ import {
   asRecord,
   extractGowaProtocolContext,
   firstNonEmptyString,
+  readGowaPayloadChatJid,
   unwrapGowaPayload,
 } from '../../shared/gowa-payload.ts';
 
@@ -76,28 +77,13 @@ export function extractWsReaction(event: WsEvent): {deviceId: string; chatJid: s
 export function extractWsEventTarget(event: WsEvent): {deviceId?: string; chatJid?: string} {
   const resultObj = asRecord(event.result);
   const payload = unwrapGowaPayload(event.result);
-  const {protocolKey} = extractGowaProtocolContext(resultObj, payload);
-
   const rawDeviceId = firstNonEmptyString(
     event.device_id,
     payload?.device_id,
     resultObj?.device_id,
   );
 
-  const rawChat = firstNonEmptyString(
-    payload?.chat_jid,
-    payload?.chat_id,
-    payload?.remote_jid,
-    payload?.remoteJid,
-    protocolKey?.remote_jid,
-    protocolKey?.remoteJid,
-    resultObj?.chat_jid,
-    resultObj?.chat_id,
-    payload?.jid,
-    resultObj?.jid,
-    payload?.from,
-    resultObj?.from,
-  );
+  const rawChat = readGowaPayloadChatJid(resultObj, payload);
   const chatJid = rawChat ? toWhatsAppJid(rawChat) || rawChat : '';
 
   return {

@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import path from 'path';
 import {defineConfig} from 'vite';
+import {isPrivateAssetPath} from './shared/static-assets.ts';
 
 const rootDir = import.meta.dirname;
 
@@ -12,22 +13,23 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       {
-        name: 'copy-unbundled-src-assets',
+        name: 'copy-public-assets',
         apply: 'build',
-        closeBundle(error?: Error): void {
-          if (error) {
-            return;
-          }
-          const distDir = path.resolve(rootDir, 'dist');
-          const srcAssets = path.resolve(rootDir, 'src/assets');
-          const distAssets = path.resolve(distDir, 'src/assets');
-          if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
-            fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
-          }
+        writeBundle({dir}): void {
+          const publicDir = path.resolve(rootDir, 'public');
+          if (!dir || !fs.existsSync(publicDir)) return;
+          fs.cpSync(publicDir, dir, {
+            recursive: true,
+            force: false,
+            filter: (file) =>
+              !isPrivateAssetPath(path.relative(publicDir, file)) && !fs.lstatSync(file).isSymbolicLink(),
+          });
         },
       },
     ],
     build: {
+      copyPublicDir: false,
+      sourcemap: false,
       rollupOptions: {
         output: {
           manualChunks(id) {
@@ -67,6 +69,12 @@ export default defineConfig(() => {
       },
     },
     server: {
+      fs: {
+        deny: [
+          '.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**',
+          '**/.aistudio/**', '**/aistudio/**', '**/*.db*', '**/*.sqlite*', '**/server/**', '**/server.ts',
+        ],
+      },
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },

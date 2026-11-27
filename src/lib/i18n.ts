@@ -1063,10 +1063,14 @@ const ar = {
 let englishTranslations: Promise<AppTranslations> | undefined;
 export type AppTranslations = typeof ar;
 
+export function loadEnglishTranslations(): Promise<AppTranslations> {
+  return englishTranslations ??= import('./i18n-en').then((module) => module.default);
+}
+
 export function useI18n() {
   const lang = useAuthStore((s) => s.language);
   const t = lang === 'en'
-    ? use(englishTranslations ??= import('./i18n-en').then((module) => module.default))
+    ? use(loadEnglishTranslations())
     : ar;
   return {
     lang,

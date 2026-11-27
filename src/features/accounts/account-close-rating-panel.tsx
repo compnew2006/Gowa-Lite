@@ -7,7 +7,6 @@ import {Button} from '@/components/ui/button';
 import {Label} from '@/components/ui/label';
 import {Skeleton} from '@/components/ui/skeleton';
 import {Switch} from '@/components/ui/switch';
-import {onWsEvent} from '@/lib/events';
 import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -39,12 +38,6 @@ export function AccountCloseRatingPanel({deviceId, canWrite}: {deviceId: string;
       setPromptSyncedFrom(query.data.prompt_message);
     }
   }, [query.data, promptSyncedFrom]);
-
-  useEffect(() => onWsEvent((event) => {
-    if (event.code === 'CHAT_CLOSE_RATING_UPDATED' && event.device_id === deviceId) {
-      void queryClient.invalidateQueries({queryKey: ['account-close-ratings', deviceId]});
-    }
-  }), [deviceId, queryClient]);
 
   const toggleSave = useMutation({
     mutationFn: (enabled: boolean) => saveAccountCloseRatings(deviceId, {enabled}),

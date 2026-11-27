@@ -49,6 +49,8 @@ export {
 
 export {
   cleanupExpiredRecords,
+  deleteCachedAvatars,
+  deleteSetting,
   getAccountAliases,
   getCachedAvatar,
   getGowaConfig,
@@ -61,6 +63,8 @@ export {
   type CachedAvatarRow,
   type GowaConfig,
 } from './db/config-repo.ts';
+
+export {initializeFirstAdmin} from './db/bootstrap-repo.ts';
 
 export {
   clearChatCatchup,
@@ -113,3 +117,36 @@ export {
   type MuteDuration,
   type UserChatPreference,
 } from './db/chat-states-repo.ts';
+
+export {
+  getDailyResetSettings,
+  listEnabledDailyResets,
+  resetAssignedChatsForDevice,
+  updateDailyResetSettings,
+  type DailyResetResult,
+  type DailyResetSettings,
+} from './db/daily-reset-repo.ts';
+
+export {
+  claimQueuedRating,
+  expireChatCloseRatings,
+  failRatingPrompt,
+  getAccountRatingRows,
+  getUserRatingRows,
+  hasPendingChatCloseRating,
+  hasRecordedRatingReply,
+  insertQueuedRating,
+  listQueuedRatingEvents,
+  listUsersCloseRatingSummaries,
+  markRatingPromptSent,
+  recordPendingRating,
+} from './db/close-rating-repo.ts';
+
+export {
+  beginCallRejection,
+  completeCallRejection,
+  listRecentCallRejections,
+  type CallAutoRejectLogEntry,
+  type CallRejectStatus,
+  type CallReplyStatus,
+} from './db/call-reject-repo.ts';

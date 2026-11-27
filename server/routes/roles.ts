@@ -1,5 +1,5 @@
 import type {Router} from 'express';
-import {createRole, deleteRole, getRoleById, listRoles, updateRole} from '../db.ts';
+import {createRole, deleteRole, getRoleById, listRoles, listUsers, updateRole} from '../db.ts';
 import {
   createApiRouter,
   handleRouteError,
@@ -14,6 +14,7 @@ import {
   normalizePermissionsInput,
 } from '../rbac.ts';
 import type {AuthedRequest} from '../types.ts';
+import type {GowaWsBridge} from '../ws-bridge.ts';
 import {
   createRoleBodySchema,
   parsePositiveIntId,
@@ -21,8 +22,9 @@ import {
   updateRoleBodySchema,
 } from '../validation/schemas.ts';
 
-export function registerRoleRoutes(): Router {
+export function registerRoleRoutes(wsBridge: GowaWsBridge): Router {
   const router = createApiRouter();
+  const broadcastRoleChange = () => wsBridge.broadcast({code: 'ROLE_UPDATED', message: '', result: null});
 
   router.get(
     '/api/permissions',
@@ -69,6 +71,7 @@ export function registerRoleRoutes(): Router {
           permissions: normalizedPermissions,
           is_default: body.is_default === true,
         });
+        broadcastRoleChange();
         res.status(201).json({
           code: 'SUCCESS',
           message: 'تم إنشاء الدور بنجاح',
@@ -117,6 +120,12 @@ export function registerRoleRoutes(): Router {
           permissions: normalizedPermissions,
           is_default: body.is_default,
         });
+        for (const user of listUsers()) {
+          if (user.role_id === roleId && user.is_active) {
+            wsBridge.sendToUser(user.id, {code: 'USER_ACCESS_UPDATED', message: 'updated', result: {user}});
+          }
+        }
+        broadcastRoleChange();
         res.json({
           code: 'SUCCESS',
           message: 'تم تحديث الدور بنجاح',
@@ -140,6 +149,7 @@ export function registerRoleRoutes(): Router {
           res.status(404).json({code: 'NOT_FOUND', message: 'الدور غير موجود'});
           return;
         }
+        broadcastRoleChange();
         res.json({code: 'SUCCESS', message: 'تم حذف الدور'});
       } catch (err) {
         handleRouteError(res, err);

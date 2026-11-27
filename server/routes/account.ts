@@ -1,5 +1,5 @@
 import type {Router} from 'express';
-import {db} from '../db.ts';
+import {deleteCachedAvatars} from '../db.ts';
 import {gowaFetch} from '../gowa-client.ts';
 import {
   assertDeviceAccess,
@@ -197,7 +197,7 @@ export function registerAccountRoutes(wsBridge?: GowaWsBridge): Router {
           deviceId,
           formData: form,
         });
-        db.prepare('DELETE FROM contact_avatars WHERE device_id = ?').run(deviceId);
+        deleteCachedAvatars(deviceId);
         res.json({code: 'SUCCESS', message: 'تم تحديث الصورة الشخصية'});
       } catch (err) {
         handleRouteError(res, err);

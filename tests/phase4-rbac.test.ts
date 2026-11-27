@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
+import {on, once} from 'node:events';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -436,12 +437,29 @@ describe('Phase 4 RBAC HTTP & Fail-Closed Integration (RBAC-01, RBAC-02, RBAC-03
     assert.equal(betaNotes.body!.code, 'DEVICE_FORBIDDEN');
 
     // 5. Instant role permission propagation without re-login
-    const addWritePerm = await api(`/api/roles/${customRole.id}`, {
-      method: 'PATCH',
-      token: adminToken,
-      body: JSON.stringify({permissions: ['chats:read', 'chats:write', 'notes:read', 'notes:write']}),
-    });
-    assert.equal(addWritePerm.status, 200);
+    const roleTicketRes = await api('/api/auth/ws-ticket', {method: 'POST', token: alphaToken});
+    assert.equal(roleTicketRes.status, 200);
+    const roleTicket = (roleTicketRes.body!.results as {ticket: string}).ticket;
+    const roleSocket = new WebSocket(`ws://127.0.0.1:${appPort}/ws?ticket=${roleTicket}`);
+    try {
+      await once(roleSocket, 'open');
+      const events = on(roleSocket, 'message', {signal: AbortSignal.timeout(2000)});
+      const addWritePerm = await api(`/api/roles/${customRole.id}`, {
+        method: 'PATCH',
+        token: adminToken,
+        body: JSON.stringify({permissions: ['chats:read', 'chats:write', 'notes:read', 'notes:write']}),
+      });
+      assert.equal(addWritePerm.status, 200);
+      for await (const [raw] of events) {
+        const event = JSON.parse(String(raw)) as {code: string; result: {user: {id: number; permissions: string[]}}};
+        if (event.code !== 'USER_ACCESS_UPDATED') continue;
+        assert.equal(event.result.user.id, alphaUser.id);
+        assert.ok(event.result.user.permissions.includes('chats:write'));
+        break;
+      }
+    } finally {
+      roleSocket.close();
+    }
 
     const alphaMeAfterUpdate = await api('/api/auth/me', {token: alphaToken});
     assert.equal(alphaMeAfterUpdate.status, 200);

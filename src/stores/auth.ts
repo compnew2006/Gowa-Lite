@@ -24,6 +24,15 @@ interface AuthState {
   }) => void;
 }
 
+export function hasSameAccessScope(previous: User | null, current: User | null): boolean {
+  if (!previous || !current) return previous === current;
+  const sameMembers = (left: string[], right: string[]) =>
+    left.length === right.length && left.every((item) => right.includes(item));
+  return previous.id === current.id && previous.role_id === current.role_id &&
+    sameMembers(previous.permissions, current.permissions) &&
+    sameMembers(previous.allowed_device_ids, current.allowed_device_ids);
+}
+
 export function applyThemeToDom(theme: ThemePreference): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;

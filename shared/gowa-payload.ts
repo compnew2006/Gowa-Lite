@@ -49,6 +49,21 @@ export function extractGowaProtocolContext(
   return {protocolMsg, protocolKey, isProtocolRevoke};
 }
 
+export function readGowaPayloadChatJid(
+  outer: Record<string, unknown> | null,
+  payload: Record<string, unknown> | null,
+  protocolKey = extractGowaProtocolContext(outer, payload).protocolKey,
+): string {
+  const message = asRecord(payload?.message);
+  return firstNonEmptyString(
+    payload?.chat_jid, payload?.chat_id, payload?.remote_jid, payload?.remoteJid, payload?.revoked_chat,
+    protocolKey?.remote_jid, protocolKey?.remoteJid,
+    message?.chat_jid, message?.chat_id, message?.remote_jid, message?.remoteJid,
+    outer?.chat_jid, outer?.chat_id, outer?.remote_jid, outer?.remoteJid,
+    payload?.jid, message?.jid, outer?.jid, payload?.from, message?.from, outer?.from,
+  );
+}
+
 export function extractGowaArray<T = unknown>(raw: unknown, ...keys: string[]): T[] {
   if (Array.isArray(raw)) return raw as T[];
   if (raw && typeof raw === 'object') {

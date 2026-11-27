@@ -11,7 +11,6 @@ import {Button} from '@/components/ui/button';
 import {Label} from '@/components/ui/label';
 import {Skeleton} from '@/components/ui/skeleton';
 import {Switch} from '@/components/ui/switch';
-import {onWsEvent} from '@/lib/events';
 import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -79,16 +78,6 @@ export function AccountDailyResetPanel({
   useEffect(() => {
     setConfirmRunNow(false);
   }, [deviceId]);
-
-  useEffect(
-    () =>
-      onWsEvent((event) => {
-        if (event.code === 'CHAT_DAILY_RESET' && event.device_id === deviceId) {
-          void queryClient.invalidateQueries({queryKey});
-        }
-      }),
-    [deviceId, queryClient, queryKey],
-  );
 
   const browserTimezone = useMemo(() => {
     try {

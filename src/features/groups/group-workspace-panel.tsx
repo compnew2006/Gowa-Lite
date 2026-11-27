@@ -44,7 +44,7 @@ import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
 import {Skeleton} from '@/components/ui/skeleton';
 import {Switch} from '@/components/ui/switch';
-import {accountDotTone, shortAccountWidgetLabel} from '@/features/chat/chat-list';
+import {accountDotTone, shortAccountWidgetLabel} from '@/features/accounts/account-display';
 import {MessageView} from '@/features/chat/message-view';
 import {copyTextWithFallback} from '@/lib/clipboard';
 import {toApiError} from '@/lib/http';

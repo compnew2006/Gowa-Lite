@@ -1,6 +1,18 @@
 import {normalizeArabicDigits} from '../../shared/whatsapp-identity.ts';
 import {
-  db,
+  claimQueuedRating,
+  deleteSetting,
+  expireChatCloseRatings,
+  failRatingPrompt,
+  getAccountRatingRows,
+  getUserRatingRows,
+  hasPendingChatCloseRating,
+  hasRecordedRatingReply,
+  insertQueuedRating,
+  listQueuedRatingEvents,
+  listUsersCloseRatingSummaries,
+  markRatingPromptSent,
+  recordPendingRating,
   getAccountAliases,
   getSetting,
   getUserById,
@@ -13,8 +25,6 @@ import {GowaError, gowaFetch} from '../gowa-client.ts';
 const RATING_WINDOW_MS = 48 * 60 * 60 * 1000;
 export const DEFAULT_RATING_PROMPT =
   'شكرًا لتواصلك معنا. قيّم الخدمة بإرسال رقم من ١ إلى ٥ (٥ = ممتاز).\nThanks for contacting us. Rate our service from 1 to 5 (5 = excellent).';
-
-type RatingTarget = {device_id: string; chat_jid: string};
 
 function ratingSettingKey(deviceId: string): string {
   return `close_rating_enabled:${deviceId}`;
@@ -33,47 +43,7 @@ export function getRatingPrompt(deviceId: string): {prompt: string; isCustom: bo
 }
 
 export function getAccountCloseRatings(deviceId: string) {
-  const summary = db.prepare(
-    `SELECT COUNT(score) AS count, AVG(score) AS average
-     FROM chat_close_ratings WHERE device_id = ? AND status = 'rated'`,
-  ).get(deviceId) as {count: number; average: number | null};
-
-  const recent = db.prepare(
-    `SELECT r.closed_event_id AS id,
-            r.score,
-            r.rated_at,
-            r.chat_jid,
-            r.rated_user_id AS user_id,
-            COALESCE(u.display_name, NULLIF(r.rated_user_name, ''), '') AS user_name
-     FROM chat_close_ratings r
-     LEFT JOIN users u ON u.id = r.rated_user_id
-     WHERE r.device_id = ? AND r.status = 'rated'
-     ORDER BY r.rated_at DESC, r.closed_event_id DESC LIMIT 10`,
-  ).all(deviceId) as {
-    id: number;
-    score: number;
-    rated_at: string;
-    chat_jid: string;
-    user_id: number | null;
-    user_name: string;
-  }[];
-
-  const byUser = db.prepare(
-    `SELECT r.rated_user_id AS user_id,
-            COALESCE(u.display_name, NULLIF(r.rated_user_name, ''), '') AS user_name,
-            COUNT(r.score) AS count,
-            AVG(r.score) AS average
-     FROM chat_close_ratings r
-     LEFT JOIN users u ON u.id = r.rated_user_id
-     WHERE r.device_id = ? AND r.status = 'rated'
-     GROUP BY r.rated_user_id, user_name
-     ORDER BY count DESC, average DESC`,
-  ).all(deviceId) as {
-    user_id: number | null;
-    user_name: string;
-    count: number;
-    average: number;
-  }[];
+  const {summary, recent, byUser} = getAccountRatingRows(deviceId);
 
   const {prompt, isCustom} = getRatingPrompt(deviceId);
 
@@ -99,7 +69,7 @@ export function updateAccountCloseRatingSettings(
   if (patch.prompt_message !== undefined) {
     const clean = patch.prompt_message.trim();
     if (!clean || clean === DEFAULT_RATING_PROMPT) {
-      db.prepare('DELETE FROM settings WHERE key = ?').run(ratingPromptKey(deviceId));
+      deleteSetting(ratingPromptKey(deviceId));
     } else {
       setSetting(ratingPromptKey(deviceId), clean);
     }
@@ -111,20 +81,7 @@ export function setAccountCloseRatingEnabled(deviceId: string, enabled: boolean)
   return updateAccountCloseRatingSettings(deviceId, {enabled});
 }
 
-export function listUsersCloseRatingSummaries(): Array<{
-  user_id: number;
-  count: number;
-  average: number | null;
-}> {
-  return db.prepare(
-    `SELECT rated_user_id AS user_id,
-            COUNT(score) AS count,
-            AVG(score) AS average
-     FROM chat_close_ratings
-     WHERE status = 'rated' AND rated_user_id IS NOT NULL
-     GROUP BY rated_user_id`,
-  ).all() as Array<{user_id: number; count: number; average: number | null}>;
-}
+export {listUsersCloseRatingSummaries};
 
 export function getUserCloseRatings(userId: number) {
   const user = getUserById(userId);
@@ -132,32 +89,7 @@ export function getUserCloseRatings(userId: number) {
     throw new GowaError(404, 'NOT_FOUND', 'المستخدم غير موجود');
   }
   const aliases = getAccountAliases();
-  const summary = db.prepare(
-    `SELECT COUNT(score) AS count, AVG(score) AS average
-     FROM chat_close_ratings
-     WHERE rated_user_id = ? AND status = 'rated'`,
-  ).get(userId) as {count: number; average: number | null};
-
-  const recentRows = db.prepare(
-    `SELECT closed_event_id AS id, score, rated_at, device_id, chat_jid
-     FROM chat_close_ratings
-     WHERE rated_user_id = ? AND status = 'rated'
-     ORDER BY rated_at DESC, closed_event_id DESC LIMIT 20`,
-  ).all(userId) as Array<{
-    id: number;
-    score: number;
-    rated_at: string;
-    device_id: string;
-    chat_jid: string;
-  }>;
-
-  const byAccountRows = db.prepare(
-    `SELECT device_id, COUNT(score) AS count, AVG(score) AS average
-     FROM chat_close_ratings
-     WHERE rated_user_id = ? AND status = 'rated'
-     GROUP BY device_id
-     ORDER BY count DESC, average DESC`,
-  ).all(userId) as Array<{device_id: string; count: number; average: number}>;
+  const {summary, recentRows, byAccountRows} = getUserRatingRows(userId);
 
   return {
     user_id: user.id,
@@ -175,12 +107,7 @@ export function getUserCloseRatings(userId: number) {
   };
 }
 
-export function expireChatCloseRatings(deviceId: string, chatJid: string): void {
-  db.prepare(
-    `UPDATE chat_close_ratings SET status = 'expired'
-     WHERE device_id = ? AND chat_jid = ? AND status IN ('queued', 'sending', 'pending')`,
-  ).run(deviceId, chatJid);
-}
+export {expireChatCloseRatings};
 
 export function queueChatCloseRating(
   deviceId: string,
@@ -198,34 +125,11 @@ export function queueChatCloseRating(
       isChatBlocked(deviceId, chatJid)) return;
 
   expireChatCloseRatings(deviceId, chatJid);
-  db.prepare(
-    `INSERT INTO chat_close_ratings (
-       closed_event_id, device_id, chat_jid,
-       rated_user_id, rated_user_name, closed_by_user_id,
-       status, expires_at
-     )
-     VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)`,
-  ).run(
-    closedEventId,
-    deviceId,
-    chatJid,
-    attribution?.ratedUserId ?? null,
-    (attribution?.ratedUserName ?? '').trim(),
-    attribution?.closedByUserId ?? null,
-    nowMs + RATING_WINDOW_MS,
-  );
+  insertQueuedRating(deviceId, chatJid, closedEventId, nowMs + RATING_WINDOW_MS, attribution);
 }
 
 export async function sendChatCloseRatingPrompt(closedEventId: number): Promise<'sent' | 'failed' | undefined> {
-  const target = db.prepare(
-    `UPDATE chat_close_ratings SET status = 'sending'
-     WHERE closed_event_id = ? AND status = 'queued' AND expires_at > ?
-       AND EXISTS (
-         SELECT 1 FROM chat_assignments a WHERE a.device_id = chat_close_ratings.device_id
-           AND a.chat_jid = chat_close_ratings.chat_jid AND a.status = 'closed'
-       )
-     RETURNING device_id, chat_jid`,
-  ).get(closedEventId, Date.now()) as RatingTarget | undefined;
+  const target = claimQueuedRating(closedEventId, Date.now());
   if (!target) return;
   const {device_id: deviceId, chat_jid: chatJid} = target;
   if (getSetting(ratingSettingKey(deviceId)) !== 'true' || isChatBlocked(deviceId, chatJid)) {
@@ -246,17 +150,10 @@ export async function sendChatCloseRatingPrompt(closedEventId: number): Promise<
     if (!sent?.message_id) throw new Error('Missing gateway message ID');
     messageId = sent.message_id;
   } catch {
-    db.prepare(
-      `UPDATE chat_close_ratings SET status = 'failed'
-       WHERE closed_event_id = ? AND status = 'sending'`,
-    ).run(closedEventId);
+    failRatingPrompt(closedEventId);
     return 'failed';
   }
-  db.prepare(
-    `UPDATE chat_close_ratings
-     SET status = 'pending', prompt_message_id = ?, sent_at = ?, expires_at = ?
-     WHERE closed_event_id = ? AND status = 'sending'`,
-  ).run(messageId, sentAt, Date.now() + RATING_WINDOW_MS, closedEventId);
+  markRatingPromptSent(closedEventId, messageId, sentAt, Date.now() + RATING_WINDOW_MS);
 
   upsertCachedMessages(deviceId, chatJid, [{
     id: messageId,
@@ -274,21 +171,11 @@ export async function sendChatCloseRatingPrompt(closedEventId: number): Promise<
 }
 
 export async function resumeQueuedChatCloseRatings(): Promise<void> {
-  const rows = db.prepare(
-    `SELECT closed_event_id FROM chat_close_ratings
-     WHERE status = 'queued' AND expires_at > ? ORDER BY closed_event_id`,
-  ).all(Date.now()) as {closed_event_id: number}[];
+  const rows = listQueuedRatingEvents(Date.now());
   for (const {closed_event_id: eventId} of rows) await sendChatCloseRatingPrompt(eventId);
 }
 
-export function hasPendingChatCloseRating(chatJid: string, deviceId?: string): boolean {
-  return Boolean(db.prepare(
-    `SELECT 1 FROM chat_close_ratings r
-     JOIN chat_assignments a ON a.device_id = r.device_id AND a.chat_jid = r.chat_jid
-     WHERE r.chat_jid = ? AND r.status = 'pending' AND r.expires_at > ?
-       AND a.status = 'closed' AND (? IS NULL OR r.device_id = ?) LIMIT 1`,
-  ).get(chatJid, Date.now(), deviceId ?? null, deviceId ?? null));
-}
+export {hasPendingChatCloseRating};
 
 interface RatingMessage {
   id: string;
@@ -319,30 +206,14 @@ export function captureChatCloseRating(
   if (!number) return;
   const score = Number(number);
 
-  if (db.prepare(
-    `SELECT 1 FROM chat_close_ratings WHERE device_id = ? AND chat_jid = ? AND reply_message_id = ?`,
-  ).get(deviceId, chatJid, message.id)) return 'duplicate';
+  if (hasRecordedRatingReply(deviceId, chatJid, message.id)) return 'duplicate';
 
   if (!message.timestampMs || isChatBlocked(deviceId, chatJid)) return;
   const now = Date.now();
   const quote = quotedMessageId(message) ?? null;
-  const update = db.prepare(
-    `UPDATE chat_close_ratings
-     SET status = 'rated', score = ?, reply_message_id = ?, rated_at = ?
-     WHERE device_id = ? AND chat_jid = ?
-       AND status = 'pending' AND expires_at > ?
-       AND sent_at - (sent_at % 1000) <= ? AND ? <= expires_at
-       AND EXISTS (
-         SELECT 1 FROM chat_assignments a WHERE a.device_id = chat_close_ratings.device_id
-           AND a.chat_jid = chat_close_ratings.chat_jid AND a.status = 'closed'
-       )
-       AND (? IS NULL OR prompt_message_id = ?)`,
-  ).run(
-    score, message.id, new Date(now).toISOString(),
-    deviceId, chatJid, now, message.timestampMs, message.timestampMs,
-    quote, quote,
-  );
-  return Number(update.changes) ? 'recorded' : undefined;
+  return recordPendingRating({
+    score, messageId: message.id, deviceId, chatJid, now, timestampMs: message.timestampMs, quote,
+  }) ? 'recorded' : undefined;
 }
 
 export function buildCloseRatingUpdatedEvent(deviceId: string) {

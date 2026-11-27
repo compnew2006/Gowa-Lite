@@ -21,6 +21,18 @@ export function setSetting(key: string, value: string): void {
   ).run(key, value);
 }
 
+export function deleteSetting(key: string): void {
+  db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+}
+
+export function deleteCachedAvatars(deviceId: string, jid?: string): void {
+  if (jid === undefined) {
+    db.prepare('DELETE FROM contact_avatars WHERE device_id = ?').run(deviceId);
+  } else {
+    db.prepare('DELETE FROM contact_avatars WHERE device_id = ? AND jid = ?').run(deviceId, jid);
+  }
+}
+
 export function getGowaConfig(): GowaConfig {
   const url = (getSetting('gowa_url') ?? process.env.GOWA_URL ?? '').trim().replace(/\/+$/, '');
   const username = (getSetting('gowa_username') ?? process.env.GOWA_USERNAME ?? '').trim();

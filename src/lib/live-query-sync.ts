@@ -1,0 +1,104 @@
+import type {QueryClient, QueryFilters} from '@tanstack/react-query';
+import {
+  applyMessageReaction,
+  patchRevokedMessage,
+  updateMessageReactions,
+  type InfiniteMessagePagesShape,
+} from '@/features/chat/message-reactions';
+import {extractWsEventTarget, extractWsReaction, extractWsRevokeTarget, type WsEvent} from '@/lib/events';
+import {toWhatsAppJid} from '@/lib/phone';
+import {invalidateChatQueries} from '@/lib/query-client';
+
+const MESSAGE_EVENTS = new Set([
+  'MESSAGE_RECEIVED', 'MESSAGE', 'MESSAGE_UPDATED', 'MESSAGE_EDITED', 'MESSAGE.EDITED',
+  'MESSAGE_REVOKED', 'MESSAGE.REVOKED', 'MESSAGE_DELETED', 'MESSAGE.DELETED',
+  'MESSAGE_REVOKE', 'MESSAGE.REVOKE', 'CHAT_UPDATED',
+]);
+const DEVICE_EVENTS = new Set(['LOGIN_SUCCESS', 'DEVICE_LOGGED_OUT', 'DEVICE_REMOVED', 'LIST_DEVICES']);
+
+function invalidateInbox(client: QueryClient, deviceId: string | undefined): void {
+  void client.invalidateQueries({
+    queryKey: ['unified-chats'],
+    predicate: ({queryKey: [, devices]}) =>
+      !deviceId || !Array.isArray(devices) || devices.length === 0 || devices.includes(deviceId),
+  });
+}
+
+function patchReaction(client: QueryClient, event: WsEvent): void {
+  const change = extractWsReaction(event);
+  if (!change) return;
+  const filters: QueryFilters = {
+    queryKey: ['unified-messages', change.deviceId],
+    predicate: ({queryKey: [, , jid], state}) =>
+      typeof jid === 'string' && (toWhatsAppJid(jid) || jid) === change.chatJid &&
+      Boolean((state.data as InfiniteMessagePagesShape | undefined)?.pages.some((page) =>
+        page.data.some((message) => message.id === change.messageId),
+      )),
+  };
+  void client.cancelQueries(filters, {revert: false});
+  client.setQueriesData<InfiniteMessagePagesShape>(filters, (data) =>
+    updateMessageReactions(data, change.messageId, (reactions) =>
+      applyMessageReaction(reactions, change.reaction),
+    ),
+  );
+}
+
+export function syncLiveQueryCache(client: QueryClient, event: WsEvent): void {
+  const code = event.code.toUpperCase();
+  if (code === 'MESSAGE_REACTION') {
+    patchReaction(client, event);
+    return;
+  }
+
+  const target = extractWsEventTarget(event);
+  const jid = target.chatJid?.toLowerCase();
+  const invalidate = (...roots: string[]) => {
+    for (const root of roots) void client.invalidateQueries({queryKey: [root]});
+  };
+  const invalidateChat = (...roots: string[]) => {
+    for (const root of roots) invalidateChatQueries(client, root, target);
+  };
+
+  if (DEVICE_EVENTS.has(code)) {
+    invalidateInbox(client, target.deviceId);
+    invalidateChat('unified-messages');
+    invalidate('devices', 'unified-accounts', 'unified-accounts-assign',
+      'unified-groups', 'unified-groups-unread', 'misc-statuses');
+    return;
+  }
+
+  if (jid === 'status@broadcast') {
+    invalidate('misc-statuses');
+    return;
+  }
+
+  const revoke = extractWsRevokeTarget(event);
+  if (revoke) patchRevokedMessage(client, revoke);
+
+  if (revoke || MESSAGE_EVENTS.has(code)) {
+    if (!jid || jid.endsWith('@g.us')) invalidate('unified-groups', 'unified-groups-unread');
+    if (!jid?.endsWith('@g.us')) invalidateInbox(client, target.deviceId);
+    invalidateChat('unified-messages');
+  } else if (code === 'CONVERSATION_NOTE_UPDATED') {
+    invalidateChat('unified-chat-notes');
+  } else if (code === 'SCHEDULE_UPDATED') {
+    invalidateChat('unified-chat-schedules');
+    invalidate('schedules');
+  } else if (code === 'CHAT_LIFECYCLE_UPDATED' || code === 'CHAT_DAILY_RESET') {
+    invalidateInbox(client, target.deviceId);
+    invalidateChat('chat-lifecycle', 'unified-messages', 'unified-chat-notes', 'unified-chat-schedules');
+    invalidateChatQueries(client, 'assignable-agents', {deviceId: target.deviceId});
+    if (code === 'CHAT_DAILY_RESET') invalidateChatQueries(client, 'account-daily-reset', {deviceId: target.deviceId});
+  } else if (code === 'INBOX_POLICY_UPDATED') {
+    invalidate('inbox-policy');
+  } else if (code === 'CHAT_CLOSE_RATING_UPDATED') {
+    invalidateChatQueries(client, 'account-close-ratings', {deviceId: target.deviceId});
+    invalidate('users-ratings', 'user-ratings-detail');
+  } else if (code === 'CALL_AUTO_REJECTED' && target.deviceId) {
+    invalidateChatQueries(client, 'call-auto-reject', {deviceId: target.deviceId});
+  } else if (code === 'ROLE_UPDATED') {
+    invalidate('roles', 'users');
+  } else if (code === 'USERS_UPDATED') {
+    invalidate('users', 'roles', 'users-ratings');
+  }
+}

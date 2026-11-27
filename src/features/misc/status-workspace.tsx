@@ -12,7 +12,7 @@ import {
 import {Link} from 'react-router-dom';
 import type {UnifiedStatusAccountSummary, UnifiedStatusItem} from '@/api/types';
 import {ContactAvatar} from '@/components/contact-avatar';
-import {accountDotTone, shortAccountWidgetLabel} from '@/features/chat/chat-list';
+import {accountDotTone, shortAccountWidgetLabel} from '@/features/accounts/account-display';
 import {formatJidPhone} from '@/features/chat/display-name';
 import {MessageMedia} from '@/features/chat/message-media';
 import type {StatusContactGroup} from '@/features/misc/status-helpers';

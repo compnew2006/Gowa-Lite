@@ -104,7 +104,6 @@ export function registerInboxMediaRoutes(router: Router): void {
       const resolved = await resolveAndCacheAvatar(deviceId, jid, force);
       if (resolved && resolved.status === 'ok' && resolved.image_blob && resolved.image_blob.byteLength > 0) {
         res.setHeader('Content-Type', resolved.content_type || 'image/jpeg');
-        res.setHeader('Cache-Control', 'private, max-age=3600');
         res.send(Buffer.from(resolved.image_blob));
         return;
       }

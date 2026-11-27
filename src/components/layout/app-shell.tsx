@@ -1,5 +1,5 @@
-import {useEffect, useRef, useState} from 'react';
-import {useQuery, useQueryClient, type QueryFilters} from '@tanstack/react-query';
+import {useEffect, useEffectEvent, useRef, useState} from 'react';
+import {useQuery, useQueryClient} from '@tanstack/react-query';
 import {
   CalendarClock,
   LogOut,
@@ -31,12 +31,8 @@ import {LanguageToggle} from '@/components/language-toggle';
 import {Button} from '@/components/ui/button';
 import {NotificationControls} from '@/features/notifications/notification-controls';
 import {formatNavUnreadCount, shouldShowNavUnreadBadge} from '@/features/chat/chat-ui-helpers';
-import {
-  applyMessageReaction,
-  updateMessageReactions,
-  type InfiniteMessagePagesShape,
-} from '@/features/chat/message-reactions';
-import {extractWsEventTarget, extractWsReaction, onWsEvent} from '@/lib/events';
+import {onWsEvent, type WsEvent} from '@/lib/events';
+import {syncLiveQueryCache} from '@/lib/live-query-sync';
 import {useI18n} from '@/lib/i18n';
 import {
   extractIncomingAlertData,
@@ -47,9 +43,8 @@ import {
   useNotificationPrefsStore,
 } from '@/lib/notifications';
 import {cn} from '@/lib/utils';
-import {toWhatsAppJid} from '@/lib/phone';
 import {wsClient} from '@/lib/ws';
-import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
+import {hasSameAccessScope, hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
 export function AppShell() {
   const navigate = useNavigate();
@@ -121,200 +116,130 @@ export function AppShell() {
     };
   }, [t.appName, t.appSubtitle, totalUnread]);
 
-  useEffect(() => {
+  const handleLiveEvent = useEffectEvent((event: WsEvent) => {
     if (!user) return;
-    return onWsEvent((event) => {
-      const code = (event.code || '').toUpperCase();
-      if (code === 'MESSAGE_REACTION') {
-        const change = extractWsReaction(event);
-        if (!change) return;
-        const filters: QueryFilters = {
-          predicate: ({queryKey, state}) =>
-            queryKey[0] === 'unified-messages' && queryKey[1] === change.deviceId &&
-            typeof queryKey[2] === 'string' &&
-            (toWhatsAppJid(queryKey[2]) || queryKey[2]) === change.chatJid &&
-            Boolean((state.data as InfiniteMessagePagesShape | undefined)?.pages.some((page) =>
-              page.data.some((message) => message.id === change.messageId),
-            )),
-        };
-        void queryClient.cancelQueries(filters, {revert: false});
-        queryClient.setQueriesData<InfiniteMessagePagesShape>(filters, (data) =>
-          updateMessageReactions(data, change.messageId, (reactions) =>
-            applyMessageReaction(reactions, change.reaction),
-          ),
+    const code = (event.code || '').toUpperCase();
+    if (code === 'USER_ACCESS_UPDATED') {
+      if (event.device_id) return;
+      const update = (nextUser: User) => {
+        const current = useAuthStore.getState().user;
+        if (current?.id !== nextUser.id) return;
+        const accessChanged = !hasSameAccessScope(current, nextUser);
+        useAuthStore.getState().setUser(nextUser);
+        if (accessChanged) void queryClient.resetQueries();
+      };
+      const payloadUser = (event.result as {user?: User} | null)?.user;
+      if (payloadUser?.id === user.id) {
+        update(payloadUser);
+      } else {
+        void getAuthStatus().then((status) => {
+          if (status.authenticated && status.user) update(status.user);
+        }).catch(() => {
+          // Keep the current session until its next successful refresh.
+        });
+      }
+      return;
+    }
+    syncLiveQueryCache(queryClient, event);
+
+    if (code === 'CHAT_LIFECYCLE_UPDATED' && event.result && typeof event.result === 'object') {
+      const payload = event.result as {
+        device_id?: string;
+        chat_jid?: string;
+        assignment?: {status?: ChatAssignmentSummary['status']; assigned_user_id?: number | null};
+      };
+      if (payload.device_id && payload.chat_jid && payload.assignment?.status) {
+        lifecycleMapRef.current.set(`${payload.device_id}::${payload.chat_jid}`, {
+          status: payload.assignment.status,
+          assigned_user_id: payload.assignment.assigned_user_id ?? null,
+        });
+      }
+    }
+
+    if (code === 'CHAT_DAILY_RESET' && event.result && typeof event.result === 'object') {
+      const payload = event.result as {device_id?: string; chat_jids?: unknown};
+      const devId = payload.device_id || event.device_id || '';
+      if (devId && Array.isArray(payload.chat_jids)) {
+        for (const rawJid of payload.chat_jids) {
+          if (typeof rawJid === 'string' && rawJid) {
+            lifecycleMapRef.current.set(`${devId}::${rawJid}`, {
+              status: 'pending',
+              assigned_user_id: null,
+            });
+          }
+        }
+      }
+    }
+
+    const alert = extractIncomingAlertData(event);
+    if (!alert) return;
+
+    const chatKey = `${alert.deviceId}::${alert.chatJid}`;
+    const lifecycle = lifecycleMapRef.current.get(chatKey) ?? null;
+    if (
+      !shouldAlertIncomingChat({
+        user,
+        deviceId: alert.deviceId,
+        chatJid: alert.chatJid,
+        lifecycle,
+        mutedKeys: mutedKeysRef.current,
+      })
+    ) {
+      return;
+    }
+
+    const dedupeKey = `${alert.deviceId}::${alert.messageId}`;
+    if (notifiedIdsRef.current.has(dedupeKey)) return;
+    if (notifiedIdsRef.current.size >= 200) {
+      notifiedIdsRef.current.clear();
+    }
+    notifiedIdsRef.current.add(dedupeKey);
+
+    if (soundEnabled) {
+      playIncomingMessageChime();
+    }
+
+    const isTabInactive =
+      typeof document !== 'undefined' &&
+      (document.visibilityState !== 'visible' || !document.hasFocus());
+    if (
+      browserEnabled &&
+      isTabInactive &&
+      getBrowserNotificationPermission() === 'granted'
+    ) {
+      const accountName =
+        accounts.find((a) => a.id === alert.deviceId)?.display_name ?? alert.deviceId;
+      const bodyText = alert.contentRedacted
+        ? t.chats.redactedNotificationBody
+        : alert.body ||
+          (alert.mediaType
+            ? t.chats.mediaLabels[alert.mediaType] || t.messageFallback
+            : t.messageFallback);
+      try {
+        const notif = new Notification(
+          t.nav.newMessageFromAccount(alert.senderName, accountName),
+          {
+            body: bodyText,
+            tag: `${alert.deviceId}::${alert.chatJid}`,
+          },
         );
-        return;
-      }
-      if (code === 'USER_ACCESS_UPDATED') {
-        const payloadUser =
-          event.result && typeof event.result === 'object'
-            ? (event.result as {user?: User}).user
-            : undefined;
-        if (payloadUser && payloadUser.id === user.id) {
-          useAuthStore.getState().setUser(payloadUser);
-        } else {
-          void getAuthStatus().then((status) => {
-            if (status.authenticated && status.user) {
-              useAuthStore.getState().setUser(status.user);
-            }
-          });
-        }
-        void queryClient.invalidateQueries({queryKey: ['unified-chats']});
-        void queryClient.invalidateQueries({queryKey: ['unified-accounts']});
-        void queryClient.invalidateQueries({queryKey: ['unified-accounts-assign']});
-        void queryClient.invalidateQueries({queryKey: ['devices']});
-        void queryClient.invalidateQueries({queryKey: ['misc-statuses']});
-        void queryClient.invalidateQueries({queryKey: ['groups']});
-        void queryClient.invalidateQueries({queryKey: ['unified-groups']});
-        void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
-        void queryClient.invalidateQueries({queryKey: ['schedules']});
-        return;
-      }
-
-      if (code === 'CHAT_LIFECYCLE_UPDATED' && event.result && typeof event.result === 'object') {
-        const payload = event.result as {
-          device_id?: string;
-          chat_jid?: string;
-          assignment?: {status?: ChatAssignmentSummary['status']; assigned_user_id?: number | null};
-        };
-        if (payload.device_id && payload.chat_jid && payload.assignment?.status) {
-          lifecycleMapRef.current.set(`${payload.device_id}::${payload.chat_jid}`, {
-            status: payload.assignment.status,
-            assigned_user_id: payload.assignment.assigned_user_id ?? null,
-          });
-        }
-      }
-
-      if (code === 'CHAT_DAILY_RESET' && event.result && typeof event.result === 'object') {
-        const payload = event.result as {device_id?: string; chat_jids?: unknown};
-        const devId = payload.device_id || event.device_id || '';
-        if (devId && Array.isArray(payload.chat_jids)) {
-          for (const rawJid of payload.chat_jids) {
-            if (typeof rawJid === 'string' && rawJid) {
-              lifecycleMapRef.current.set(`${devId}::${rawJid}`, {
-                status: 'pending',
-                assigned_user_id: null,
-              });
-            }
-          }
-        }
-        if (!location.pathname.startsWith('/chats')) {
-          void queryClient.invalidateQueries({queryKey: ['unified-chats']});
-        }
-      }
-
-      const target = extractWsEventTarget(event);
-      const isGroupTarget = Boolean(target.chatJid?.toLowerCase().endsWith('@g.us'));
-      const isMessageOrRevokeEvent =
-        code === 'MESSAGE_RECEIVED' ||
-        code === 'MESSAGE' ||
-        code === 'CHAT_UPDATED' ||
-        code === 'CHAT_LIFECYCLE_UPDATED' ||
-        code === 'MESSAGE_REVOKED' ||
-        code === 'MESSAGE.REVOKED' ||
-        code === 'MESSAGE_DELETED' ||
-        code === 'MESSAGE.DELETED' ||
-        code === 'MESSAGE_REVOKE' ||
-        code === 'MESSAGE.REVOKE';
-
-      if (isMessageOrRevokeEvent) {
-        if (!isGroupTarget && !location.pathname.startsWith('/chats')) {
-          void queryClient.invalidateQueries({queryKey: ['unified-chats']});
-        }
-        if (canReadGroups && (isGroupTarget || !target.chatJid)) {
-          void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
-          if (!location.pathname.startsWith('/groups')) {
-            void queryClient.invalidateQueries({queryKey: ['unified-groups']});
-          }
-        }
-      } else if (
-        canReadGroups &&
-        (code === 'LOGIN_SUCCESS' ||
-          code === 'DEVICE_LOGGED_OUT' ||
-          code === 'DEVICE_REMOVED' ||
-          code === 'LIST_DEVICES')
-      ) {
-        void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
-        if (!location.pathname.startsWith('/groups')) {
-          void queryClient.invalidateQueries({queryKey: ['unified-groups']});
-        }
-      }
-
-      const alert = extractIncomingAlertData(event);
-      if (!alert) return;
-
-      const chatKey = `${alert.deviceId}::${alert.chatJid}`;
-      const lifecycle = lifecycleMapRef.current.get(chatKey) ?? null;
-      if (
-        !shouldAlertIncomingChat({
-          user,
-          deviceId: alert.deviceId,
-          chatJid: alert.chatJid,
-          lifecycle,
-          mutedKeys: mutedKeysRef.current,
-        })
-      ) {
-        return;
-      }
-
-      const dedupeKey = `${alert.deviceId}::${alert.messageId}`;
-      if (notifiedIdsRef.current.has(dedupeKey)) return;
-      if (notifiedIdsRef.current.size >= 200) {
-        notifiedIdsRef.current.clear();
-      }
-      notifiedIdsRef.current.add(dedupeKey);
-
-      if (soundEnabled) {
-        playIncomingMessageChime();
-      }
-
-      const isTabInactive =
-        typeof document !== 'undefined' &&
-        (document.visibilityState !== 'visible' || !document.hasFocus());
-      if (
-        browserEnabled &&
-        isTabInactive &&
-        getBrowserNotificationPermission() === 'granted'
-      ) {
-        const accountName =
-          accounts.find((a) => a.id === alert.deviceId)?.display_name ?? alert.deviceId;
-        const bodyText = alert.contentRedacted
-          ? t.chats.redactedNotificationBody
-          : alert.body ||
-            (alert.mediaType
-              ? t.chats.mediaLabels[alert.mediaType] || t.messageFallback
-              : t.messageFallback);
-        try {
-          const notif = new Notification(
-            t.nav.newMessageFromAccount(alert.senderName, accountName),
-            {
-              body: bodyText,
-              tag: `${alert.deviceId}::${alert.chatJid}`,
-            },
+        notif.onclick = () => {
+          window.focus();
+          navigate(
+            `/chats?device=${encodeURIComponent(alert.deviceId)}&jid=${encodeURIComponent(alert.chatJid)}`,
           );
-          notif.onclick = () => {
-            window.focus();
-            navigate(
-              `/chats?device=${encodeURIComponent(alert.deviceId)}&jid=${encodeURIComponent(alert.chatJid)}`,
-            );
-            notif.close();
-          };
-        } catch {
-          // Ignore browser Notification construction errors
-        }
+          notif.close();
+        };
+      } catch {
+        // Ignore browser Notification construction errors
       }
-    });
-  }, [
-    accounts,
-    browserEnabled,
-    canReadGroups,
-    location.pathname,
-    navigate,
-    queryClient,
-    soundEnabled,
-    t,
-    user,
-  ]);
+    }
+  });
+
+  const hasSession = Boolean(user);
+  useEffect(() => {
+    if (hasSession) return onWsEvent(handleLiveEvent);
+  }, [hasSession]);
 
   const primaryNav = [
     {to: '/chats', label: t.nav.chats, icon: MessagesSquare, perms: ['chats:read']},

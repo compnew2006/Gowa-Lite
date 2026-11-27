@@ -1,6 +1,12 @@
 import {normalizeWhatsAppJid} from '../../shared/whatsapp-identity.ts';
 import {
-  db,
+  beginCallRejection,
+  completeCallRejection,
+  deleteSetting,
+  listRecentCallRejections,
+  type CallAutoRejectLogEntry,
+  type CallRejectStatus,
+  type CallReplyStatus,
   getSetting,
   isChatBlocked,
   setSetting,
@@ -11,19 +17,7 @@ import {gowaFetch} from '../gowa-client.ts';
 export const DEFAULT_CALL_AUTO_REJECT_MESSAGE =
   'مرحبًا، هذا الحساب لا يستقبل المكالمات الصوتية أو المرئية. يرجى إرسال رسالتك نصيًا وسنقوم بالرد عليك في أقرب وقت.';
 
-export type CallRejectStatus = 'pending' | 'rejected' | 'already_rejected' | 'failed';
-export type CallReplyStatus = 'pending' | 'sent' | 'failed' | 'no_message' | 'skipped';
-
-export interface CallAutoRejectLogEntry {
-  device_id: string;
-  call_id: string;
-  caller_jid: string;
-  caller_name: string;
-  reject_status: CallRejectStatus;
-  reply_status: CallReplyStatus;
-  reply_message: string;
-  created_at: string;
-}
+export type {CallAutoRejectLogEntry, CallRejectStatus, CallReplyStatus};
 
 export interface CallAutoRejectSettings {
   device_id: string;
@@ -64,27 +58,6 @@ export function getCallAutoRejectMessage(deviceId: string): {
 
 export function getCallAutoRejectSettings(deviceId: string): CallAutoRejectSettings {
   const {replyMessage, isCustom} = getCallAutoRejectMessage(deviceId);
-  const rows = db
-    .prepare(
-      `SELECT device_id, call_id, caller_jid, caller_name, reject_status, reply_status, reply_message, created_at
-       FROM call_auto_reject_logs
-       WHERE device_id = ?
-       ORDER BY created_at_ms DESC
-       LIMIT 15`,
-    )
-    .all(deviceId);
-
-  const recent: CallAutoRejectLogEntry[] = rows.map((row) => ({
-    device_id: String(row.device_id ?? ''),
-    call_id: String(row.call_id ?? ''),
-    caller_jid: String(row.caller_jid ?? ''),
-    caller_name: String(row.caller_name ?? ''),
-    reject_status: String(row.reject_status ?? 'pending') as CallRejectStatus,
-    reply_status: String(row.reply_status ?? 'pending') as CallReplyStatus,
-    reply_message: String(row.reply_message ?? ''),
-    created_at: String(row.created_at ?? ''),
-  }));
-
   return {
     device_id: deviceId,
     enabled: isCallAutoRejectEnabled(deviceId),
@@ -92,7 +65,7 @@ export function getCallAutoRejectSettings(deviceId: string): CallAutoRejectSetti
     reply_message: replyMessage,
     default_message: DEFAULT_CALL_AUTO_REJECT_MESSAGE,
     is_custom_message: isCustom,
-    recent,
+    recent: listRecentCallRejections(deviceId),
   };
 }
 
@@ -104,11 +77,11 @@ export function updateCallAutoRejectSettings(
     setSetting(enabledSettingKey(deviceId), String(patch.enabled));
   }
   if (patch.reset_message === true) {
-    db.prepare('DELETE FROM settings WHERE key = ?').run(messageSettingKey(deviceId));
+    deleteSetting(messageSettingKey(deviceId));
   } else if (patch.reply_message !== undefined) {
     const clean = patch.reply_message.trim();
     if (clean === DEFAULT_CALL_AUTO_REJECT_MESSAGE) {
-      db.prepare('DELETE FROM settings WHERE key = ?').run(messageSettingKey(deviceId));
+      deleteSetting(messageSettingKey(deviceId));
     } else {
       setSetting(messageSettingKey(deviceId), clean);
     }
@@ -220,20 +193,7 @@ export async function handleIncomingCallOffer(
   const createdAt = new Date(nowMs).toISOString();
 
   // Atomic idempotency across Webhook + WebSocket replays
-  const insertResult = db
-    .prepare(
-      `INSERT OR IGNORE INTO call_auto_reject_logs (
-         device_id, call_id, caller_jid, caller_name,
-         reject_status, reply_status, reply_message,
-         created_at, created_at_ms
-       )
-       VALUES (?, ?, ?, ?, 'pending', 'pending', '', ?, ?)`,
-    )
-    .run(deviceId, details.callId, details.callerJid, details.callerName, createdAt, nowMs);
-
-  if (insertResult.changes === 0) {
-    return null;
-  }
+  if (!beginCallRejection(deviceId, details, createdAt, nowMs)) return null;
 
   let rejectStatus: CallRejectStatus = details.autoRejected ? 'already_rejected' : 'pending';
   if (!details.autoRejected) {
@@ -305,12 +265,6 @@ export async function handleIncomingCallOffer(
     }
   }
 
-  db.prepare(
-    `UPDATE call_auto_reject_logs
-     SET reject_status = ?, reply_status = ?, reply_message = ?
-     WHERE device_id = ? AND call_id = ?`,
-  ).run(rejectStatus, replyStatus, sentMessageText, deviceId, details.callId);
-
   const entry: CallAutoRejectLogEntry = {
     device_id: deviceId,
     call_id: details.callId,
@@ -321,6 +275,8 @@ export async function handleIncomingCallOffer(
     reply_message: sentMessageText,
     created_at: createdAt,
   };
+
+  completeCallRejection(entry);
 
   onBroadcast?.({
     code: 'CALL_AUTO_REJECTED',

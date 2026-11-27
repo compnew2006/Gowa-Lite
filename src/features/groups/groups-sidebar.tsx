@@ -6,11 +6,8 @@ import type {
 } from '@/api/types';
 import {ContactAvatar} from '@/components/contact-avatar';
 import {Button} from '@/components/ui/button';
-import {
-  AccountMultiSelect,
-  accountDotTone,
-  shortAccountWidgetLabel,
-} from '@/features/chat/chat-list';
+import {accountDotTone, shortAccountWidgetLabel} from '@/features/accounts/account-display';
+import {AccountMultiSelect} from '@/features/accounts/account-multi-select';
 import {NewsletterAvatar} from '@/features/groups/newsletter-workspace-panel';
 import {useI18n} from '@/lib/i18n';
 import {matchesNormalizedQuery} from '@/lib/phone';

@@ -20,7 +20,7 @@ import type {ChatAssignmentInfo, ChatAssignmentSummary, UnifiedChat} from '@/api
 import {ContactAvatar} from '@/components/contact-avatar';
 import {Button} from '@/components/ui/button';
 import type {ContextDrawerTab} from '@/features/chat/chat-context-drawer';
-import {shortAccountWidgetLabel} from '@/features/chat/chat-list';
+import {shortAccountWidgetLabel} from '@/features/accounts/account-display';
 import {formatSecondaryChatPhone} from '@/features/chat/chat-ui-helpers';
 import {formatJidPhone} from '@/features/chat/display-name';
 import type {OtherAccountRef} from '@/features/chat/other-accounts';

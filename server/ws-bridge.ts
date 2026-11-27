@@ -110,6 +110,12 @@ export function shouldDeliverWsEventToUser(
   if (deviceId && !hasDeviceAccess(user, deviceId)) {
     return {allowed: false};
   }
+  if (code === 'ROLE_UPDATED') {
+    return {allowed: !deviceId && hasAnyPermission(user, ['roles:read', 'users:read', 'users:write'])};
+  }
+  if (code === 'USERS_UPDATED') {
+    return {allowed: !deviceId && hasPermission(user, 'users', 'read')};
+  }
   if (code === 'CHAT_CLOSE_RATING_UPDATED') {
     return {allowed: Boolean(deviceId) && hasPermission(user, 'accounts', 'read')};
   }

@@ -26,7 +26,6 @@ import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
-import {patchRevokedMessage} from '@/features/chat/message-reactions';
 import {GroupWorkspacePanel} from '@/features/groups/group-workspace-panel';
 import {
   directoryItemKey,
@@ -34,12 +33,10 @@ import {
   type DirectoryKindFilter,
 } from '@/features/groups/groups-sidebar';
 import {NewsletterWorkspacePanel} from '@/features/groups/newsletter-workspace-panel';
-import {extractWsEventTarget, extractWsRevokeTarget, onWsEvent} from '@/lib/events';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {parseParticipantsList} from '@/lib/participants';
 import {toWhatsAppJid} from '@/lib/phone';
-import {invalidateChatQueries} from '@/lib/query-client';
 import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
 const SIDEBAR_STORAGE_KEY = 'gowa-lite:groups-sidebar-width';
@@ -92,69 +89,6 @@ export default function GroupsPage() {
     retry: 1,
     refetchInterval: 30_000,
   });
-
-  useEffect(() => {
-    return onWsEvent((event) => {
-      const code = (event.code || '').toUpperCase();
-      const target = extractWsEventTarget(event);
-
-      const invalidateScoped = (rootKey: string) => invalidateChatQueries(queryClient, rootKey, target);
-
-      const revoke = extractWsRevokeTarget(event);
-      if (revoke) {
-        const chatJid = revoke.chatJid ? toWhatsAppJid(revoke.chatJid) || revoke.chatJid : '';
-        if (!chatJid || chatJid.toLowerCase().endsWith('@g.us')) {
-          patchRevokedMessage(queryClient, revoke);
-          invalidateScoped('unified-messages');
-          void queryClient.invalidateQueries({queryKey: ['unified-groups']});
-          void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
-        }
-        return;
-      }
-
-      if (
-        code === 'LOGIN_SUCCESS' ||
-        code === 'DEVICE_LOGGED_OUT' ||
-        code === 'DEVICE_REMOVED' ||
-        code === 'LIST_DEVICES'
-      ) {
-        void queryClient.invalidateQueries({queryKey: ['unified-groups']});
-        void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
-        void queryClient.invalidateQueries({queryKey: ['unified-messages']});
-        return;
-      }
-
-      if (
-        code === 'MESSAGE_RECEIVED' ||
-        code === 'MESSAGE' ||
-        code === 'MESSAGE_UPDATED' ||
-        code === 'MESSAGE_EDITED' ||
-        code === 'MESSAGE.EDITED' ||
-        code === 'MESSAGE_REVOKED' ||
-        code === 'MESSAGE.REVOKED' ||
-        code === 'MESSAGE_DELETED' ||
-        code === 'MESSAGE.DELETED' ||
-        code === 'MESSAGE_REVOKE' ||
-        code === 'MESSAGE.REVOKE' ||
-        code === 'CHAT_UPDATED'
-      ) {
-        if (!target.chatJid || target.chatJid.toLowerCase().endsWith('@g.us')) {
-          invalidateScoped('unified-messages');
-          void queryClient.invalidateQueries({queryKey: ['unified-groups']});
-          void queryClient.invalidateQueries({queryKey: ['unified-groups-unread']});
-        }
-      } else if (code === 'CONVERSATION_NOTE_UPDATED') {
-        if (!target.chatJid || target.chatJid.toLowerCase().endsWith('@g.us')) {
-          invalidateScoped('unified-chat-notes');
-        }
-      } else if (code === 'SCHEDULE_UPDATED') {
-        if (!target.chatJid || target.chatJid.toLowerCase().endsWith('@g.us')) {
-          invalidateScoped('unified-chat-schedules');
-        }
-        void queryClient.invalidateQueries({queryKey: ['schedules']});
-      }
-    });
-  }, [queryClient]);
 
   const items = query.data?.items ?? [];
   const groupsCount = query.data?.groups_count ?? 0;

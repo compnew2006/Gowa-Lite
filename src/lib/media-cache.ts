@@ -1,5 +1,6 @@
 import {fetchAuthorizedMediaBytes} from '@/api/client';
 import {normalizeDownloadedMime} from '@/lib/media-download';
+import {hasSameAccessScope, useAuthStore} from '@/stores/auth';
 
 export interface CachedMediaEntry {
   objectUrl: string;
@@ -19,6 +20,7 @@ const mediaCache = new Map<string, CachedMediaEntry>();
 const inflightMedia = new Map<string, Promise<CachedMediaEntry>>();
 const pendingQueue: Array<() => void> = [];
 let activeFetches = 0;
+let cacheGeneration = 0;
 
 function runQueued<T>(task: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -97,10 +99,16 @@ export function getOrFetchCachedMedia(
   const pending = inflightMedia.get(key);
   if (pending) return pending;
 
+  const generation = cacheGeneration;
+  const assertCurrentScope = () => {
+    if (generation !== cacheGeneration) throw new DOMException('Media access changed', 'AbortError');
+  };
   const promise = runQueued(async () => {
+    assertCurrentScope();
     const again = getCachedMedia(key);
     if (again) return again;
     const {bytes, contentType} = await fetcher(urlPath);
+    assertCurrentScope();
     const objectUrl = safeCreateObjectUrl(bytes, contentType);
     const entry: CachedMediaEntry = {
       objectUrl,
@@ -110,7 +118,7 @@ export function getOrFetchCachedMedia(
     setCachedMedia(key, entry, maxEntries);
     return entry;
   }).finally(() => {
-    inflightMedia.delete(key);
+    if (inflightMedia.get(key) === promise) inflightMedia.delete(key);
   });
 
   inflightMedia.set(key, promise);
@@ -118,8 +126,14 @@ export function getOrFetchCachedMedia(
 }
 
 export function clearMediaCache(): void {
+  cacheGeneration += 1;
+  inflightMedia.clear();
   for (const entry of mediaCache.values()) {
     safeRevokeObjectUrl(entry.objectUrl);
   }
   mediaCache.clear();
 }
+
+useAuthStore.subscribe((current, previous) => {
+  if (!hasSameAccessScope(previous.user, current.user)) clearMediaCache();
+});

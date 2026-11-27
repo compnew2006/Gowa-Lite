@@ -1,6 +1,6 @@
 import type {Router} from 'express';
 import {
-  db,
+  deleteCachedAvatars,
   getAccountAliases,
   getGroupUnreadSummaryForUser,
   markChatReadForUser,
@@ -735,7 +735,7 @@ export function registerGroupRoutes(): Router {
           deviceId,
           formData: form,
         });
-        db.prepare('DELETE FROM contact_avatars WHERE device_id = ? AND jid = ?').run(deviceId, groupId);
+        deleteCachedAvatars(deviceId, groupId);
         res.json({code: 'SUCCESS', message: 'تم تحديث صورة المجموعة', results: result});
       } catch (err) {
         handleRouteError(res, err);

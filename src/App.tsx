@@ -4,7 +4,7 @@ import {Navigate, Route, Routes} from 'react-router-dom';
 import {Toaster} from 'sonner';
 import {DEFAULT_UNIFIED_CHATS_QUERY_KEY, getAuthStatus, listUnifiedChats} from '@/api/client';
 import {AppShell} from '@/components/layout/app-shell';
-import {bootingLabels, useI18n} from '@/lib/i18n';
+import {bootingLabels, loadEnglishTranslations} from '@/lib/i18n';
 import {queryClient} from '@/lib/query-client';
 import {wsClient} from '@/lib/ws';
 import {
@@ -18,7 +18,8 @@ import {
 
 const AccountPage = lazy(() => import('@/pages/account'));
 const AccountsPage = lazy(() => import('@/pages/accounts'));
-const ChatsPage = lazy(() => import('@/pages/chats'));
+const loadChatsPage = () => import('@/pages/chats');
+const ChatsPage = lazy(loadChatsPage);
 const GroupsPage = lazy(() => import('@/pages/groups'));
 const LoginPage = lazy(() => import('@/pages/login'));
 const MiscPage = lazy(() => import('@/pages/misc'));
@@ -32,7 +33,7 @@ function BootLoader() {
   const lang = useAuthStore((state) => state.language);
   return (
     <div className="flex min-h-svh items-center justify-center bg-background">
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+      <div className="flex items-center gap-2 font-[system-ui] text-sm text-muted-foreground">
         <Loader2 className="size-5 animate-spin" />
         <span>{bootingLabels[lang]}</span>
       </div>
@@ -60,7 +61,7 @@ function DefaultRedirect() {
 }
 
 function AppToaster() {
-  const {lang} = useI18n();
+  const lang = useAuthStore((s) => s.language);
   return (
     <Toaster
       richColors
@@ -84,7 +85,13 @@ export default function App() {
         if (!res.initialized) {
           setBootState({status: 'needs_setup', gowaConfigured: res.gowaConfigured});
         } else if (res.authenticated && res.user) {
+          if (res.user.language === 'en') {
+            void loadEnglishTranslations().catch(() => undefined);
+          }
           if (hasUserPermission(res.user, 'chats:read')) {
+            const requestedPath = window.location.hash.slice(1).split('?')[0];
+            const initialPath = requestedPath && requestedPath !== '/' ? requestedPath : firstAllowedRoute(res.user);
+            if (initialPath === '/chats') void loadChatsPage().catch(() => undefined);
             void queryClient.prefetchQuery({
               queryKey: DEFAULT_UNIFIED_CHATS_QUERY_KEY,
               queryFn: () => listUnifiedChats({}),
@@ -220,9 +227,9 @@ export default function App() {
   }
 
   return (
-    <Suspense fallback={<BootLoader />}>
-      {content}
+    <>
+      <Suspense fallback={<BootLoader />}>{content}</Suspense>
       <AppToaster />
-    </Suspense>
+    </>
   );
 }

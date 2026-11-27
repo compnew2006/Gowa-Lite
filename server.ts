@@ -4,6 +4,7 @@ import path from 'node:path';
 import compression from 'compression';
 import dotenv from 'dotenv';
 import express, {type NextFunction, type Request, type Response} from 'express';
+import {isPrivateAssetPath} from './shared/static-assets.ts';
 import {cleanupExpiredRecords, closeDatabaseSafely} from './server/db.ts';
 import {handleRouteError} from './server/middleware/auth.ts';
 import {registerAccountRoutes} from './server/routes/account.ts';
@@ -60,11 +61,15 @@ async function startServer(): Promise<void> {
     res.setHeader('Referrer-Policy', 'no-referrer');
     next();
   });
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
   app.use(registerGowaWebhookRoutes(wsBridge));
   app.use(express.json({limit: '8mb'}));
 
   app.use(registerAuthRoutes(wsBridge));
-  app.use(registerRoleRoutes());
+  app.use(registerRoleRoutes(wsBridge));
   app.use(registerDeviceRoutes(wsBridge));
   app.use(registerChatLifecycleRoutes(wsBridge));
   app.use(registerUnifiedInboxRoutes(wsBridge));
@@ -113,6 +118,20 @@ async function startServer(): Promise<void> {
       return;
     }
     handleRouteError(res, err);
+  });
+
+  app.use((req, res, next) => {
+    try {
+      if (isPrivateAssetPath(path.posix.normalize(decodeURIComponent(req.path)))) {
+        res.sendStatus(404);
+        return;
+      }
+    } catch (error) {
+      if (!(error instanceof URIError)) throw error;
+      res.sendStatus(400);
+      return;
+    }
+    next();
   });
 
   const isProd = process.env.NODE_ENV === 'production';

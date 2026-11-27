@@ -20,7 +20,7 @@ import {
 import {Link} from 'react-router-dom';
 import {toast} from 'sonner';
 import {deleteDevice, logoutDevice, reconnectDevice} from '@/api/client';
-import type {DeviceState, RegistryDevice} from '@/api/types';
+import type {RegistryDevice} from '@/api/types';
 import {ContactAvatar} from '@/components/contact-avatar';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
@@ -28,7 +28,7 @@ import {AccountProfilePanel} from '@/features/accounts/account-profile-panel';
 import {AccountCloseRatingPanel} from '@/features/accounts/account-close-rating-panel';
 import {AccountDailyResetPanel} from '@/features/accounts/account-daily-reset-panel';
 import {RejectCallPanel} from '@/features/accounts/reject-call-panel';
-import {accountDotTone} from '@/features/chat/chat-list';
+import {accountDotTone, accountStateToneClass} from '@/features/accounts/account-display';
 import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -36,13 +36,6 @@ import {cn} from '@/lib/utils';
 import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
 type AccountWorkspaceTab = 'connection' | 'profile' | 'tools' | 'ratings' | 'dailyReset';
-
-const stateToneClass: Record<DeviceState, string> = {
-  logged_in: 'text-emerald-700 dark:text-emerald-400',
-  connected: 'text-amber-700 dark:text-amber-400',
-  connecting: 'text-amber-700 dark:text-amber-400',
-  disconnected: 'text-destructive',
-};
 
 export function AccountWorkspacePanel({
   device,
@@ -106,7 +99,7 @@ export function AccountWorkspacePanel({
   const title = device.resolved_name || device.alias || device.display_name || device.id;
   const isLoggedIn = device.state === 'logged_in';
   const stateLabel = t.accounts.states[device.state] ?? t.accounts.states.disconnected;
-  const toneClass = stateToneClass[device.state] ?? stateToneClass.disconnected;
+  const toneClass = accountStateToneClass[device.state] ?? accountStateToneClass.disconnected;
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">

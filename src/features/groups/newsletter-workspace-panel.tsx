@@ -5,7 +5,7 @@ import {toast} from 'sonner';
 import {followNewsletter, unfollowNewsletter} from '@/api/client';
 import type {UnifiedNewsletterItem} from '@/api/types';
 import {Button} from '@/components/ui/button';
-import {accountDotTone, shortAccountWidgetLabel} from '@/features/chat/chat-list';
+import {accountDotTone, shortAccountWidgetLabel} from '@/features/accounts/account-display';
 import {NewsletterMessagesPanel} from '@/features/groups/newsletter-messages-panel';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';

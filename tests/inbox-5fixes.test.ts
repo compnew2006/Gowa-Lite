@@ -31,6 +31,19 @@ function getFreePort(): Promise<number> {
 }
 
 describe('Gowa Lite 5 Targeted Fixes Verification', () => {
+  it('discards in-flight media after the access scope changes', async () => {
+    let finish: (media: {bytes: Uint8Array<ArrayBuffer>; contentType: string}) => void = () => undefined;
+    const response = new Promise<{bytes: Uint8Array<ArrayBuffer>; contentType: string}>((resolve) => {
+      finish = resolve;
+    });
+    const load = getOrFetchCachedMedia('previous-session', '/private-media', () => response);
+    clearMediaCache();
+    finish({bytes: new Uint8Array([1, 2, 3]), contentType: 'image/png'});
+
+    await assert.rejects(load, {name: 'AbortError'});
+    assert.equal(getCachedMedia('previous-session'), null);
+  });
+
   it('Issue 1 & 3a: keeps a single fetch-older button in MessageViewHeader and auto-fetches history on empty chats', () => {
     const headerSrc = fs.readFileSync(
       path.resolve(process.cwd(), 'src/features/chat/message-view-header.tsx'),
@@ -40,11 +53,16 @@ describe('Gowa Lite 5 Targeted Fixes Verification', () => {
       path.resolve(process.cwd(), 'src/features/chat/message-view.tsx'),
       'utf8',
     );
+    const historySrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/features/chat/use-message-history.ts'),
+      'utf8',
+    );
 
     const headerBtnCount = (headerSrc.match(/fetchOlderFromPhone/g) ?? []).length;
     assert.ok(headerBtnCount >= 2, 'Header button should use fetchOlderFromPhone label/title');
     assert.equal(viewSrc.includes('fetchOlderFromPhone'), true, 'MessageView empty state must keep manual fetchOlderFromPhone action');
-    assert.equal(viewSrc.includes('requestUnifiedChatHistory('), true, 'MessageView must automatically request history when empty');
+    assert.match(viewSrc, /useMessageHistory\(\{chat, openNonce/);
+    assert.match(historySrc, /shouldTriggerAutoHistoryFetch\([\s\S]+requestEmptyChatHistory\('auto'\)/);
     assert.equal(viewSrc.includes('fetchingHistoryFromPhone'), true, 'MessageView must render loading state while fetching history');
     assert.equal(viewSrc.includes('noHistoryOnPhone'), true, 'MessageView must show explicit no-history-on-phone state when phone has no history');
   });
@@ -54,16 +72,16 @@ describe('Gowa Lite 5 Targeted Fixes Verification', () => {
       path.resolve(process.cwd(), 'src/features/chat/chat-list.tsx'),
       'utf8',
     );
-    const chatsPageSrc = fs.readFileSync(
-      path.resolve(process.cwd(), 'src/pages/chats.tsx'),
+    const controllerSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/features/chat/use-inbox-controller.ts'),
       'utf8',
     );
 
     // secondaryPhone is rendered in its own <p dir="ltr" ...> block outside row 2's flex container
     assert.equal(chatListSrc.includes('{secondaryPhone && (\n              <p\n                dir="ltr"'), true);
     assert.equal(chatListSrc.includes('hasUnread && (\n                    <span'), true);
-    assert.equal(chatsPageSrc.includes("queryKey: ['unified-chats']"), true);
-    assert.equal(chatsPageSrc.includes('unread_count: 0'), true);
+    assert.equal(controllerSrc.includes("queryKey: ['unified-chats']"), true);
+    assert.equal(controllerSrc.includes('unread_count: 0'), true);
   });
 
   it('Issue 3b: frontend media cache deduplicates, throttles concurrency <= 4, retains entries, and revokes on LRU eviction', async () => {

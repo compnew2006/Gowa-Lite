@@ -1,8 +1,8 @@
 import {useEffect, useMemo, useState} from 'react';
-import {useQuery, useQueryClient} from '@tanstack/react-query';
+import {useQuery} from '@tanstack/react-query';
 import {Loader2, RefreshCw, Search, Smartphone} from 'lucide-react';
 import {listDevices} from '@/api/client';
-import type {DeviceState, RegistryDevice} from '@/api/types';
+import type {RegistryDevice} from '@/api/types';
 import {ContactAvatar} from '@/components/contact-avatar';
 import {
   GowaSetupNotice,
@@ -15,8 +15,7 @@ import {CreateDeviceDialog} from '@/features/accounts/create-device-dialog';
 import {EditAliasDialog} from '@/features/accounts/edit-alias-dialog';
 import {LoginCodeDialog} from '@/features/accounts/login-code-dialog';
 import {LoginQrDialog} from '@/features/accounts/login-qr-dialog';
-import {accountDotTone} from '@/features/chat/chat-list';
-import {onWsEvent} from '@/lib/events';
+import {accountDotTone, accountStateToneClass} from '@/features/accounts/account-display';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {matchesNormalizedQuery} from '@/lib/phone';
@@ -27,15 +26,7 @@ const SIDEBAR_STORAGE_KEY = 'gowa-lite:accounts-sidebar-width';
 
 type AccountStateFilter = 'all' | 'online' | 'offline';
 
-const stateToneClass: Record<DeviceState, string> = {
-  logged_in: 'text-emerald-700 dark:text-emerald-400',
-  connected: 'text-amber-700 dark:text-amber-400',
-  connecting: 'text-amber-700 dark:text-amber-400',
-  disconnected: 'text-destructive',
-};
-
 export default function AccountsPage() {
-  const queryClient = useQueryClient();
   const {t} = useI18n();
   const user = useAuthStore((s) => s.user);
   const canWriteAccounts = hasUserPermission(user, 'accounts:write');
@@ -55,19 +46,6 @@ export default function AccountsPage() {
     queryFn: listDevices,
     refetchInterval: 15_000,
   });
-
-  useEffect(() => {
-    return onWsEvent((event) => {
-      if (
-        event.code === 'LOGIN_SUCCESS' ||
-        event.code === 'LIST_DEVICES' ||
-        event.code === 'DEVICE_REMOVED' ||
-        event.code === 'DEVICE_LOGGED_OUT'
-      ) {
-        void queryClient.invalidateQueries({queryKey: ['devices']});
-      }
-    });
-  }, [queryClient]);
 
   const devices = query.data ?? [];
 
@@ -218,7 +196,7 @@ export default function AccountsPage() {
                     const title = dev.resolved_name || dev.alias || dev.display_name || dev.id;
                     const stateLabel =
                       t.accounts.states[dev.state] ?? t.accounts.states.disconnected;
-                    const toneClass = stateToneClass[dev.state] ?? stateToneClass.disconnected;
+                    const toneClass = accountStateToneClass[dev.state] ?? accountStateToneClass.disconnected;
 
                     return (
                       <li key={dev.id}>

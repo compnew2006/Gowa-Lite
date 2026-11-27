@@ -12,7 +12,6 @@ import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
 import {Skeleton} from '@/components/ui/skeleton';
 import {Switch} from '@/components/ui/switch';
-import {onWsEvent} from '@/lib/events';
 import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -55,16 +54,6 @@ export function RejectCallPanel({deviceId}: {deviceId: string}) {
       setSyncedFrom(settingsQuery.data.reply_message);
     }
   }, [settingsQuery.data, syncedFrom]);
-
-  useEffect(
-    () =>
-      onWsEvent((event) => {
-        if (event.code === 'CALL_AUTO_REJECTED' && event.device_id === deviceId) {
-          void queryClient.invalidateQueries({queryKey: ['call-auto-reject', deviceId]});
-        }
-      }),
-    [deviceId, queryClient],
-  );
 
   const toggleMutation = useMutation({
     mutationFn: (enabled: boolean) => saveCallAutoRejectSettings(deviceId, {enabled}),

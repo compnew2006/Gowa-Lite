@@ -59,6 +59,19 @@ describe('Phase 3 Production Server Smoke Check (PROD-01)', () => {
     fs.rmSync(tmpDir, {recursive: true, force: true});
   });
 
+  it('keeps local captures and private files outside the public build and static routes', async () => {
+    assert.equal(fs.existsSync(path.resolve('dist/assets/aistudio')), false);
+    for (const filePath of ['/assets/aistudio/capture.png', '/assets/gowa-lite.db', '/assets/build.js.map']) {
+      const response = await fetch(`${baseUrl}${filePath}`);
+      assert.equal(response.status, 404, filePath);
+    }
+  });
+
+  it('keeps session responses out of browser and shared HTTP caches', async () => {
+    const response = await fetch(`${baseUrl}/api/auth/status`);
+    assert.match(response.headers.get('cache-control') ?? '', /\bno-store\b/);
+  });
+
   it('serves built SPA, enforces auth, returns JSON across /api/* and 404s, and authenticates /ws', async () => {
     const rootRes = await fetch(`${baseUrl}/`);
     assert.equal(rootRes.status, 200);
