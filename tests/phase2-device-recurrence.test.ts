@@ -6,6 +6,7 @@ import path from 'node:path';
 import {after, afterEach, before, beforeEach, describe, it} from 'node:test';
 import React, {act, createElement as el} from 'react';
 import {createRoot, type Root} from 'react-dom/client';
+import {MemoryRouter} from 'react-router-dom';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import {DeviceSelectorBar, useActiveDevice} from '../src/components/device-selector-bar.tsx';
 import {ScheduleRecurrenceFields} from '../src/features/schedules/schedule-recurrence-fields.tsx';
@@ -118,7 +119,8 @@ function render(element: React.ReactElement) {
   document.body.appendChild(container);
   root = createRoot(container);
   return act(async () => {
-    root!.render(element);
+    // Phase 3 track D: ScheduledPage reads ?search= — it needs a router context.
+    root!.render(el(MemoryRouter, {}, element));
   });
 }
 

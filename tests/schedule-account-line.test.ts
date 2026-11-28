@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {afterEach, beforeEach, describe, it} from 'node:test';
 import React, {act, createElement as el} from 'react';
 import {createRoot, type Root} from 'react-dom/client';
+import {MemoryRouter} from 'react-router-dom';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import {ScheduleMessageDialog} from '../src/features/chat/schedule-dialog.tsx';
 import {
@@ -90,7 +91,9 @@ function render(element: React.ReactElement) {
   document.body.appendChild(container);
   root = createRoot(container);
   return act(async () => {
-    root!.render(element);
+    // Phase 3 track D: ScheduleMessageDialog uses useNavigate and
+    // ScheduledPage reads ?search= — both need a router context.
+    root!.render(el(MemoryRouter, {}, element));
   });
 }
 

@@ -26,6 +26,7 @@ import {
 } from '@/api/client';
 import type {ChatAssignmentSummary, User} from '@/api/types';
 import {LanguageToggle} from '@/components/language-toggle';
+import {AvatarMenu} from '@/components/layout/avatar-menu';
 import {Button} from '@/components/ui/button';
 import {NotificationControls} from '@/features/notifications/notification-controls';
 import {formatNavUnreadCount, shouldShowNavUnreadBadge} from '@/features/chat/chat-ui-helpers';
@@ -442,23 +443,14 @@ export function AppShell() {
           )}
 
           {user && (
-            <div
-              title={`${user.display_name} (${roleDisplayName})`}
-              className="mt-1 flex size-9 items-center justify-center rounded-full bg-accent text-xs font-bold text-accent-foreground select-none"
-            >
-              {user.display_name.slice(0, 1).toUpperCase()}
-            </div>
+            <AvatarMenu
+              displayName={user.display_name}
+              roleDisplayName={roleDisplayName}
+              isDark={isDark}
+              onToggleTheme={handleToggleTheme}
+              onLogout={handleLogout}
+            />
           )}
-
-          <button
-            type="button"
-            onClick={handleLogout}
-            title={t.nav.logout}
-            aria-label={t.nav.logout}
-            className="flex size-10 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive focus-visible:outline-2 focus-visible:outline-ring"
-          >
-            <LogOut className="size-[18px]" />
-          </button>
         </div>
       </aside>
 
