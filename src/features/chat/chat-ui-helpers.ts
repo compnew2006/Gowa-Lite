@@ -1,4 +1,5 @@
-import type {UnifiedChatTab} from '@/api/types';
+import type {LanguagePreference, UnifiedChatTab} from '@/api/types';
+import {formatNumber} from '@/lib/format';
 
 export function formatSecondaryChatPhone(displayName: string, phone: string): string | null {
   const cleanPhone = phone.trim();
@@ -44,7 +45,7 @@ export function shouldShowNavUnreadBadge(
   return !isOnChatsRoute && totalUnread > 0;
 }
 
-export function formatNavUnreadCount(totalUnread: number): string {
+export function formatNavUnreadCount(totalUnread: number, lang?: LanguagePreference): string {
   if (!Number.isFinite(totalUnread) || totalUnread <= 0) return '0';
-  return String(Math.floor(totalUnread));
+  return formatNumber(Math.floor(totalUnread), lang);
 }

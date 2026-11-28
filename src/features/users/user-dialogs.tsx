@@ -1,4 +1,4 @@
-import {useMemo, useState, type FormEvent} from 'react';
+import {useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {Loader2, Star} from 'lucide-react';
 import {toast} from 'sonner';
@@ -12,7 +12,7 @@ import {Skeleton} from '@/components/ui/skeleton';
 import {Switch} from '@/components/ui/switch';
 import {DeviceAccessSelector} from '@/features/users/device-access-selector';
 import {validateDeviceAccessSelection, type DeviceAccessMode} from '@/features/users/device-access-helpers';
-import {formatDate} from '@/lib/format';
+import {formatDate, formatNumber} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 
@@ -498,11 +498,6 @@ function UserRatingsDialog({ratingsUser, accountNameMap, onClose}: {
     queryFn: () => getUserRatings(ratingsUser.id),
   });
 
-  const formatScoreNumber = useMemo(
-    () => new Intl.NumberFormat(lang, {maximumFractionDigits: 1}),
-    [lang],
-  );
-
   return (
     <Dialog
       open
@@ -528,13 +523,13 @@ function UserRatingsDialog({ratingsUser, accountNameMap, onClose}: {
               <dd className="mt-1 text-lg font-semibold tabular-nums">
                 {userRatingDetailQuery.data.average === null
                   ? '—'
-                  : formatScoreNumber.format(userRatingDetailQuery.data.average)}
+                  : formatNumber(userRatingDetailQuery.data.average, lang, {maximumFractionDigits: 1})}
               </dd>
             </div>
             <div>
               <dt className="text-xs text-muted-foreground">{t.users.ratingsTotalLabel}</dt>
               <dd className="mt-1 text-lg font-semibold tabular-nums">
-                {formatScoreNumber.format(userRatingDetailQuery.data.count)}
+                {formatNumber(userRatingDetailQuery.data.count, lang, {maximumFractionDigits: 1})}
               </dd>
             </div>
           </dl>
@@ -561,7 +556,7 @@ function UserRatingsDialog({ratingsUser, accountNameMap, onClose}: {
                     <span className="inline-flex shrink-0 items-center gap-1 font-medium tabular-nums">
                       <Star className="size-3.5 text-primary" aria-hidden />
                       <bdi>
-                        {formatScoreNumber.format(acc.average)} / {formatScoreNumber.format(5)}
+                        {formatNumber(acc.average, lang, {maximumFractionDigits: 1})} / {formatNumber(5, lang, {maximumFractionDigits: 1})}
                       </bdi>
                     </span>
                   </li>
@@ -597,7 +592,7 @@ function UserRatingsDialog({ratingsUser, accountNameMap, onClose}: {
                     <span className="inline-flex shrink-0 items-center gap-1 font-medium tabular-nums">
                       <Star className="size-3.5 text-primary" aria-hidden />
                       <bdi>
-                        {formatScoreNumber.format(rating.score)} / {formatScoreNumber.format(5)}
+                        {formatNumber(rating.score, lang, {maximumFractionDigits: 1})} / {formatNumber(5, lang, {maximumFractionDigits: 1})}
                       </bdi>
                     </span>
                   </li>

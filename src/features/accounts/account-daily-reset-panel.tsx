@@ -12,7 +12,7 @@ import {Label} from '@/components/ui/label';
 import {Skeleton} from '@/components/ui/skeleton';
 import {Switch} from '@/components/ui/switch';
 import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
-import {formatDate} from '@/lib/format';
+import {formatDate, formatNumber} from '@/lib/format';
 import {chatLifecycleQueryKeys} from '@/features/chat/message-query-keys';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -38,7 +38,7 @@ const COMMON_TIMEZONES = [
 function formatHourOption(hour: number, lang: 'ar' | 'en'): string {
   const padded = String(hour).padStart(2, '0');
   const sampleDate = new Date(Date.UTC(2026, 0, 1, hour, 0, 0));
-  const localized12 = new Intl.DateTimeFormat(lang === 'ar' ? 'ar-SA' : 'en-US', {
+  const localized12 = new Intl.DateTimeFormat(lang === 'ar' ? 'ar-SA-u-nu-latn' : 'en-US', {
     timeZone: 'UTC',
     hour: 'numeric',
     minute: '2-digit',
@@ -130,8 +130,6 @@ export function AccountDailyResetPanel({
         data.reset_hour !== resetHour ||
         data.timezone !== timezone),
   );
-  const numberFormatter = useMemo(() => new Intl.NumberFormat(lang), [lang]);
-
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
     if (!canWrite || saveMutation.isPending) return;
@@ -229,7 +227,7 @@ export function AccountDailyResetPanel({
             <div>
               <dt className="text-xs text-muted-foreground">{copy.lastResetCountLabel}</dt>
               <dd className="mt-1 text-sm font-semibold text-foreground tabular-nums">
-                {data.last_run_at ? numberFormatter.format(data.last_reset_count) : '—'}
+                {data.last_run_at ? formatNumber(data.last_reset_count, lang) : '—'}
               </dd>
             </div>
           </dl>

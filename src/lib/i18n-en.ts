@@ -1,4 +1,5 @@
 import type {DeviceState} from '@/api/types';
+import {formatNumber} from '@/lib/format';
 import {bootingLabels, type AppTranslations} from '@/lib/i18n';
 
 const en: AppTranslations = {
@@ -1007,7 +1008,7 @@ const en: AppTranslations = {
     viewStatusMedia: 'Load & Preview Media',
     textStatusLabel: 'Text status',
     accountsOverviewConnected: (online: number, total: number) => `${online} of ${total} online`,
-    subscribersCount: (count: number) => `${count.toLocaleString()} followers`,
+    subscribersCount: (count: number) => `${formatNumber(count, 'en')} followers`,
     unfollow: 'Unfollow',
     follow: 'Follow',
     followedToast: 'Channel followed',
@@ -1025,7 +1026,7 @@ const en: AppTranslations = {
     liveToggleLabel: 'Live Updates',
     loadOlderPosts: 'Load Older Posts',
     noPosts: 'No posts available for this channel.',
-    viewsLabel: (count: number) => `${count.toLocaleString()} views`,
+    viewsLabel: (count: number) => `${formatNumber(count, 'en')} views`,
     downloadAttachment: 'Download Media',
     directoryViewLabel: 'Feed View',
     viewRecommended: 'Recommended',

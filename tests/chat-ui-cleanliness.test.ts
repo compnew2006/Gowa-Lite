@@ -47,7 +47,8 @@ describe('Chats Screen Decluttering & Unread Hygiene', () => {
     assert.equal(formatNavUnreadCount(0), '0');
     assert.equal(formatNavUnreadCount(7), '7');
     assert.equal(formatNavUnreadCount(150), '150');
-    assert.equal(formatNavUnreadCount(1240), '1240');
+    // P1-7: counts route through formatNumber, so thousands group (was '1240').
+    assert.equal(formatNavUnreadCount(1240), '1,240');
   });
 
   it('keeps ChatList and AppShell free of redundant global unread widgets and 99+ caps, and shows unread badges on /chats and /groups', () => {

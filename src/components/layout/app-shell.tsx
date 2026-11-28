@@ -50,7 +50,7 @@ export function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
-  const {t} = useI18n();
+  const {lang, t} = useI18n();
   const user = useAuthStore((s) => s.user);
   const theme = useAuthStore((s) => s.theme);
   const setThemeLocal = useAuthStore((s) => s.setThemeLocal);
@@ -396,7 +396,7 @@ export function AppShell() {
                     aria-label={t.chats.unreadLabel(badgeCount)}
                     className="absolute -end-1.5 -top-1 inline-flex h-4 min-w-4 max-w-[44px] items-center justify-center rounded-full bg-live px-1 text-[10px] font-bold leading-none text-white tabular-nums ring-2 ring-rail"
                   >
-                    {formatNavUnreadCount(badgeCount)}
+                    {formatNavUnreadCount(badgeCount, lang)}
                   </span>
                 )}
               </NavLink>
@@ -501,7 +501,7 @@ export function AppShell() {
                     if (!shouldShowNavUnreadBadge(isRouteActive, badgeCount)) return null;
                     return (
                       <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-live px-1.5 text-[11px] font-semibold text-white tabular-nums">
-                        {formatNavUnreadCount(badgeCount)}
+                        {formatNavUnreadCount(badgeCount, lang)}
                       </span>
                     );
                   })()}
