@@ -16,11 +16,28 @@ import {expandWsBatchFrame} from '../src/lib/events.ts';
  * the message list straight from that frame (extractWsIncomingMessage) —
  * so a wrong gateway flag still rendered the wrong "أنت" / sender label
  * live until the next refetch. These tests pin the relay rewrite.
+ *
+ * HERMETIC: this file must never talk to a real gateway. dotenv in
+ * server/db/connection.ts loads the repo .env at import time, and on the VPS
+ * the live .env's GOWA_URL made the bridge's constructor + 15s reconcile
+ * fetch the real /devices list and wipe the seeded fake device (failure
+ * #63, 3 own-sender tests failing). Two guards close that hole:
+ *   (a) GOWA_URL is forced to '' at module top, before any server module
+ *       is imported — dotenv never overwrites an already-set variable, so
+ *       no live URL can leak in through .env or the ambient environment;
+ *   (b) every bridge here is built with {disableReconcile: true}, so even
+ *       a configured URL can never trigger a /devices fetch that replaces
+ *       the seeded upstreamDevices. The last test pins (b) against a fake
+ *       gateway returning a different JID for dev-1.
  */
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gowa-lite-is-from-me-relay-'));
 const tempDbPath = path.join(tempDir, 'is-from-me-relay.db');
 process.env.GOWA_LITE_DB_PATH = tempDbPath;
 delete process.env.GOWA_SETTINGS_SECRET;
+// Hermetic guard (a): see the header comment. Set — never delete — so the
+// dotenv.config() in server/db/connection.ts cannot fill it from a live .env.
+const prevGowaUrl = process.env.GOWA_URL;
+process.env.GOWA_URL = '';
 
 type DbModule = typeof import('../server/db.ts');
 type WsBridgeModule = typeof import('../server/ws-bridge.ts');
@@ -87,7 +104,10 @@ async function setupBridge() {
     res.end();
   });
   await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
-  const bridge = new wsBridgeMod.GowaWsBridge(server);
+  // Hermetic guard (b): this bridge must never reconcile /devices — the
+  // seeded upstreamDevices below is the test's own state, and any fetch
+  // (live .env, ambient GOWA_URL) would replace it with real devices.
+  const bridge = new wsBridgeMod.GowaWsBridge(server, {disableReconcile: true});
   // Seed the reconciled /devices list so getDeviceOwnJid('dev-1') resolves.
   // (private field — test-only seam; production fills it from /devices.)
   (bridge as unknown as {upstreamDevices: unknown[]}).upstreamDevices = [
@@ -157,6 +177,8 @@ after(() => {
     // ignore
   }
   fs.rmSync(tempDir, {recursive: true, force: true});
+  if (prevGowaUrl === undefined) delete process.env.GOWA_URL;
+  else process.env.GOWA_URL = prevGowaUrl;
 });
 
 describe('P1-18: WS relay broadcasts the derived is_from_me flag', () => {
@@ -250,6 +272,90 @@ describe('P1-18: WS relay broadcasts the derived is_from_me flag', () => {
       assert.equal((relayed.result as Record<string, unknown>).is_from_me, false);
     } finally {
       await ctx.teardown();
+    }
+  });
+
+  it('reconcile can never wipe the seeded device, even with a live-looking GOWA_URL', async () => {
+    // Regression test for VPS failure #63: a gateway returning a DIFFERENT
+    // jid for dev-1 must not change what the relay derives. First the
+    // control — an unguarded bridge seeded the same way DOES get wiped by
+    // reconcileUpstreams() (this is the VPS failure mode, reproduced here
+    // against a fake gateway, never a live one). Then the guarded bridge
+    // used by every test in this file survives the same reconcile and the
+    // same GOWA_URL, and still derives is_from_me true for the own sender.
+    const FOREIGN_OWN_JID = '966599999999@s.whatsapp.net';
+    const fakePort = await getFreePort();
+    const fakeGowa = http.createServer((req, res) => {
+      if (req.url === '/devices' || req.url?.startsWith('/devices?')) {
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({
+          code: 'OK',
+          message: '',
+          results: [{id: 'dev-1', jid: FOREIGN_OWN_JID, state: 'logged_in', created_at: '2026-11-28T00:00:00Z'}],
+        }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => fakeGowa.listen(fakePort, '127.0.0.1', resolve));
+    const seed = [{id: 'dev-1', jid: OWN_JID, state: 'logged_in', created_at: '2026-11-28T00:00:00Z'}];
+    process.env.GOWA_URL = `http://127.0.0.1:${fakePort}`;
+    try {
+      // Control: no guard — reconcile fetches the fake /devices and wipes the seed.
+      const controlPort = await getFreePort();
+      const controlServer = http.createServer((_req, res) => {
+        res.writeHead(404);
+        res.end();
+      });
+      await new Promise<void>((resolve) => controlServer.listen(controlPort, '127.0.0.1', resolve));
+      const control = new wsBridgeMod.GowaWsBridge(controlServer);
+      try {
+        (control as unknown as {upstreamDevices: unknown[]}).upstreamDevices = [...seed];
+        await control.reconcileUpstreams();
+        assert.equal(
+          control.getDeviceOwnJid('dev-1'),
+          FOREIGN_OWN_JID,
+          'control: without the guard, reconcile replaces the seeded device',
+        );
+      } finally {
+        control.shutdown();
+        await new Promise<void>((resolve) => controlServer.close(() => resolve()));
+      }
+
+      // Guarded: same GOWA_URL, same reconcile — the seed must survive.
+      const guardedPort = await getFreePort();
+      const guardedServer = http.createServer((_req, res) => {
+        res.writeHead(404);
+        res.end();
+      });
+      await new Promise<void>((resolve) => guardedServer.listen(guardedPort, '127.0.0.1', resolve));
+      const guarded = new wsBridgeMod.GowaWsBridge(guardedServer, {disableReconcile: true});
+      try {
+        (guarded as unknown as {upstreamDevices: unknown[]}).upstreamDevices = [...seed];
+        await guarded.reconcileUpstreams();
+        assert.equal(
+          guarded.getDeviceOwnJid('dev-1'),
+          OWN_JID,
+          'guarded: reconcile must leave the seeded device untouched',
+        );
+      } finally {
+        guarded.shutdown();
+        await new Promise<void>((resolve) => guardedServer.close(() => resolve()));
+      }
+
+      // End to end through the guarded bridge this file actually uses:
+      // the own-sender relay still derives true with GOWA_URL set.
+      const ctx = await setupBridge();
+      try {
+        const result = await relayAndReadResult(ctx, messageEvent('dev-1', 'm-relay-hermetic', OWN_JID, undefined));
+        assert.equal(result.is_from_me, true);
+      } finally {
+        await ctx.teardown();
+      }
+    } finally {
+      process.env.GOWA_URL = '';
+      await new Promise<void>((resolve) => fakeGowa.close(() => resolve()));
     }
   });
 });
