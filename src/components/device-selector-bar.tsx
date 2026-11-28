@@ -10,6 +10,24 @@ import {readSavedActiveDeviceId, saveActiveDeviceId} from '@/lib/active-device';
 import {useI18n} from '@/lib/i18n';
 import {toApiError} from '@/lib/http';
 
+/**
+ * P2-6: the one shared devices query. Every page that needs the device
+ * list (chats, scheduled, accounts, account, misc, schedule dialogs)
+ * subscribes to this `['devices']` key instead of issuing its own fetch,
+ * so all of them see the same list from the same fetch. `refetchInterval`
+ * is only used by the accounts page's live polling.
+ */
+export function useDevicesQuery(options?: {refetchInterval?: number}) {
+  return useQuery({
+    queryKey: ['devices'],
+    queryFn: listDevices,
+    retry: 1,
+    ...(options?.refetchInterval !== undefined
+      ? {refetchInterval: options.refetchInterval}
+      : {}),
+  });
+}
+
 export function useActiveDevice(preferredDeviceId?: string) {
   // P1-8: the last explicitly (or automatically) selected device is
   // restored from localStorage on navigation instead of always resetting
@@ -31,11 +49,7 @@ export function useActiveDevice(preferredDeviceId?: string) {
     isFetching,
     error,
     refetch,
-  } = useQuery({
-    queryKey: ['devices'],
-    queryFn: listDevices,
-    retry: 1,
-  });
+  } = useDevicesQuery();
 
   useEffect(() => {
     if (selectedDeviceId) saveActiveDeviceId(selectedDeviceId);

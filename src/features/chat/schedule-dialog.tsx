@@ -1,15 +1,15 @@
 import {useEffect, useState, type FormEvent} from 'react';
-import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
+import {useMutation, useQueryClient} from '@tanstack/react-query';
 import {useNavigate} from 'react-router-dom';
 import {CalendarClock, Loader2, Paperclip} from 'lucide-react';
 import {toast} from 'sonner';
 import {
   createUnifiedChatSchedule,
   createUnifiedChatScheduleWithMedia,
-  listDevices,
 } from '@/api/client';
 import type {ScheduleRecurrence, UnifiedChat} from '@/api/types';
 import {Button} from '@/components/ui/button';
+import {useDevicesQuery} from '@/components/device-selector-bar';
 import {Dialog} from '@/components/ui/dialog';
 import {ScheduleRecurrenceFields} from '@/features/schedules/schedule-recurrence-fields';
 import {
@@ -53,14 +53,10 @@ export function ScheduleMessageDialog({
   const navigate = useNavigate();
 
   // The sending account is the open chat's device. Look it up by exact id in
-  // the shared devices list (same query key the device selector bar uses);
-  // never fall back to another device — a wrong account here would send the
-  // message from an account the operator did not intend.
-  const devicesQuery = useQuery({
-    queryKey: ['devices'],
-    queryFn: listDevices,
-    retry: 1,
-  });
+  // the shared devices list (P2-6: the same ['devices'] query the device
+  // selector bar uses); never fall back to another device — a wrong account
+  // here would send the message from an account the operator did not intend.
+  const devicesQuery = useDevicesQuery();
   const accountDevice =
     (devicesQuery.data ?? []).find((d) => d.id === chat.device_id) ?? null;
 
@@ -75,6 +71,9 @@ export function ScheduleMessageDialog({
   const [dayOfMonth, setDayOfMonth] = useState('1');
   const [occurrenceLimit, setOccurrenceLimit] = useState('');
   const [endAtLocal, setEndAtLocal] = useState('');
+  // P2-4: a pending invalid free-text date blocks submitting (the field
+  // reports it via onFreeTextErrorChange).
+  const [freeTextError, setFreeTextError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -86,10 +85,16 @@ export function ScheduleMessageDialog({
     setDayOfMonth('1');
     setOccurrenceLimit('');
     setEndAtLocal('');
+    setFreeTextError(null);
   }, [open, initialMessage, initialAttachment]);
 
   const createMutation = useMutation({
     mutationFn: () => {
+      // P2-4: an unparsed free-text date must not be sent — the picker's
+      // previous value is not what the operator typed.
+      if (freeTextError) {
+        throw new ScheduleValidationError(freeTextError);
+      }
       const fields = validateAndBuildScheduleFields(
         {
           message,
@@ -223,6 +228,7 @@ export function ScheduleMessageDialog({
           onOccurrenceLimitChange={setOccurrenceLimit}
           endAtLocal={endAtLocal}
           onEndAtChange={setEndAtLocal}
+          onFreeTextErrorChange={setFreeTextError}
         />
 
         <ScheduleConfirmationSummary

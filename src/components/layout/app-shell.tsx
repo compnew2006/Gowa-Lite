@@ -2,6 +2,8 @@ import {useEffect, useEffectEvent, useRef, useState} from 'react';
 import {useQuery, useQueryClient} from '@tanstack/react-query';
 import {
   CalendarClock,
+  ChevronLeft,
+  ChevronRight,
   LogOut,
   Menu,
   MessagesSquare,
@@ -33,6 +35,7 @@ import {formatNavUnreadCount, shouldShowNavUnreadBadge} from '@/features/chat/ch
 import {createUnifiedChatsQueryOptions} from '@/features/chat/inbox-queries';
 import {onWsBatch, type WsEvent} from '@/lib/events';
 import {syncLiveQueryBatch, syncLiveQueryCache} from '@/lib/live-query-sync';
+import {readNavRailExpanded, writeNavRailExpanded} from '@/lib/nav-rail';
 import {useI18n} from '@/lib/i18n';
 import {
   extractIncomingAlertData,
@@ -58,6 +61,16 @@ export function AppShell() {
   const soundEnabled = useNotificationPrefsStore((s) => s.soundEnabled);
   const browserEnabled = useNotificationPrefsStore((s) => s.browserEnabled);
   const [mobileOpen, setMobileOpen] = useState(false);
+  // P2-3 (decision 16): the desktop rail is collapsible and defaults to
+  // collapsed (62px, icons only, as before); the choice persists.
+  const [railExpanded, setRailExpanded] = useState<boolean>(() => readNavRailExpanded());
+  const isRtl = lang === 'ar';
+  const ExpandRailIcon = isRtl ? ChevronLeft : ChevronRight;
+  const CollapseRailIcon = isRtl ? ChevronRight : ChevronLeft;
+
+  useEffect(() => {
+    writeNavRailExpanded(railExpanded);
+  }, [railExpanded]);
   const notifiedIdsRef = useRef<Set<string>>(new Set());
   const lifecycleMapRef = useRef<Map<string, Pick<ChatAssignmentSummary, 'status' | 'assigned_user_id'>>>(
     new Map(),
@@ -355,13 +368,17 @@ export function AppShell() {
 
   return (
     <div className="flex h-svh overflow-hidden bg-background text-foreground">
-      {/* Desktop WhatsApp Slim Icon Rail */}
+      {/* Desktop WhatsApp Slim Icon Rail — P2-3: collapsible; collapsed is
+          the 62px icon rail as before, expanded is ~w-60 with labels. */}
       <aside
         aria-label={t.nav.ariaLabel}
-        className="hidden w-[62px] shrink-0 flex-col items-center justify-between border-e border-border bg-rail py-3 md:flex"
+        className={cn(
+          'hidden shrink-0 flex-col justify-between border-e border-border bg-rail py-3 md:flex',
+          railExpanded ? 'w-60 items-stretch px-2' : 'w-[62px] items-center',
+        )}
       >
         {/* Top Icon Group */}
-        <div className="flex flex-col items-center gap-1.5">
+        <div className={cn('flex flex-col gap-1.5', railExpanded ? 'items-stretch' : 'items-center')}>
           {visiblePrimary.map(({to, label, icon: Icon}) => {
             const isChats = to === '/chats';
             const isGroups = to === '/groups';
@@ -383,22 +400,34 @@ export function AppShell() {
                 aria-label={label}
                 className={({isActive}) =>
                   cn(
-                    'relative flex size-10 items-center justify-center rounded-full transition-colors',
+                    'relative flex items-center transition-colors',
+                    railExpanded
+                      ? 'h-10 w-full gap-3 rounded-lg px-3'
+                      : 'size-10 justify-center rounded-full',
                     isActive
                       ? 'bg-black/[0.07] text-foreground dark:bg-secondary'
                       : 'text-muted-foreground hover:bg-black/[0.04] hover:text-foreground dark:hover:bg-secondary/70',
                   )
                 }
               >
-                <Icon className="size-5" />
-                {showUnreadBadge && (
-                  <span
-                    aria-label={t.chats.unreadLabel(badgeCount)}
-                    className="absolute -end-1.5 -top-1 inline-flex h-4 min-w-4 max-w-[44px] items-center justify-center rounded-full bg-live px-1 text-[10px] font-bold leading-none text-white tabular-nums ring-2 ring-rail"
-                  >
-                    {formatNavUnreadCount(badgeCount, lang)}
-                  </span>
-                )}
+                <Icon className="size-5 shrink-0" />
+                {railExpanded && <span className="min-w-0 flex-1 truncate text-sm font-medium">{label}</span>}
+                {showUnreadBadge &&
+                  (railExpanded ? (
+                    <span
+                      aria-label={t.chats.unreadLabel(badgeCount)}
+                      className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-live px-1.5 text-[11px] font-bold leading-none text-white tabular-nums"
+                    >
+                      {formatNavUnreadCount(badgeCount, lang)}
+                    </span>
+                  ) : (
+                    <span
+                      aria-label={t.chats.unreadLabel(badgeCount)}
+                      className="absolute -end-1.5 -top-1 inline-flex h-4 min-w-4 max-w-[44px] items-center justify-center rounded-full bg-live px-1 text-[10px] font-bold leading-none text-white tabular-nums ring-2 ring-rail"
+                    >
+                      {formatNavUnreadCount(badgeCount, lang)}
+                    </span>
+                  ))}
               </NavLink>
             );
           })}
@@ -406,6 +435,17 @@ export function AppShell() {
 
         {/* Bottom Utility & Profile Rail Group */}
         <div className="flex flex-col items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setRailExpanded((prev) => !prev)}
+            title={railExpanded ? t.nav.collapseSidebar : t.nav.expandSidebar}
+            aria-label={railExpanded ? t.nav.collapseSidebar : t.nav.expandSidebar}
+            aria-expanded={railExpanded}
+            className="flex size-10 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            {railExpanded ? <CollapseRailIcon className="size-5" /> : <ExpandRailIcon className="size-5" />}
+          </button>
+
           <NotificationControls />
 
           <LanguageToggle compact />

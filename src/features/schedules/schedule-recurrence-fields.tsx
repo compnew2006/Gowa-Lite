@@ -1,3 +1,4 @@
+import {useState} from 'react';
 import type {ScheduleRecurrence} from '@/api/types';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
@@ -5,6 +6,8 @@ import {
   applySchedulePreset,
   formatPresetDateTimeLocal,
   minScheduleDateTimeLocal,
+  parseFreeTextDateTimeLocal,
+  validateScheduleFutureMs,
   type SchedulePreset,
 } from '@/features/schedules/schedule-utils';
 import {useI18n} from '@/lib/i18n';
@@ -26,6 +29,7 @@ export function ScheduleRecurrenceFields({
   onOccurrenceLimitChange,
   endAtLocal,
   onEndAtChange,
+  onFreeTextErrorChange,
 }: {
   idPrefix: string;
   scheduledAtLocal: string;
@@ -42,9 +46,72 @@ export function ScheduleRecurrenceFields({
   onOccurrenceLimitChange: (value: string) => void;
   endAtLocal: string;
   onEndAtChange: (value: string) => void;
+  // P2-4: reports the free-text field's validity to the parent form so a
+  // pending invalid date blocks submitting (the picker alone cannot see
+  // the unparsed text). Called with the error message while invalid, and
+  // with null once the text is applied or cleared.
+  onFreeTextErrorChange?: (error: string | null) => void;
 }) {
   const {t} = useI18n();
   const minLocal = minScheduleDateTimeLocal();
+
+  // P2-4: free-text date next to the picker — type or paste a full date
+  // ("2030-01-15 14:30", "15/01/2030 14:30") and it fills the picker.
+  const [freeText, setFreeText] = useState('');
+  const [freeTextError, setFreeTextError] = useState<string | null>(null);
+
+  // Resolves the current text: null when it parses to a future date (and
+  // the picker was updated), otherwise the error message to show/report.
+  const resolveFreeText = (raw: string): string | null => {
+    const parsed = parseFreeTextDateTimeLocal(raw);
+    if (!parsed) return t.scheduled.freeTextDateInvalid;
+    try {
+      validateScheduleFutureMs(parsed);
+    } catch {
+      return t.chats.schedulePastError;
+    }
+    onScheduledAtChange(parsed);
+    return null;
+  };
+
+  const handleFreeTextChange = (value: string) => {
+    setFreeText(value);
+    if (!value.trim()) {
+      setFreeTextError(null);
+      onFreeTextErrorChange?.(null);
+      return;
+    }
+    // Live-apply as soon as the text parses: a pasted full date fills the
+    // picker immediately, so paste-then-submit works without a blur. While
+    // the text does not parse yet (still typing, or invalid) no inline
+    // error is shown — but the parent is told there is pending text so the
+    // form cannot submit it as-is.
+    const error = resolveFreeText(value);
+    if (error === null) {
+      setFreeTextError(null);
+      onFreeTextErrorChange?.(null);
+    } else if (parseFreeTextDateTimeLocal(value) !== null) {
+      // Parses but is in the past: that error is final, show it now.
+      setFreeTextError(error);
+      onFreeTextErrorChange?.(error);
+    } else {
+      onFreeTextErrorChange?.(t.scheduled.freeTextDateInvalid);
+    }
+  };
+
+  const commitFreeText = () => {
+    if (!freeText.trim()) return;
+    const error = resolveFreeText(freeText);
+    if (error) {
+      setFreeTextError(error);
+      onFreeTextErrorChange?.(error);
+      return;
+    }
+    // Applied: the picker now shows the date, the draft text goes away.
+    setFreeText('');
+    setFreeTextError(null);
+    onFreeTextErrorChange?.(null);
+  };
 
   const toggleWeekday = (dayIndex: number) => {
     onWeekdaysChange(
@@ -78,6 +145,44 @@ export function ScheduleRecurrenceFields({
               onChange={(e) => onScheduledAtChange(e.target.value)}
               required
             />
+            {/* P2-4: free-text date beside the picker — type or paste a full
+                date; it fills the picker above. A failed parse shows a
+                validation error and blocks submitting (via
+                onFreeTextErrorChange); the picker keeps its previous value. */}
+            <Label htmlFor={`${idPrefix}-at-text`} className="mt-3 inline-block">
+              {t.scheduled.freeTextDateLabel}
+            </Label>
+            <Input
+              id={`${idPrefix}-at-text`}
+              dir="ltr"
+              className="mt-1.5 tabular-nums"
+              value={freeText}
+              onChange={(e) => handleFreeTextChange(e.target.value)}
+              onBlur={commitFreeText}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  commitFreeText();
+                }
+              }}
+              placeholder={t.scheduled.freeTextDatePlaceholder}
+              aria-invalid={freeTextError !== null}
+              aria-describedby={
+                freeTextError ? `${idPrefix}-at-text-error` : `${idPrefix}-at-text-hint`
+              }
+            />
+            <p id={`${idPrefix}-at-text-hint`} className="mt-1 text-xs text-muted-foreground">
+              {t.scheduled.freeTextDateHint}
+            </p>
+            {freeTextError && (
+              <p
+                id={`${idPrefix}-at-text-error`}
+                role="alert"
+                className="mt-1 text-xs text-destructive"
+              >
+                {freeTextError}
+              </p>
+            )}
           </div>
 
           <div>
