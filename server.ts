@@ -38,7 +38,7 @@ async function startServer(): Promise<void> {
         wsBridge.broadcast(lifecyclePayload);
       }, () => {
         consumed = true;
-      });
+      }, wsBridge.getDeviceOwnJid(deviceId));
       return consumed;
     },
   });

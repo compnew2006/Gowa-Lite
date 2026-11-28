@@ -67,6 +67,44 @@ export function normalizeWhatsAppJid(raw: string): string {
   return '';
 }
 
+/**
+ * The device's own WhatsApp JID, from the gateway's device record.
+ * Prefers the explicit `jid`, then the phone number, then the device id
+ * itself (some deployments use the phone number as the device id).
+ * Returns '' when nothing usable identifies the device.
+ */
+export function resolveDeviceOwnJid(device: {
+  id: string;
+  jid?: string | null;
+  phone_number?: string | null;
+}): string {
+  for (const candidate of [device.jid, device.phone_number, device.id]) {
+    if (!candidate) continue;
+    const normalized = normalizeWhatsAppJid(candidate);
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+/**
+ * Server-side `is_from_me` derivation (P1-18, decision 19): the sender JID
+ * is ground truth — a message is outgoing iff its (normalized) sender JID
+ * equals the device's own JID. The gateway flag is never the sole source,
+ * and an explicit `true` flag is never flipped to `false` (some paths carry
+ * sender_jid 'me' or an empty sender for own messages, e.g. locally cached
+ * sends). A `false` flag loses to the ground-truth sender JID.
+ */
+export function resolveIsFromMe(
+  senderJid: string | undefined | null,
+  deviceOwnJid: string | undefined | null,
+  gatewayFlag?: boolean | null,
+): boolean {
+  if (gatewayFlag === true) return true;
+  const sender = senderJid ? normalizeWhatsAppJid(senderJid) : '';
+  const own = deviceOwnJid ? normalizeWhatsAppJid(deviceOwnJid) : '';
+  return Boolean(sender && own && sender === own);
+}
+
 export function matchesNormalizedSearch(
   haystackParts: Array<string | undefined | null>,
   rawQuery: string,

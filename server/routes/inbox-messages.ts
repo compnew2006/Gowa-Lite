@@ -40,6 +40,7 @@ import {
   normalizeWhatsAppJid,
   resolveGowaMediaTarget,
 } from '../services/chat-sync.ts';
+import {resolveIsFromMe} from '../../shared/whatsapp-identity.ts';
 import {assertChatNotBlocked, assertDeviceConnected} from '../services/gowa-guards.ts';
 import {recordMessageReaction} from '../services/message-reactions.ts';
 import type {AuthedRequest} from '../types.ts';
@@ -167,8 +168,13 @@ export function registerInboxMessageRoutes(router: Router, wsBridge: GowaWsBridg
           },
         });
         // GOWA omits the reactions field when the last reaction is removed.
+        // `is_from_me` is derived on the server from sender_jid == device
+        // JID (decision 19): the gateway omits (or misreports) the flag on
+        // some paths, which made quoted own messages render as incoming.
+        const deviceOwnJid = wsBridge.getDeviceOwnJid(deviceId);
         const snapshot = (data?.data ?? []).map((message) => ({
           ...message,
+          is_from_me: resolveIsFromMe(message.sender_jid, deviceOwnJid, message.is_from_me),
           reactions: message.reactions ?? [],
         }));
         const merged = syncAndMergeChatMessages(deviceId, chatJid, snapshot, {
