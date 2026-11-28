@@ -9,7 +9,7 @@ import {
 } from '../middleware/auth.ts';
 import {hasChatReadPermission, hasDeviceAccess} from '../rbac.ts';
 import {assertChatContentAccess} from '../services/chat-lifecycle.ts';
-import {resolveAndCacheAvatar, resolveChatMediaDownload} from '../services/inbox-media.ts';
+import {resolveAndCacheAvatar, resolveChatMediaDownload, resolveChatMediaThumbnail} from '../services/inbox-media.ts';
 import type {AuthedRequest} from '../types.ts';
 
 export function registerInboxMediaRoutes(router: Router): void {
@@ -47,6 +47,39 @@ export function registerInboxMediaRoutes(router: Router): void {
             proxy_url: buildGowaAssetUrl(GOWA_MEDIA_ROUTE, deviceId, phone, resolved.filePath),
           },
         });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  router.get(
+    '/api/unified/media/thumbnail',
+    requireAuth,
+    requireAnyPermission(['chats:read', 'misc:status.read', 'groups:read']),
+    async (req: AuthedRequest, res) => {
+      const deviceId = typeof req.query.deviceId === 'string' ? req.query.deviceId.trim() : '';
+      const messageId = typeof req.query.messageId === 'string' ? req.query.messageId.trim() : '';
+      const phone = typeof req.query.phone === 'string' ? req.query.phone.trim() : '';
+      if (!deviceId || !messageId || !phone) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: 'معلمات الوسائط غير مكتملة'});
+        return;
+      }
+
+      try {
+        assertDeviceAccess(req.user, deviceId);
+        if (!hasChatReadPermission(req.user!, phone)) {
+          throw new GowaError(403, 'FORBIDDEN', 'ليس لديك صلاحية الوصول إلى هذه الوسائط');
+        }
+        assertChatContentAccess(req.user!, deviceId, phone);
+
+        const thumbnail = await resolveChatMediaThumbnail(deviceId, phone, messageId);
+        res.setHeader('Content-Type', thumbnail.contentType);
+        res.setHeader('Content-Length', String(thumbnail.buffer.byteLength));
+        res.setHeader('Cache-Control', 'private, max-age=300');
+        res.setHeader('X-Thumbnail-Width', String(thumbnail.width));
+        res.setHeader('X-Thumbnail-Height', String(thumbnail.height));
+        res.send(thumbnail.buffer);
       } catch (err) {
         handleRouteError(res, err);
       }

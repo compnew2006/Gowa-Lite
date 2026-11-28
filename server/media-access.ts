@@ -58,7 +58,7 @@ function setCachedAsset(key: string, asset: GowaBinaryAsset): void {
   assetCacheTotalBytes += size;
 }
 
-async function fetchGowaAssetCached(deviceId: string, path: string): Promise<GowaBinaryAsset> {
+export async function fetchGowaAssetCached(deviceId: string, path: string): Promise<GowaBinaryAsset> {
   const cacheKey = `${deviceId}::${path}`;
   const cached = getCachedAsset(cacheKey);
   if (cached) return cached;

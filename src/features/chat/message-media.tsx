@@ -11,7 +11,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import {toast} from 'sonner';
-import {fetchAuthorizedMediaBytes} from '@/api/client';
+import {downloadUnifiedMediaThumbnail, fetchAuthorizedMediaBytes} from '@/api/client';
 import type {MessageInfo} from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
@@ -30,6 +30,7 @@ import {
   normalizeDownloadedMime,
   resolveChatMediaFilename,
   saveBlobSafely,
+  shouldShowThumbnailFirst,
 } from '@/lib/media-download';
 import {useAuthStore} from '@/stores/auth';
 
@@ -87,6 +88,8 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     () => initialCached?.contentType,
   );
   const [blobError, setBlobError] = useState<string | null>(null);
+  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+  const [thumbFailed, setThumbFailed] = useState(false);
   const [streamFallback, setStreamFallback] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(() =>
@@ -109,6 +112,8 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     setBlobUrl(cached?.objectUrl ?? null);
     setBlobContentType(cached?.contentType);
     setBlobError(null);
+    setThumbUrl(null);
+    setThumbFailed(false);
     setStreamFallback(false);
     setImageLoaded(Boolean(cached && isMediaDecoded(messageKey)));
     setDirectDownloading(false);
@@ -141,10 +146,46 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
   const query = useQuery({...mediaQuery, enabled: autoFetch && inView});
   const resolvedPath = query.data?.proxy_url || '';
   const isImage = isImageAttachment(message, query.data?.filename);
+  const showThumbnailFirst =
+    isImage &&
+    !thumbFailed &&
+    shouldShowThumbnailFirst(isImage, message.file_length, query.data?.file_size);
+  const thumbKey = `${messageKey}::thumb`;
+  // Full bytes stay unfetched for large images until the user opens the preview;
+  // the bubble shows the thumbnail meanwhile. Small images and video/audio keep
+  // today's behavior. A cached full copy still wins over the thumbnail.
+  const loadFullNow = !showThumbnailFirst || previewOpen;
   const isStreamable = !isImage && (message.media_type === 'video' || message.media_type === 'audio');
   // When running with cookie auth, stream video/audio directly so HTTP Range (206) starts playback immediately.
   // If Bearer token auth is required or direct tag playback errors, fetch and cache via authorized http client.
   const canStreamDirectly = isStreamable && Boolean(resolvedPath) && !authToken && !streamFallback;
+
+  useEffect(() => {
+    if (!autoFetch || !inView || !showThumbnailFirst) return;
+    const existing = getCachedMedia(thumbKey);
+    if (existing) {
+      setThumbUrl(existing.objectUrl);
+      return;
+    }
+
+    let active = true;
+    void getOrFetchCachedMedia(
+      thumbKey,
+      `/api/unified/media/thumbnail?deviceId=${encodeURIComponent(deviceId)}&messageId=${encodeURIComponent(message.id)}&phone=${encodeURIComponent(message.chat_jid)}`,
+      (_urlPath, signal) => downloadUnifiedMediaThumbnail(deviceId, message.id, message.chat_jid, signal),
+    )
+      .then((entry) => {
+        if (active) setThumbUrl(entry.objectUrl);
+      })
+      .catch(() => {
+        // Fall back to the full image instead of leaving a broken frame.
+        if (active) setThumbFailed(true);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [autoFetch, deviceId, inView, message.chat_jid, message.id, showThumbnailFirst, thumbKey]);
 
   useEffect(() => {
     if (!autoFetch || !resolvedPath) return;
@@ -155,6 +196,7 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
       setBlobError(null);
       return;
     }
+    if (!loadFullNow) return;
     if (canStreamDirectly) return;
 
     let active = true;
@@ -175,7 +217,7 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     return () => {
       active = false;
     };
-  }, [autoFetch, canStreamDirectly, messageKey, resolvedPath]);
+  }, [autoFetch, canStreamDirectly, loadFullNow, messageKey, resolvedPath]);
 
   const handleDirectDownload = async () => {
     if (directDownloading) return;
@@ -215,7 +257,9 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
     }
   };
 
-  const playbackSrc = blobUrl ?? (canStreamDirectly ? resolvedPath : null);
+  const playbackSrc = blobUrl ?? thumbUrl ?? (canStreamDirectly ? resolvedPath : null);
+  // The preview download must always hand over the full file, never the thumbnail.
+  const fullSrc = blobUrl ?? (canStreamDirectly ? resolvedPath : null);
   const isSticker = message.media_type === 'sticker';
   const imageFrameClass = isSticker ? STICKER_FRAME_CLASS : IMAGE_FRAME_CLASS;
 
@@ -377,6 +421,7 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
                 ref={imgRef}
                 src={playbackSrc!}
                 alt={filename}
+                loading="lazy"
                 decoding="async"
                 referrerPolicy="no-referrer"
                 onLoad={(event) => {
@@ -407,19 +452,24 @@ export function MessageMedia({message, deviceId}: {message: MessageInfo; deviceI
           >
             <div className="flex flex-col items-center gap-3">
               <img
-                src={playbackSrc}
+                src={fullSrc ?? playbackSrc}
                 alt={filename}
+                loading="lazy"
                 referrerPolicy="no-referrer"
                 className="max-h-[70vh] w-auto max-w-full rounded-lg border border-border object-contain"
               />
-              <a
-                href={playbackSrc}
-                download={filename}
-                className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium text-foreground hover:bg-muted"
-              >
-                <Download className="size-3.5" />
-                <span>{t.chats.downloadImage}</span>
-              </a>
+              {fullSrc ? (
+                <a
+                  href={fullSrc}
+                  download={filename}
+                  className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium text-foreground hover:bg-muted"
+                >
+                  <Download className="size-3.5" />
+                  <span>{t.chats.downloadImage}</span>
+                </a>
+              ) : (
+                <span className="text-xs text-muted-foreground">{t.chats.loadingMedia(label)}</span>
+              )}
             </div>
           </Dialog>
         )}
