@@ -45,6 +45,23 @@ export function shouldFollowResizeToBottom({
   return stickToBottom && !hasPendingAnchor && !userScrollingUp;
 }
 
+export function shouldAutoLoadMore({
+  lastRenderedIndex,
+  totalCount,
+  hasMore,
+  isLoadingMore,
+  threshold = 3,
+}: {
+  lastRenderedIndex: number;
+  totalCount: number;
+  hasMore: boolean;
+  isLoadingMore: boolean;
+  threshold?: number;
+}): boolean {
+  if (!hasMore || isLoadingMore || totalCount === 0) return false;
+  return lastRenderedIndex >= totalCount - 1 - threshold;
+}
+
 export function computeTimelineScrollAction(params: {
   hasElement: boolean;
   itemCount: number;

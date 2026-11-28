@@ -9,6 +9,7 @@ import {
   type DragEvent,
   type FormEvent,
 } from 'react';
+import {useVirtualizer} from '@tanstack/react-virtual';
 import {
   useMutation,
   useQuery,
@@ -365,6 +366,22 @@ export function MessageView({
       fetchNextPage,
     });
 
+  // Virtualized timeline: only the visible window (+ overscan) is in the DOM.
+  // Bubbles are variable height, so rows are measured live; the existing
+  // timeline scroll hook stays the single owner of scroll decisions
+  // (fetch-older trigger, anchor preservation, stick-to-bottom).
+  const timelineVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: timelineItems.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 96,
+    overscan: 6,
+    gap: 8,
+    getItemKey: (index) => timelineItems[index].key,
+  });
+  const timelineVirtualRows = timelineVirtualizer.getVirtualItems();
+  const timelineItemsRef = useRef(timelineItems);
+  timelineItemsRef.current = timelineItems;
+
   const invalidateLifecycleScope = useCallback(() => {
     void queryClient.invalidateQueries({
       queryKey: chatLifecycleQueryKeys.chat(chat.device_id, chat.jid),
@@ -591,12 +608,21 @@ export function MessageView({
   const handleJumpToMessage = useCallback((messageId: string) => {
     const container = scrollRef.current;
     if (!container) return;
-    const escapedId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(messageId) : messageId;
-    container.querySelector<HTMLElement>(`[data-message-id="${escapedId}"]`)?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'center',
-    });
-  }, []);
+    // The target may be outside the rendered window: scroll the virtualizer
+    // to it first so the row exists, then centre it precisely.
+    const index = timelineItemsRef.current.findIndex(
+      (item) => item.kind === 'message' && item.message.id === messageId,
+    );
+    if (index === -1) return;
+    timelineVirtualizer.scrollToIndex(index, {align: 'center'});
+    window.setTimeout(() => {
+      const escapedId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(messageId) : messageId;
+      container.querySelector<HTMLElement>(`[data-message-id="${escapedId}"]`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    }, 60);
+  }, [timelineVirtualizer]);
 
   const replyTarget = (message: MessageInfo) => {
     const id = repliedToId(message);
@@ -795,7 +821,7 @@ export function MessageView({
               </div>
             )
           ) : (
-            <div ref={timelineContentRef} className="flex flex-col gap-2">
+            <>
               {isFetchingNextPage && (
                 <div className="pointer-events-none sticky top-2 z-10 mx-auto flex h-0 w-full max-w-4xl justify-center overflow-visible px-4 sm:px-8 lg:px-14">
                   <div className="flex items-center gap-2 self-start rounded-full border border-border/70 bg-card/95 px-3 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur-xs">
@@ -805,56 +831,76 @@ export function MessageView({
                 </div>
               )}
 
-              {timelineItems.map((item, index) => {
-                const showDate =
-                  index === 0 || dayKey(item.timestamp) !== dayKey(timelineItems[index - 1].timestamp);
-                return (
-                  <div key={item.key} className="flex flex-col gap-2">
-                    {showDate && (
-                      <div className="mx-auto my-1.5 flex w-full max-w-4xl justify-center px-4 sm:px-8 lg:px-14">
-                        <span className="rounded-lg bg-card/95 px-3 py-1 text-[11px] font-medium text-muted-foreground shadow-2xs">
-                          {formatDay(item.timestamp, lang)}
-                        </span>
-                      </div>
-                    )}
-                    {item.kind === 'lifecycle' ? (
-                      <div className="mx-auto my-0.5 flex w-full max-w-4xl justify-center px-4 sm:px-8 lg:px-14">
-                        <div className="max-w-md rounded-lg border border-border/80 bg-card/90 px-3 py-1 text-center text-[11px] text-muted-foreground shadow-2xs">
-                          <span>{formatLifecycleEventText(item.event, t)}</span>
-                          <span className="ms-1.5 text-[10px] opacity-75 tabular-nums">
-                            {formatShortTime(item.event.created_at, lang)}
+              <div
+                ref={timelineContentRef}
+                style={{height: `${timelineVirtualizer.getTotalSize()}px`, position: 'relative'}}
+                className="w-full"
+              >
+                {timelineVirtualRows.map((virtualRow) => {
+                  const item = timelineItems[virtualRow.index];
+                  const index = virtualRow.index;
+                  const showDate =
+                    index === 0 || dayKey(item.timestamp) !== dayKey(timelineItems[index - 1].timestamp);
+                  return (
+                    <div
+                      key={virtualRow.key}
+                      data-index={virtualRow.index}
+                      ref={timelineVirtualizer.measureElement}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                      className="flex flex-col gap-2"
+                    >
+                      {showDate && (
+                        <div className="mx-auto my-1.5 flex w-full max-w-4xl justify-center px-4 sm:px-8 lg:px-14">
+                          <span className="rounded-lg bg-card/95 px-3 py-1 text-[11px] font-medium text-muted-foreground shadow-2xs">
+                            {formatDay(item.timestamp, lang)}
                           </span>
-                          {item.event.note && (
-                            <p className="mt-0.5 text-[10px] text-foreground/80">
-                              {item.event.note}
-                            </p>
-                          )}
                         </div>
-                      </div>
-                    ) : (
-                      <MessageBubble
-                        message={item.message}
-                        quoted={replyTarget(item.message)}
-                        deviceId={chat.device_id}
-                        isDeviceReady={isDeviceReady}
-                        canReactAndReply={canWriteChats && !isSendingBlocked}
-                        isReactionPickerOpen={reactionPickerMessageId === item.message.id}
-                        onToggleReactionPicker={handleToggleReactionPicker}
-                        onCloseReactionPicker={handleCloseReactionPicker}
-                        onReact={handleReact}
-                        onReply={handleReply}
-                        onForward={canWriteChats ? handleForwardRequest : undefined}
-                        onRevoke={canRevokeChats ? handleRevokeRequest : undefined}
-                        onJumpToMessage={handleJumpToMessage}
-                        selectMode={mediaBatch.selectMode}
-                        isSelected={mediaBatch.selectedIds.has(item.message.id)}
-                        onToggleSelect={mediaBatch.toggleSelectItem}
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                      )}
+                      {item.kind === 'lifecycle' ? (
+                        <div className="mx-auto my-0.5 flex w-full max-w-4xl justify-center px-4 sm:px-8 lg:px-14">
+                          <div className="max-w-md rounded-lg border border-border/80 bg-card/90 px-3 py-1 text-center text-[11px] text-muted-foreground shadow-2xs">
+                            <span>{formatLifecycleEventText(item.event, t)}</span>
+                            <span className="ms-1.5 text-[10px] opacity-75 tabular-nums">
+                              {formatShortTime(item.event.created_at, lang)}
+                            </span>
+                            {item.event.note && (
+                              <p className="mt-0.5 text-[10px] text-foreground/80">
+                                {item.event.note}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <MessageBubble
+                          message={item.message}
+                          quoted={replyTarget(item.message)}
+                          deviceId={chat.device_id}
+                          isDeviceReady={isDeviceReady}
+                          canReactAndReply={canWriteChats && !isSendingBlocked}
+                          isReactionPickerOpen={reactionPickerMessageId === item.message.id}
+                          onToggleReactionPicker={handleToggleReactionPicker}
+                          onCloseReactionPicker={handleCloseReactionPicker}
+                          onReact={handleReact}
+                          onReply={handleReply}
+                          onForward={canWriteChats ? handleForwardRequest : undefined}
+                          onRevoke={canRevokeChats ? handleRevokeRequest : undefined}
+                          onJumpToMessage={handleJumpToMessage}
+                          selectMode={mediaBatch.selectMode}
+                          isSelected={mediaBatch.selectedIds.has(item.message.id)}
+                          onToggleSelect={mediaBatch.toggleSelectItem}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           )}
         </div>
 
