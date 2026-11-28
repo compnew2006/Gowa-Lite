@@ -65,6 +65,7 @@ import {
 } from '@/features/chat/chat-ui-helpers';
 import {shouldAutoLoadMore} from '@/features/chat/scroll-behavior';
 import {BulkActionBar} from '@/features/chat/bulk-action-bar';
+import {BulkAssignDialog} from '@/features/chat/bulk-assign-dialog';
 import {chatDisplayName, formatJidPhone} from '@/features/chat/display-name';
 import type {BulkLifecycleAction} from '@/features/chat/use-inbox-controller';
 import {
@@ -424,6 +425,8 @@ export function ChatList({
   onBulkLifecycle?: (
     action: BulkLifecycleAction,
     selectedChats: UnifiedChat[],
+    // P2-8: explicit assignee + note for bulk assign to another agent.
+    options?: {assignedUserId?: number; note?: string},
   ) => Promise<void>;
   onSelectedDeviceIdsChange: (deviceIds: string[]) => void;
   onSearchChange: (value: string) => void;
@@ -446,6 +449,7 @@ export function ChatList({
   const [archivedOnly, setArchivedOnly] = useState(false);
   const [bulkMode, setBulkMode] = useState(false);
   const [bulkSelectedKeys, setBulkSelectedKeys] = useState<Set<string>>(() => new Set());
+  const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
   const [menuState, setMenuState] = useState<{
     chat: UnifiedChat;
     anchor: {x: number; y: number};
@@ -717,6 +721,21 @@ export function ChatList({
   const handleRunBulk = async (action: BulkLifecycleAction) => {
     if (!onBulkLifecycle || selectedBulkChats.length === 0 || isBulkPending) return;
     await onBulkLifecycle(action, selectedBulkChats);
+    setBulkSelectedKeys(new Set());
+    setBulkMode(false);
+  };
+
+  // P2-8: bulk assign to the agent picked in the dialog. The dialog closes
+  // and the selection clears after the run, like the other bulk actions.
+  const bulkAssignDeviceIds = useMemo(
+    () => [...new Set(selectedBulkChats.map((c) => c.device_id))],
+    [selectedBulkChats],
+  );
+
+  const handleBulkAssignConfirm = async (targetUserId: number, note?: string) => {
+    if (!onBulkLifecycle || selectedBulkChats.length === 0 || isBulkPending) return;
+    await onBulkLifecycle('assign', selectedBulkChats, {assignedUserId: targetUserId, note});
+    setBulkAssignOpen(false);
     setBulkSelectedKeys(new Set());
     setBulkMode(false);
   };
@@ -1044,6 +1063,7 @@ export function ChatList({
             canClose={canClose}
             isBulkPending={isBulkPending}
             onRunBulk={(action) => void handleRunBulk(action)}
+            onOpenBulkAssign={() => setBulkAssignOpen(true)}
             onSelectAllVisible={() =>
               setBulkSelectedKeys(new Set(visibleChats.map((c) => chatUniqueKey(c))))
             }
@@ -1053,6 +1073,16 @@ export function ChatList({
             }}
           />
         )}
+        <BulkAssignDialog
+          open={bulkAssignOpen}
+          onOpenChange={setBulkAssignOpen}
+          deviceIds={bulkAssignDeviceIds}
+          selectedCount={selectedBulkChats.length}
+          currentUserId={user?.id}
+          canViewAll={Boolean(canViewAll)}
+          isPending={Boolean(isBulkPending)}
+          onConfirm={(targetUserId, note) => void handleBulkAssignConfirm(targetUserId, note)}
+        />
       </div>
 
       {/* Chat Rows (virtualized: only the visible window is in the DOM) */}

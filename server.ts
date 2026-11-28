@@ -73,7 +73,7 @@ async function startServer(): Promise<void> {
   app.use(registerDeviceRoutes(wsBridge));
   app.use(registerChatLifecycleRoutes(wsBridge));
   app.use(registerUnifiedInboxRoutes(wsBridge));
-  app.use(registerScheduleRoutes());
+  app.use(registerScheduleRoutes(wsBridge));
   app.use(registerGroupRoutes());
   app.use(registerAccountRoutes(wsBridge));
   app.use(registerMiscRoutes());

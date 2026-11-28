@@ -103,3 +103,15 @@ export async function actionSchedule(
 ): Promise<void> {
   await http.post(`/devices/${enc(deviceId)}/schedules/${enc(scheduleId)}/${action}`);
 }
+
+// P2-9: edit a schedule from the Scheduled page (time, and text for text
+// schedules — text edits take the recreate path server-side).
+export function rescheduleSchedule(
+  deviceId: string,
+  scheduleId: string,
+  payload: {scheduled_at: string; message?: string},
+): Promise<unknown> {
+  return results(
+    http.patch(`/devices/${enc(deviceId)}/schedules/${enc(scheduleId)}`, payload),
+  );
+}

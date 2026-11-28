@@ -364,6 +364,15 @@ const en: AppTranslations = {
     bulkReleaseBtn: 'Release to pending',
     bulkReopenBtn: 'Reopen selected',
     bulkClaimBtn: 'Claim selected',
+    bulkAssignBtn: 'Assign selected',
+    bulkAssignDialogTitle: 'Assign selected to an agent',
+    bulkAssignDialogDesc: (count: number) =>
+      `Select an agent authorized for the selected chats' accounts to handle ${count} conversation(s).`,
+    bulkAssignSubmitBtn: 'Assign selected',
+    bulkAssignAgentsEmpty: 'No active agents are authorized for every selected account.',
+    bulkAssignMultiDeviceHint:
+      'Selected from more than one account — only agents authorized for all accounts are shown.',
+    bulkAssignTransferWarning: 'The selection will move out of your active queue to the selected agent.',
     bulkResultToast: (count: number) => `Updated ${count} conversation(s)`,
     bulkPartialToast: (succeeded: number, total: number) =>
       `Updated ${succeeded} of ${total} conversations`,
@@ -828,6 +837,17 @@ const en: AppTranslations = {
     pausedToast: 'Schedule paused',
     resumedToast: 'Schedule resumed',
     cancelledToast: 'Schedule cancelled',
+    editSchedule: 'Edit schedule',
+    editTitle: 'Edit scheduled message',
+    editDesc: (recipient: string) =>
+      `Change the send time or the message text for \"${recipient}\". Editing the text recreates the schedule and cancels the old one.`,
+    editTimeLabel: 'New send time',
+    editMessageLabel: 'Message text',
+    editMessageHint: 'Text editing is available for text messages only, and recreates the schedule.',
+    editTimeOnlyNote: 'Media messages: time only — the text is part of the attachment and cannot be changed here.',
+    editSubmitBtn: 'Save changes',
+    editedToast: 'Schedule updated',
+    editNoChange: 'Nothing changed to save',
     cancelConfirmTitle: 'Cancel Scheduled Message',
     cancelConfirmDesc: (recipient: string) =>
       `Cancel the scheduled message to "${recipient}"? Future runs will not be sent.`,

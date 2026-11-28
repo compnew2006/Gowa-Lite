@@ -30,27 +30,38 @@ export type BulkLifecycleAction = 'close' | 'release' | 'reopen' | 'assign';
 
 /**
  * Builds the POST /api/unified/chats/bulk-lifecycle payload for the selected
- * chats. P1-5: a bulk claim (`assign`) always targets the current user —
- * assigning the selection to anyone else is P2-8 (phase 5) and is not built
- * here. Fail closed: without a signed-in user id there is no safe assignee
- * (the server would read a missing id as "release to pending"), so throw
- * instead of sending the request.
+ * chats. P1-5: a bulk claim (`assign` without an explicit target) always
+ * targets the current user. P2-8: passing `assignedUserId` assigns the
+ * selection to that agent instead. Fail closed: without a signed-in user id
+ * and no explicit target there is no safe assignee (the server would read a
+ * missing id as "release to pending"), so throw instead of sending the
+ * request.
  */
 export function buildBulkLifecycleRequest(
   action: BulkLifecycleAction,
   selectedChats: UnifiedChat[],
   currentUserId?: number,
+  // P2-8: an explicit assignee for bulk assign to another agent. Defaults
+  // to the current user (bulk claim, P1-5). Fail closed: with no target and
+  // no signed-in user there is no safe assignee (the server would read a
+  // missing id as "release to pending"), so throw instead of sending.
+  assignedUserId?: number,
+  note?: string,
 ): {
   action: BulkLifecycleAction;
   assigned_user_id?: number;
+  note?: string;
   items: Array<{device_id: string; chat_jid: string; cached_title?: string}>;
 } {
-  if (action === 'assign' && currentUserId === undefined) {
+  if (action === 'assign' && assignedUserId === undefined && currentUserId === undefined) {
     throw new Error('Bulk claim requires a signed-in user');
   }
   return {
     action,
-    ...(action === 'assign' ? {assigned_user_id: currentUserId} : {}),
+    ...(action === 'assign'
+      ? {assigned_user_id: assignedUserId ?? currentUserId}
+      : {}),
+    ...(note?.trim() ? {note: note.trim()} : {}),
     items: selectedChats.map((c) => ({
       device_id: c.device_id,
       chat_jid: c.jid,
@@ -100,14 +111,25 @@ export function useInboxController(deviceIds: string[], canViewAll: boolean) {
   const apiErr = query.isError ? toApiError(query.error) : null;
 
   const handleBulkLifecycle = useCallback(
-    async (action: BulkLifecycleAction, selectedChats: UnifiedChat[]) => {
+    async (
+      action: BulkLifecycleAction,
+      selectedChats: UnifiedChat[],
+      // P2-8: explicit assignee (bulk assign to another agent) + note.
+      options?: {assignedUserId?: number; note?: string},
+    ) => {
       setIsBulkPending(true);
       try {
         // The 100-chat-per-batch cap is enforced server-side
         // (bulkChatLifecycle rejects larger batches); the UI sends the
         // selection as-is and surfaces the server's partial results.
         const res = await bulkUnifiedChatsLifecycle(
-          buildBulkLifecycleRequest(action, selectedChats, userId),
+          buildBulkLifecycleRequest(
+            action,
+            selectedChats,
+            userId,
+            options?.assignedUserId,
+            options?.note,
+          ),
         );
         const okCount = res.succeeded.length;
         const failCount = res.failed.length;
