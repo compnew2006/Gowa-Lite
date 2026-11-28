@@ -34,15 +34,20 @@ export function normalizePreviewText(text: string): string {
 const GATEWAY_CALL_TEXT = 'incoming call';
 
 /**
- * Whether this preview source is a call row. The gateway only records
+ * Whether a message is an incoming-call record. The gateway only records
  * incoming calls (media_type "call", never from-me), so the incoming-call
  * label is always the right one — there is no outgoing-call row to tell
  * apart. The raw-text match covers rows cached before media_type was
- * populated.
+ * populated. Shared by the chat-list preview (P2-2a) and the open
+ * conversation view, where a call message must show the localized call
+ * label instead of the gateway's raw English text.
  */
-function isCallPreview(text: string, mediaType: string): boolean {
-  if (mediaType.toLowerCase() === 'call') return true;
-  return text.toLowerCase() === GATEWAY_CALL_TEXT;
+export function isCallMessage(
+  content: string | null | undefined,
+  mediaType: string | null | undefined,
+): boolean {
+  if ((mediaType ?? '').trim().toLowerCase() === 'call') return true;
+  return normalizePreviewText(content ?? '').toLowerCase() === GATEWAY_CALL_TEXT;
 }
 
 export function resolveChatPreview(
@@ -51,7 +56,7 @@ export function resolveChatPreview(
 ): ChatPreview | null {
   const text = normalizePreviewText(chat.last_message_text ?? '');
   const mediaType = (chat.last_message_type ?? '').trim();
-  if (isCallPreview(text, mediaType)) {
+  if (isCallMessage(text, mediaType)) {
     return {kind: 'media', mediaType: 'call', label: mediaLabels.call ?? 'call'};
   }
   if (text) return {kind: 'text', text};

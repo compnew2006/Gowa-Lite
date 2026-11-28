@@ -1,6 +1,6 @@
 import {memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 import {createPortal} from 'react-dom';
-import {Ban, Check, CheckCheck, Copy, Forward, Reply, SmilePlus, Trash2} from 'lucide-react';
+import {Ban, Check, CheckCheck, Copy, Forward, PhoneIncoming, Reply, SmilePlus, Trash2} from 'lucide-react';
 import {toast} from 'sonner';
 import type {MessageInfo} from '@/api/types';
 import {senderDisplayName} from '@/features/chat/display-name';
@@ -16,6 +16,7 @@ import {
   type FloatingPickerPosition,
 } from '@/features/chat/reaction-picker-position';
 import {copyTextWithFallback} from '@/lib/clipboard';
+import {isCallMessage} from '@/lib/chat-preview';
 import {formatDate} from '@/lib/format';
 import {useI18n} from '@/lib/i18n';
 import {isDownloadableMedia} from '@/lib/media-download';
@@ -46,6 +47,9 @@ function QuotedMessagePreview({
   onJumpToMessage: (messageId: string) => void;
 }) {
   const {t} = useI18n();
+  // A quoted call record shows the localized call label, not the gateway's
+  // raw English text (P2-2a, open view).
+  const quotedCallLabel = quoted ? isCallMessage(quoted.content, quoted.media_type) : false;
   return (
     <div
       role={quoted ? 'button' : undefined}
@@ -73,7 +77,9 @@ function QuotedMessagePreview({
             {quoted.is_from_me ? t.you : senderDisplayName(quoted)}
           </p>
           <p className="truncate text-muted-foreground">
-            {quoted.content || quoted.filename || quoted.media_type || t.messageFallback}
+            {quotedCallLabel
+              ? t.chats.mediaLabels.call
+              : quoted.content || quoted.filename || quoted.media_type || t.messageFallback}
           </p>
         </>
       ) : (
@@ -380,6 +386,10 @@ export const MessageBubble = memo(function MessageBubble({
   const isOut = message.is_from_me;
   const isRevoked = Boolean(message.is_revoked);
   const hasMedia = Boolean(message.media_type);
+  // A call record has no text of its own and no media to download: the
+  // gateway's raw "Incoming call" content must never render verbatim
+  // (P2-2a, open view). It shows the localized call label + icon instead.
+  const isCall = isCallMessage(message.content, message.media_type);
   const isSelectable = Boolean(selectMode && isDownloadableMedia(message));
   const copyTarget = resolveCopyTarget(message);
   const [copied, setCopied] = useState(false);
@@ -469,7 +479,12 @@ export const MessageBubble = memo(function MessageBubble({
             </div>
           )}
 
-          {message.content || hasMedia ? (
+          {isCall ? (
+            <div className={cn('flex items-center gap-1.5 text-muted-foreground', isRevoked && 'opacity-70')}>
+              <PhoneIncoming className="size-4 shrink-0" aria-hidden="true" />
+              <span>{t.chats.mediaLabels.call}</span>
+            </div>
+          ) : message.content || hasMedia ? (
             <div className={cn(isRevoked && 'opacity-70')}>
               {message.content && <FormattedText text={message.content} />}
               {hasMedia && <MessageMedia message={message} deviceId={deviceId} />}
