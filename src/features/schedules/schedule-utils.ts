@@ -13,6 +13,17 @@ export function minScheduleDateTimeLocal(nowMs = Date.now()): string {
   return toLocalDateTimeInput(new Date(nowMs + 60_000));
 }
 
+/**
+ * Short display form of a `datetime-local` value ("2026-11-28T09:00" ->
+ * "28/11 09:00"), used to show the computed date beside each quick-preset
+ * button (P1-20). Returns '' for values that do not parse.
+ */
+export function formatPresetDateTimeLocal(localDateTime: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(localDateTime.trim());
+  if (!match) return '';
+  return `${match[3]}/${match[2]} ${match[4]}:${match[5]}`;
+}
+
 export function defaultScheduleDateTimeLocal(minutesAhead = 15, nowMs = Date.now()): string {
   return toLocalDateTimeInput(new Date(nowMs + minutesAhead * 60_000));
 }
@@ -68,7 +79,7 @@ export interface ValidatedSchedulePayloadFields {
 
 export function validateAndBuildScheduleFields(
   fields: ScheduleFormFields,
-  errorMessages: {pastTime: string; invalidEndAt: string},
+  errorMessages: {pastTime: string; invalidEndAt: string; recurrenceEndRequired: string},
   nowMs = Date.now(),
 ): ValidatedSchedulePayloadFields {
   let scheduledMs: number;
@@ -94,6 +105,15 @@ export function validateAndBuildScheduleFields(
     fields.recurrence === 'monthly' && fields.dayOfMonth.trim()
       ? Number(fields.dayOfMonth.trim())
       : undefined;
+
+  // P1-21 (decision 6): a recurrence must end — either an end date or an
+  // occurrence limit is required. A limit that is not a positive integer
+  // does not count. Existing open-ended recurrences are untouched (this
+  // only validates new/edited forms); no default limit is imposed.
+  const hasValidLimit = limitNum !== undefined && Number.isInteger(limitNum) && limitNum > 0;
+  if (fields.recurrence !== 'once' && !isoEndAt && !hasValidLimit) {
+    throw new ScheduleValidationError(errorMessages.recurrenceEndRequired);
+  }
 
   return {
     message: fields.message.trim(),

@@ -3,6 +3,7 @@ import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
 import {
   applySchedulePreset,
+  formatPresetDateTimeLocal,
   minScheduleDateTimeLocal,
   type SchedulePreset,
 } from '@/features/schedules/schedule-utils';
@@ -92,16 +93,21 @@ export function ScheduleRecurrenceFields({
         </div>
 
         <div className="flex flex-wrap gap-1.5 pt-0.5">
-          {presets.map(([presetKey, label]) => (
-            <button
-              key={presetKey}
-              type="button"
-              onClick={() => onScheduledAtChange(applySchedulePreset(presetKey))}
-              className="h-7 cursor-pointer rounded-md border border-border bg-secondary/70 px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-2 focus-visible:outline-ring"
-            >
-              {label}
-            </button>
-          ))}
+          {presets.map(([presetKey, label]) => {
+            // P1-20: show the date the preset computes to, next to its label.
+            const computed = formatPresetDateTimeLocal(applySchedulePreset(presetKey));
+            return (
+              <button
+                key={presetKey}
+                type="button"
+                onClick={() => onScheduledAtChange(applySchedulePreset(presetKey))}
+                className="flex h-7 cursor-pointer items-center gap-1.5 rounded-md border border-border bg-secondary/70 px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-2 focus-visible:outline-ring"
+              >
+                <span>{label}</span>
+                <span className="text-muted-foreground tabular-nums">{computed}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -163,32 +169,35 @@ export function ScheduleRecurrenceFields({
       )}
 
       {recurrence !== 'once' && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <Label htmlFor={`${idPrefix}-limit`}>{t.scheduled.occurrenceLimitLabel}</Label>
-            <Input
-              id={`${idPrefix}-limit`}
-              type="number"
-              min={1}
-              dir="ltr"
-              className="mt-1.5 tabular-nums"
-              value={occurrenceLimit}
-              onChange={(e) => onOccurrenceLimitChange(e.target.value)}
-            />
+        <>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <Label htmlFor={`${idPrefix}-limit`}>{t.scheduled.occurrenceLimitLabel}</Label>
+              <Input
+                id={`${idPrefix}-limit`}
+                type="number"
+                min={1}
+                dir="ltr"
+                className="mt-1.5 tabular-nums"
+                value={occurrenceLimit}
+                onChange={(e) => onOccurrenceLimitChange(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor={`${idPrefix}-end`}>{t.scheduled.endAtLabel}</Label>
+              <Input
+                id={`${idPrefix}-end`}
+                type="datetime-local"
+                dir="ltr"
+                min={scheduledAtLocal || minLocal}
+                className="mt-1.5 tabular-nums"
+                value={endAtLocal}
+                onChange={(e) => onEndAtChange(e.target.value)}
+              />
+            </div>
           </div>
-          <div>
-            <Label htmlFor={`${idPrefix}-end`}>{t.scheduled.endAtLabel}</Label>
-            <Input
-              id={`${idPrefix}-end`}
-              type="datetime-local"
-              dir="ltr"
-              min={scheduledAtLocal || minLocal}
-              className="mt-1.5 tabular-nums"
-              value={endAtLocal}
-              onChange={(e) => onEndAtChange(e.target.value)}
-            />
-          </div>
-        </div>
+          <p className="mt-2 text-xs text-muted-foreground">{t.scheduled.recurrenceEndHint}</p>
+        </>
       )}
     </>
   );

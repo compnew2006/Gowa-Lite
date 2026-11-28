@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
 import {AlertCircle, RefreshCw, Smartphone} from 'lucide-react';
 import {Link} from 'react-router-dom';
@@ -6,11 +6,25 @@ import {listDevices} from '@/api/client';
 import type {RegistryDevice} from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {Skeleton} from '@/components/ui/skeleton';
+import {readSavedActiveDeviceId, saveActiveDeviceId} from '@/lib/active-device';
 import {useI18n} from '@/lib/i18n';
 import {toApiError} from '@/lib/http';
 
 export function useActiveDevice(preferredDeviceId?: string) {
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>(preferredDeviceId ?? '');
+  // P1-8: the last explicitly (or automatically) selected device is
+  // restored from localStorage on navigation instead of always resetting
+  // to the first logged-in device.
+  const [selectedDeviceId, setSelectedDeviceIdState] = useState<string>(() => {
+    if (preferredDeviceId) return preferredDeviceId;
+    return readSavedActiveDeviceId() ?? '';
+  });
+  // A device passed explicitly (URL param / user pick) stays selected even
+  // while offline; a device restored from storage must still be logged in.
+  const userChoseRef = useRef(Boolean(preferredDeviceId));
+  const setSelectedDeviceId = useCallback((id: string) => {
+    userChoseRef.current = true;
+    setSelectedDeviceIdState(id);
+  }, []);
   const {
     data: devices = [],
     isLoading,
@@ -24,23 +38,34 @@ export function useActiveDevice(preferredDeviceId?: string) {
   });
 
   useEffect(() => {
+    if (selectedDeviceId) saveActiveDeviceId(selectedDeviceId);
+  }, [selectedDeviceId]);
+
+  useEffect(() => {
+    if (isLoading) return;
     if (devices.length === 0) {
-      if (selectedDeviceId) setSelectedDeviceId('');
+      if (selectedDeviceId) setSelectedDeviceIdState('');
       return;
     }
-    if (preferredDeviceId && devices.some((d) => d.id === preferredDeviceId) && !selectedDeviceId) {
-      setSelectedDeviceId(preferredDeviceId);
+    if (preferredDeviceId && devices.some((d) => d.id === preferredDeviceId)) {
+      if (selectedDeviceId !== preferredDeviceId) {
+        userChoseRef.current = true;
+        setSelectedDeviceIdState(preferredDeviceId);
+      }
       return;
     }
-    const stillExists = devices.some((d) => d.id === selectedDeviceId);
-    if (!stillExists) {
-      const preferred =
-        (preferredDeviceId ? devices.find((d) => d.id === preferredDeviceId) : undefined) ??
-        devices.find((d) => d.state === 'logged_in') ??
-        devices[0];
-      setSelectedDeviceId(preferred.id);
+    const current = devices.find((d) => d.id === selectedDeviceId);
+    if (current && (userChoseRef.current || current.state === 'logged_in')) return;
+    const saved = readSavedActiveDeviceId();
+    const fallback =
+      (saved ? devices.find((d) => d.id === saved && d.state === 'logged_in') : undefined) ??
+      devices.find((d) => d.state === 'logged_in') ??
+      devices[0];
+    if (fallback && fallback.id !== selectedDeviceId) {
+      userChoseRef.current = false;
+      setSelectedDeviceIdState(fallback.id);
     }
-  }, [devices, preferredDeviceId, selectedDeviceId]);
+  }, [devices, isLoading, preferredDeviceId, selectedDeviceId]);
 
   const selectedDevice: RegistryDevice | null =
     devices.find((d) => d.id === selectedDeviceId) ?? null;
@@ -224,7 +249,7 @@ export function DeviceSelectorBar({
               size="icon"
               onClick={onRefresh}
               disabled={isFetching}
-              title={t.refresh}
+              title={isFetching ? t.deviceSelector.refreshingTitle : t.refresh}
               aria-label={t.refresh}
             >
               <RefreshCw className={`size-4 ${isFetching ? 'animate-spin' : ''}`} />

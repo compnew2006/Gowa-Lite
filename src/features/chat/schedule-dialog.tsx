@@ -91,6 +91,7 @@ export function ScheduleMessageDialog({
             lang === 'ar'
               ? 'تاريخ انتهاء التكرار يجب أن يكون بعد موعد البدء'
               : 'End date must be after scheduled send time',
+          recurrenceEndRequired: t.scheduled.recurrenceEndRequired,
         },
       );
       return createUnifiedChatSchedule(chat.device_id, chat.jid, payload);

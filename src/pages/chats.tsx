@@ -27,6 +27,11 @@ import {
   type OtherAccountRef,
 } from '@/features/chat/other-accounts';
 import {useInboxController} from '@/features/chat/use-inbox-controller';
+import {
+  filterExistingDeviceIds,
+  readSavedChatDeviceIds,
+  saveChatDeviceIds,
+} from '@/lib/active-device';
 import {useI18n} from '@/lib/i18n';
 import {toWhatsAppJid} from '@/lib/phone';
 import {cn} from '@/lib/utils';
@@ -197,7 +202,12 @@ export default function ChatsPage() {
   const lastAppliedParamsRef = useRef<string | null>(null);
 
   const [mode, setMode] = useState<WorkspaceMode>('unified');
-  const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
+  // P1-8: the chat account filter follows the same principle as the active
+  // device — a saved selection survives navigation instead of resetting to
+  // "all accounts". Restored ids are pruned once accounts load (below).
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>(() =>
+    readSavedChatDeviceIds(),
+  );
   const {
     search, setSearch, hasMedia, setHasMedia, activeTab, setActiveTab,
     assignedToFilter, setAssignedToFilter, isBulkPending, selectedKey, chatOpenNonce,
@@ -209,6 +219,21 @@ export default function ChatsPage() {
   const [splitPanes, setSplitPanes] = useState<SplitPaneConfig[]>([]);
 
   const navigate = useNavigate();
+
+  useEffect(() => {
+    saveChatDeviceIds(selectedDeviceIds);
+  }, [selectedDeviceIds]);
+
+  // Drop restored ids whose device no longer exists (e.g. unlinked since
+  // the last visit); an empty saved filter ("all accounts") stays empty.
+  useEffect(() => {
+    if (accounts.length === 0 || selectedDeviceIds.length === 0) return;
+    const pruned = filterExistingDeviceIds(
+      selectedDeviceIds,
+      accounts.map((a) => a.id),
+    );
+    if (pruned.length !== selectedDeviceIds.length) setSelectedDeviceIds(pruned);
+  }, [accounts, selectedDeviceIds]);
 
   useEffect(() => {
     if (lastAppliedParamsRef.current === searchParamsKey) return;

@@ -749,6 +749,7 @@ const ar = {
     offlineNotice: 'الحساب المحدد غير متصل حاليًا؛ قد تفشل العمليات الحية حتى إعادة الربط.',
     stateLoggedIn: 'متصل',
     stateOffline: 'غير متصل',
+    refreshingTitle: 'جارٍ تحديث قائمة الحسابات…',
   },
 
   scheduled: {
@@ -807,6 +808,8 @@ const ar = {
     dayOfMonthLabel: 'يوم الشهر (1-31)',
     occurrenceLimitLabel: 'حد التكرارات (اختياري)',
     endAtLabel: 'تاريخ الانتهاء (اختياري)',
+    recurrenceEndRequired: 'التكرار يتطلب تاريخ انتهاء أو حد مرات — أدخل أحدهما',
+    recurrenceEndHint: 'أدخل تاريخ انتهاء أو حد مرات — أحدهما إلزامي للتكرار',
     createSubmit: 'إنشاء الجدولة',
     createdToast: 'تمت جدولة الرسالة بنجاح',
     accountLabel: 'الحساب المُرسِل',
