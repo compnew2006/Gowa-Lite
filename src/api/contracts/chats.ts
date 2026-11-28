@@ -110,6 +110,10 @@ export interface MessageInfo {
   is_revoked?: boolean;
   revoked_at?: string;
   revoked_by?: string;
+  // P2-7: set only by a real MESSAGE_EDITED event (the gateway sends no
+  // edit history). Absent on every message that was never edited.
+  is_edited?: boolean;
+  edited_at?: string;
 }
 
 export interface ConversationNote {
@@ -122,6 +126,19 @@ export interface ConversationNote {
   is_pinned: boolean;
   created_at: string;
   updated_at: string;
+}
+
+// P2-7: one entry per genuine note content edit, newest first.
+export interface NoteEditHistoryEntry {
+  id: number;
+  note_id: number;
+  device_id: string;
+  chat_jid: string;
+  edited_by_id: number;
+  edited_by_name: string;
+  previous_content: string;
+  new_content: string;
+  edited_at: string;
 }
 
 export interface Pagination {

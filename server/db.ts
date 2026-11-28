@@ -104,6 +104,7 @@ export {
   isChatBlocked,
   listChatListsForUser,
   listConversationNotes,
+  listNoteEditHistory,
   normalizeActiveMutedUntil,
   setChatArchiveOverride,
   setChatBlockedState,
@@ -116,6 +117,7 @@ export {
   type ChatListSummary,
   type ConversationNote,
   type MuteDuration,
+  type NoteEditHistoryEntry,
   type UserChatPreference,
 } from './db/chat-states-repo.ts';
 

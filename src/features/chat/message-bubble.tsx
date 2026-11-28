@@ -17,7 +17,7 @@ import {
 } from '@/features/chat/reaction-picker-position';
 import {copyTextWithFallback} from '@/lib/clipboard';
 import {isCallMessage} from '@/lib/chat-preview';
-import {formatDate} from '@/lib/format';
+import {formatDate, formatShortTime} from '@/lib/format';
 import {useI18n} from '@/lib/i18n';
 import {isDownloadableMedia} from '@/lib/media-download';
 import {cn} from '@/lib/utils';
@@ -503,6 +503,22 @@ export const MessageBubble = memo(function MessageBubble({
 
           <div className="mt-1 flex items-center justify-end gap-1 text-[10.5px] text-muted-foreground tabular-nums">
             <span>{formatDate(message.timestamp, lang)}</span>
+            {/* P2-7: "edited" badge + edit time, only on messages the gateway
+                reported as edited. Never shown on unedited messages. */}
+            {message.is_edited && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>{t.chats.editedMarker}</span>
+                {message.edited_at && (
+                  <time
+                    dateTime={message.edited_at}
+                    title={formatDate(message.edited_at, lang)}
+                  >
+                    {formatShortTime(message.edited_at, lang)}
+                  </time>
+                )}
+              </>
+            )}
             {isOut && <CheckCheck className="size-3.5 text-[#53bdeb]" aria-hidden="true" />}
           </div>
         </div>

@@ -4,6 +4,7 @@ import {
   deleteConversationNote,
   getConversationNoteById,
   listConversationNotes,
+  listNoteEditHistory,
   updateConversationNote,
 } from '../db.ts';
 import {
@@ -55,6 +56,48 @@ export function registerInboxNoteRoutes(router: Router, wsBridge: GowaWsBridge):
           code: 'SUCCESS',
           message: 'ok',
           results: {notes, total: notes.length},
+        });
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  // P2-7: edit history of one note (editor + time + before/after).
+  router.get(
+    '/api/unified/chats/:deviceId/:jid/notes/:noteId/history',
+    requireAuth,
+    requirePermission('notes', 'read'),
+    requireDeviceParamAccess,
+    (req: AuthedRequest, res) => {
+      const deviceId = decodeRouteParam(req.params.deviceId);
+      const chatJid = decodeRouteParam(req.params.jid);
+      try {
+        const access = getChatContentAccessState(req.user!, deviceId, chatJid);
+        if (!access.allowed) {
+          res.json({
+            code: 'SUCCESS',
+            message: 'ok',
+            results: {
+              history: [],
+              total: 0,
+              content_redacted: true,
+              redaction_reason: access.reason,
+            },
+          });
+          return;
+        }
+        const noteId = parsePositiveIntId(req.params.noteId, 'معرّف الملاحظة');
+        const existing = getConversationNoteById(noteId, deviceId, chatJid);
+        if (!existing) {
+          res.status(404).json({code: 'NOT_FOUND', message: 'الملاحظة غير موجودة'});
+          return;
+        }
+        const history = listNoteEditHistory(noteId, deviceId, chatJid);
+        res.json({
+          code: 'SUCCESS',
+          message: 'ok',
+          results: {history, total: history.length},
         });
       } catch (err) {
         handleRouteError(res, err);
@@ -133,10 +176,17 @@ export function registerInboxNoteRoutes(router: Router, wsBridge: GowaWsBridge):
           return;
         }
 
-        const updated = updateConversationNote(noteId, deviceId, chatJid, {
-          content: parsed.content,
-          is_pinned: hasPin ? Boolean(parsed.is_pinned) : undefined,
-        });
+        const updated = updateConversationNote(
+          noteId,
+          deviceId,
+          chatJid,
+          {
+            content: parsed.content,
+            is_pinned: hasPin ? Boolean(parsed.is_pinned) : undefined,
+          },
+          // P2-7: the editor is recorded with the history row.
+          {id: req.user!.id, name: req.user!.display_name},
+        );
         // P2-11: a content change shows as a system line. A pin-only
         // toggle is not a content edit — it records nothing (no noise).
         if (parsed.content !== undefined && parsed.content !== existing.content) {

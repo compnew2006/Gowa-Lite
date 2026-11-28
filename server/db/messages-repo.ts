@@ -105,6 +105,10 @@ export interface CachedMessagePayload {
   is_revoked?: boolean;
   revoked_at?: string;
   revoked_by?: string;
+  // P2-7: set only by a real MESSAGE_EDITED event (the gateway sends no
+  // edit history). Absent/false on every message that was never edited.
+  is_edited?: boolean;
+  edited_at?: string;
 }
 
 interface CachedMessageRow {
@@ -127,6 +131,8 @@ interface CachedMessageRow {
   is_revoked: number;
   revoked_at: string | null;
   revoked_by: string | null;
+  is_edited: number;
+  edited_at: string | null;
   is_unread_candidate: number;
   cached_at: number;
   updated_at: number;
@@ -164,6 +170,8 @@ function rowToMessagePayload(row: CachedMessageRow): CachedMessagePayload {
     is_revoked: row.is_revoked === 1 ? true : undefined,
     revoked_at: row.revoked_at || undefined,
     revoked_by: row.revoked_by || undefined,
+    is_edited: row.is_edited === 1 ? true : undefined,
+    edited_at: row.edited_at || undefined,
   };
 }
 
@@ -173,6 +181,7 @@ const CACHED_MESSAGE_COLUMNS = `
   is_from_me, media_type, reactions_json, context_metadata,
   filename, url, file_length,
   is_revoked, revoked_at, revoked_by,
+  is_edited, edited_at,
   is_unread_candidate, cached_at, updated_at
 `;
 
@@ -215,8 +224,9 @@ export function upsertCachedMessages(
       is_from_me, media_type, reactions_json, context_metadata,
       filename, url, file_length,
       is_revoked, revoked_at, revoked_by,
+      is_edited, edited_at,
       is_unread_candidate, cached_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(device_id, chat_jid, id) DO UPDATE SET
       sender_jid = excluded.sender_jid,
       sender_display_name = excluded.sender_display_name,
@@ -233,6 +243,8 @@ export function upsertCachedMessages(
       is_revoked = excluded.is_revoked,
       revoked_at = excluded.revoked_at,
       revoked_by = excluded.revoked_by,
+      is_edited = excluded.is_edited,
+      edited_at = excluded.edited_at,
       is_unread_candidate = excluded.is_unread_candidate,
       updated_at = excluded.updated_at
   `);
@@ -295,6 +307,13 @@ export function upsertCachedMessages(
       const finalRevokedBy = finalIsRevoked
         ? existing?.revoked_by || msg.revoked_by || null
         : null;
+      // P2-7: an edit flag is sticky — a later gateway list that carries no
+      // edit info must not clear it, and a replay must not move the time
+      // (the edit handler only passes the flag on a real, new edit).
+      const finalIsEdited = msg.is_edited ? 1 : existing?.is_edited ?? 0;
+      const finalEditedAt = msg.is_edited
+        ? msg.edited_at || nowIso
+        : existing?.edited_at ?? null;
 
       const isFromMe = msg.is_from_me ? 1 : existing?.is_from_me ?? 0;
       const qualifiesUnreadByTs =
@@ -329,6 +348,8 @@ export function upsertCachedMessages(
         finalIsRevoked,
         finalRevokedAt,
         finalRevokedBy,
+        finalIsEdited,
+        finalEditedAt,
         finalUnreadCandidate,
         cachedAt,
         nowMs,
@@ -499,6 +520,10 @@ export function syncAndMergeChatMessages(
       is_revoked: payload.is_revoked,
       revoked_at: payload.revoked_at,
       revoked_by: payload.revoked_by,
+      // P2-7: the gateway never sends edit flags — the cached row is the
+      // only source, so an edited message keeps its badge after a refetch.
+      is_edited: payload.is_edited ?? msg.is_edited,
+      edited_at: payload.edited_at ?? msg.edited_at,
     };
   });
 

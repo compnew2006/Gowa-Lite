@@ -1,5 +1,9 @@
 import {http, results} from '@/lib/http';
-import type {ChatRedactionReason, ConversationNote} from '@/api/contracts/chats';
+import type {
+  ChatRedactionReason,
+  ConversationNote,
+  NoteEditHistoryEntry,
+} from '@/api/contracts/chats';
 
 const enc = encodeURIComponent;
 
@@ -52,4 +56,31 @@ export async function deleteUnifiedChatNote(
   noteId: number,
 ): Promise<void> {
   await http.delete(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/notes/${noteId}`);
+}
+
+// P2-7: edit history of one note (editor + time + before/after), newest first.
+export async function listNoteEditHistory(
+  deviceId: string,
+  chatJid: string,
+  noteId: number,
+): Promise<{
+  history: NoteEditHistoryEntry[];
+  total: number;
+  content_redacted?: boolean;
+  redaction_reason?: ChatRedactionReason;
+}> {
+  const res = await results<{
+    history: NoteEditHistoryEntry[];
+    total: number;
+    content_redacted?: boolean;
+    redaction_reason?: ChatRedactionReason;
+  } | null>(
+    http.get(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/notes/${noteId}/history`),
+  );
+  return {
+    history: res?.history ?? [],
+    total: res?.total ?? 0,
+    content_redacted: res?.content_redacted,
+    redaction_reason: res?.redaction_reason,
+  };
 }
