@@ -29,6 +29,7 @@ import {AccountCloseRatingPanel} from '@/features/accounts/account-close-rating-
 import {AccountDailyResetPanel} from '@/features/accounts/account-daily-reset-panel';
 import {RejectCallPanel} from '@/features/accounts/reject-call-panel';
 import {accountDotTone, accountStateToneClass} from '@/features/accounts/account-display';
+import {phoneFromJid} from '@/features/chat/display-name';
 import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
@@ -98,6 +99,7 @@ export function AccountWorkspacePanel({
   });
 
   const title = device.resolved_name || device.alias || device.display_name || device.id;
+  const accountPhone = device.phone_number || phoneFromJid(device.jid);
   const isLoggedIn = device.state === 'logged_in';
   const stateLabel = t.accounts.states[device.state] ?? t.accounts.states.disconnected;
   const toneClass = accountStateToneClass[device.state] ?? accountStateToneClass.disconnected;
@@ -145,11 +147,11 @@ export function AccountWorkspacePanel({
               <span dir="ltr" className="font-mono">
                 {device.id}
               </span>
-              {device.phone_number && (
+              {accountPhone && (
                 <>
                   <span aria-hidden="true">·</span>
                   <span dir="ltr" className="font-mono tabular-nums">
-                    {device.phone_number}
+                    {accountPhone}
                   </span>
                 </>
               )}
@@ -256,7 +258,7 @@ export function AccountWorkspacePanel({
                 <div className="flex items-center justify-between gap-4 px-5 py-3">
                   <dt className="text-muted-foreground">{t.accounts.phoneLabel}</dt>
                   <dd dir="ltr" className="font-mono tabular-nums text-foreground">
-                    {device.phone_number || '—'}
+                    {accountPhone || '—'}
                   </dd>
                 </div>
                 <div className="flex items-center justify-between gap-4 px-5 py-3">

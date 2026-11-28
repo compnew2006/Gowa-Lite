@@ -120,6 +120,13 @@ function NoteRow({
                 <>
                   <span className="text-muted-foreground" aria-hidden="true">·</span>
                   <span className="text-[11px] text-muted-foreground">{t.chats.editedMarker}</span>
+                  <time
+                    dateTime={note.updated_at}
+                    title={formatDate(note.updated_at, lang)}
+                    className="text-[11px] text-muted-foreground tabular-nums"
+                  >
+                    {formatDate(note.updated_at, lang)}
+                  </time>
                 </>
               )}
             </div>
