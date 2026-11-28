@@ -105,11 +105,12 @@ function makeMessage(overrides: Partial<MessageInfo> = {}): MessageInfo {
 }
 
 describe('P1-6: one claim button for a pending chat (header only)', () => {
-  it('removes the big claim button from the redaction lock card but keeps the header and composer claim wiring', () => {
+  it('removes the big claim button from the redaction lock card and the composer lock-bar button; header only', () => {
     const viewSource = readSource('src/features/chat/message-view.tsx');
     const headerSource = readSource('src/features/chat/message-view-header.tsx');
+    const composerSource = readSource('src/features/chat/message-composer.tsx');
 
-    // The header claim button stays.
+    // The header claim button stays — the single claim entry point.
     assert.equal(headerSource.includes('onClaim'), true);
     assert.equal(headerSource.includes('t.chats.claimAction'), true);
     assert.equal(
@@ -117,15 +118,17 @@ describe('P1-6: one claim button for a pending chat (header only)', () => {
       true,
       'MessageView still wires the header claim button to the claim mutation',
     );
-    // The composer lock banner claim wiring is out of scope for P1-6 and stays.
-    assert.equal(
-      viewSource.includes('onClaimFromComposer={() => claimMutation.mutate()}'),
-      true,
-    );
-    // The lock card itself must no longer call the claim mutation: only the
-    // header (716) and composer (985) call sites remain.
+    // The composer lock bar no longer claims: no wiring, no button — the
+    // bar still explains the state, the header button does the claiming.
+    assert.equal(viewSource.includes('onClaimFromComposer'), false);
+    assert.equal(viewSource.includes('canClaimFromComposer'), false);
+    assert.equal(composerSource.includes('onClaimFromComposer'), false);
+    assert.equal(composerSource.includes('canClaimFromComposer'), false);
+    assert.equal(composerSource.includes('t.chats.claimAction'), false);
+    assert.equal(composerSource.includes('composerLockedClaimRequired'), true);
+    // Only the header call site remains.
     const callSites = viewSource.match(/claimMutation\.mutate\(\)/g) ?? [];
-    assert.equal(callSites.length, 2);
+    assert.equal(callSites.length, 1);
   });
 
   it('keeps the reopen button and the permission hint in the lock card', () => {

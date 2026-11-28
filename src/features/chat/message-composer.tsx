@@ -12,7 +12,6 @@ import {
   CalendarClock,
   FileText,
   Film,
-  Hand,
   Info,
   Loader2,
   Lock,
@@ -77,11 +76,9 @@ export function MessageComposer({
   canSchedule = true,
   lockState,
   autoReopenHint = false,
-  canClaimFromComposer = false,
   canReopenFromComposer = false,
   canUnblockFromComposer = false,
   isLifecyclePending = false,
-  onClaimFromComposer,
   onReopenFromComposer,
   onUnblockFromComposer,
   draft,
@@ -101,11 +98,9 @@ export function MessageComposer({
   canSchedule?: boolean;
   lockState?: ComposerLockState;
   autoReopenHint?: boolean;
-  canClaimFromComposer?: boolean;
   canReopenFromComposer?: boolean;
   canUnblockFromComposer?: boolean;
   isLifecyclePending?: boolean;
-  onClaimFromComposer?: () => void;
   onReopenFromComposer?: () => void;
   onUnblockFromComposer?: () => void;
   draft: string;
@@ -171,8 +166,6 @@ export function MessageComposer({
             ? t.chats.composerLockedOther(lockState.ownerName || '')
             : t.chats.composerLockedClaimRequired;
 
-    const showClaimBtn =
-      lockState.reason === 'claim_required' && canClaimFromComposer && onClaimFromComposer;
     const showReopenBtn =
       lockState.reason === 'closed' && canReopenFromComposer && onReopenFromComposer;
     const showUnblockBtn =
@@ -189,22 +182,6 @@ export function MessageComposer({
             )}
             <span className="leading-relaxed text-foreground/90">{lockMessage}</span>
           </div>
-          {showClaimBtn && (
-            <Button
-              type="button"
-              size="sm"
-              disabled={isLifecyclePending}
-              onClick={onClaimFromComposer}
-              className="h-8 whitespace-nowrap shrink-0 px-3 text-xs"
-            >
-              {isLifecyclePending ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <Hand className="size-3.5" />
-              )}
-              <span>{t.chats.claimAction}</span>
-            </Button>
-          )}
           {showReopenBtn && (
             <Button
               type="button"

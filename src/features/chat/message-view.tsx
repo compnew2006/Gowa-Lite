@@ -968,11 +968,9 @@ export function MessageView({
           canSchedule={canWriteSchedules}
           lockState={lockState}
           autoReopenHint={autoReopenHint}
-          canClaimFromComposer={canAssignChats}
           canReopenFromComposer={canCloseChats}
           canUnblockFromComposer={canWriteChats}
           isLifecyclePending={isLifecyclePending}
-          onClaimFromComposer={() => claimMutation.mutate()}
           onReopenFromComposer={() => reopenMutation.mutate(canAssignChats)}
           onUnblockFromComposer={() => unblockMutation.mutate()}
           draft={draft}
