@@ -45,9 +45,9 @@ describe('Phase 4 RBAC Unit & Migration Verification', () => {
     fs.rmSync(tmpDir, {recursive: true, force: true});
   });
 
-  it('seeds 29 canonical permissions across 9 resources and 3 system roles idempotently', () => {
+  it('seeds 30 canonical permissions across 9 resources and 3 system roles idempotently', () => {
     assert.equal(PERMISSION_GROUPS.length, 9);
-    assert.equal(ALL_PERMISSION_KEYS.length, 29);
+    assert.equal(ALL_PERMISSION_KEYS.length, 30);
 
     const rolesBefore = dbMod.listRoles();
     assert.equal(rolesBefore.length, 3);
@@ -57,7 +57,7 @@ describe('Phase 4 RBAC Unit & Migration Verification', () => {
     const adminRole = rolesBefore.find((r) => r.slug === 'admin')!;
     const agentRole = rolesBefore.find((r) => r.slug === 'agent')!;
     assert.equal(adminRole.is_system, true);
-    assert.equal(adminRole.permissions.length, 29);
+    assert.equal(adminRole.permissions.length, 30);
     assert.equal(agentRole.is_system, true);
     assert.equal(agentRole.is_default, true);
 
@@ -81,7 +81,7 @@ describe('Phase 4 RBAC Unit & Migration Verification', () => {
 
     assert.equal(dbMod.listRoles().length, 3);
     assert.equal(dbMod.getUserById(legacyAdmin.id)?.role_slug, 'admin');
-    assert.equal(dbMod.getUserById(legacyAdmin.id)?.permissions.length, 29);
+    assert.equal(dbMod.getUserById(legacyAdmin.id)?.permissions.length, 30);
     assert.equal(dbMod.getUserById(legacyAgent.id)?.role_slug, 'agent');
   });
 

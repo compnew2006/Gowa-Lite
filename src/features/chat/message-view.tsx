@@ -82,7 +82,7 @@ import {useI18n} from '@/lib/i18n';
 import {isDownloadableMedia} from '@/lib/media-download';
 import {useMessageActions} from '@/features/chat/use-message-actions';
 import {useMessageHistory} from '@/features/chat/use-message-history';
-import {hasUserPermission, useAuthStore} from '@/stores/auth';
+import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
 
 type TimelineItem =
   | {kind: 'message'; key: string; timestamp: string; timestampMs: number; message: MessageInfo}
@@ -136,7 +136,7 @@ export function MessageView({
   const {lang, t} = useI18n();
   const user = useAuthStore((s) => s.user);
   const canWriteChats = hasUserPermission(user, 'chats:write');
-  const canRevokeChats = hasUserPermission(user, 'chats:revoke');
+  const canRevokeOwnChats = hasUserAnyPermission(user, ['chats:revoke_own', 'chats:revoke']);
   const canAssignChats = hasUserPermission(user, 'chats:assign');
   const canCloseChats = hasUserPermission(user, 'chats:close');
   const canViewAllChats = hasUserPermission(user, 'chats:view_all');
@@ -939,7 +939,7 @@ export function MessageView({
                           onReact={handleReact}
                           onReply={handleReply}
                           onForward={canWriteChats ? handleForwardRequest : undefined}
-                          onRevoke={canRevokeChats ? handleRevokeRequest : undefined}
+                          onRevoke={canRevokeOwnChats ? handleRevokeRequest : undefined}
                           onJumpToMessage={handleJumpToMessage}
                           selectMode={mediaBatch.selectMode}
                           isSelected={mediaBatch.selectedIds.has(item.message.id)}
@@ -1063,7 +1063,7 @@ export function MessageView({
         )}
       </Suspense>
 
-      {revokingMessage && !isContentRedacted && canRevokeChats && (
+      {revokingMessage && !isContentRedacted && canRevokeOwnChats && (
         <RevokeMessageDialog
           message={revokingMessage}
           isPending={revokeMutation.isPending}

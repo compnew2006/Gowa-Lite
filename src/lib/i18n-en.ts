@@ -717,6 +717,7 @@ const en: AppTranslations = {
       'chats:read': 'View chats & messages',
       'chats:write': 'Send replies, media & forward messages',
       'chats:revoke': 'Revoke messages for everyone',
+      'chats:revoke_own': 'Revoke only my own messages for everyone',
       'chats:view_all': 'View all agents chats',
       'chats:assign': 'Claim & assign conversations',
       'chats:close': 'Close & reopen conversations',
