@@ -1,4 +1,5 @@
 import {useMemo, useState} from 'react';
+import {useSearchParams} from 'react-router-dom';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {
   AlertCircle,
@@ -55,7 +56,11 @@ export default function ScheduledPage() {
 
   const [statusFilter, setStatusFilter] = useState<'all' | ScheduleStatus>('all');
   const [messageTypeFilter, setMessageTypeFilter] = useState<string>('all');
-  const [searchInput, setSearchInput] = useState('');
+  // P1-15 (decision 20): a toast deep link arrives as /scheduled?search=<phone>
+  // — prefill the search box from the URL so the list is already filtered on
+  // the created schedule.
+  const [searchParams] = useSearchParams();
+  const [searchInput, setSearchInput] = useState(() => searchParams.get('search') ?? '');
   const [offset, setOffset] = useState(0);
 
   const [createOpen, setCreateOpen] = useState(false);

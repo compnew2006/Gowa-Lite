@@ -45,6 +45,7 @@ const ar = {
     activateLight: 'تفعيل الوضع الفاتح',
     activateDark: 'تفعيل الوضع الداكن',
     logout: 'تسجيل الخروج',
+    accountMenu: 'قائمة الحساب',
     loggedOutToast: 'تم تسجيل الخروج',
     wsConnected: 'بث مباشر متصل',
     wsConnecting: 'جاري الاتصال...',
@@ -504,7 +505,7 @@ const ar = {
       loadError: 'تعذّر تحميل التقييمات.',
     },
     dailyReset: {
-      tab: 'الإعادة اليومية',
+      tab: 'إعادة المسندة يومياً',
       title: 'إعادة تعيين المحادثات المسندة يوميًا',
       description: 'في الساعة المحددة يوميًا، تُسحب كل المحادثات المسندة المفتوحة وتُعاد إلى قائمة الانتظار (Pending) دون المساس بالمحادثات المغلقة.',
       enable: 'تفعيل الإعادة اليومية التلقائية',
@@ -825,6 +826,7 @@ const ar = {
     recurrenceEndHint: 'أدخل تاريخ انتهاء أو حد مرات — أحدهما إلزامي للتكرار',
     createSubmit: 'إنشاء الجدولة',
     createdToast: 'تمت جدولة الرسالة بنجاح',
+    viewAction: 'عرض',
     accountLabel: 'الحساب المُرسِل',
     accountUnknown: 'غير معروف',
     summaryTitle: 'ملخص التأكيد',
@@ -930,7 +932,7 @@ const ar = {
   },
 
   account: {
-    pageTitle: 'ملف الحساب والفحص',
+    pageTitle: 'الملف والفحص',
     pageSubtitle: 'إدارة ملف الحساب النشط، الخصوصية، جهات الاتصال، وفحص الأرقام والحسابات التجارية.',
     tabProfile: 'ملف الحساب',
     tabLookup: 'فحص رقم / JID',

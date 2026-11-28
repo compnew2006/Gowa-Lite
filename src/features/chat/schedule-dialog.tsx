@@ -1,5 +1,6 @@
 import {useEffect, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
+import {useNavigate} from 'react-router-dom';
 import {CalendarClock, Loader2, Paperclip} from 'lucide-react';
 import {toast} from 'sonner';
 import {
@@ -19,7 +20,9 @@ import {
   ScheduleValidationError,
   validateAndBuildScheduleFields,
 } from '@/features/schedules/schedule-utils';
+import {buildScheduledDeepLink} from '@/features/schedules/scheduled-link';
 import {toApiError} from '@/lib/http';
+import {toastWithView} from '@/lib/toast-with-view';
 import {useI18n} from '@/lib/i18n';
 
 /**
@@ -47,6 +50,7 @@ export function ScheduleMessageDialog({
 }) {
   const {lang, t} = useI18n();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   // The sending account is the open chat's device. Look it up by exact id in
   // the shared devices list (same query key the device selector bar uses);
@@ -127,7 +131,13 @@ export function ScheduleMessageDialog({
       return createUnifiedChatSchedule(chat.device_id, chat.jid, fields);
     },
     onSuccess: () => {
-      toast.success(t.scheduled.createdToast);
+      // P1-15 (decision 20): the toast carries a «view» action that navigates
+      // to /scheduled, deep-linked on this chat's phone where one exists.
+      toastWithView(t.scheduled.createdToast, {
+        label: t.scheduled.viewAction,
+        to: buildScheduledDeepLink(chat.jid),
+        navigate,
+      });
       onOpenChange(false);
       onScheduled?.(message.trim(), Boolean(attachment));
       void queryClient.invalidateQueries({
