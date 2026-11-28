@@ -30,6 +30,8 @@ import {
 import {
   ScheduleValidationError,
   defaultScheduleDateTimeLocal,
+  getSchedulePreviewText,
+  getScheduleRecipient,
   statusToneClass,
   validateAndBuildScheduleFields,
 } from '@/features/schedules/schedule-utils';
@@ -181,17 +183,13 @@ export default function ScheduledPage() {
   const toIdx = Math.min(offset + rows.length, total);
 
   // Cancel-confirm details with safe fallbacks — never "undefined".
-  const cancelRecipient =
-    confirmCancelTarget?.recipient ||
-    confirmCancelTarget?.phone ||
-    confirmCancelTarget?.to ||
-    '—';
-  const cancelContent =
-    confirmCancelTarget?.content ||
-    confirmCancelTarget?.message ||
-    confirmCancelTarget?.caption ||
-    confirmCancelTarget?.filename ||
-    '—';
+  // P1-2: same display fallbacks as the table rows.
+  const cancelRecipient = confirmCancelTarget
+    ? getScheduleRecipient(confirmCancelTarget)
+    : '—';
+  const cancelContent = confirmCancelTarget
+    ? getSchedulePreviewText(confirmCancelTarget)
+    : '—';
   const cancelWhenRaw = confirmCancelTarget
     ? confirmCancelTarget.next_run_at || confirmCancelTarget.scheduled_at
     : '';
@@ -245,7 +243,14 @@ export default function ScheduledPage() {
 
       {deviceId && (
         <>
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-3">
+          <div
+            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-3"
+            data-testid="schedule-status-filters"
+            // P1-22: active = waiting for its time, running = sending now.
+            // Confirmed against the gateway worker (ClaimNextScheduledSend
+            // flips a due active job to running while it is delivered).
+            title={t.scheduled.statusFilterHint}
+          >
             <div className="flex flex-wrap items-center gap-1.5">
               {statusFilters.map((item) => (
                 <button
@@ -255,6 +260,13 @@ export default function ScheduledPage() {
                     setStatusFilter(item.key);
                     setOffset(0);
                   }}
+                  title={
+                    item.key === 'active'
+                      ? t.scheduled.statusActiveHint
+                      : item.key === 'running'
+                        ? t.scheduled.statusRunningHint
+                        : undefined
+                  }
                   className={cn(
                     'h-8 shrink-0 cursor-pointer whitespace-nowrap rounded-lg px-2.5 text-xs font-medium transition-colors',
                     statusFilter === item.key
@@ -343,7 +355,9 @@ export default function ScheduledPage() {
                       const canResume = item.status === 'paused';
                       const canCancel = item.status === 'active' || item.status === 'paused';
                       const nextRunRaw = item.next_run_at || item.scheduled_at;
-                      const previewText = item.content || item.caption || item.filename || '—';
+                      // P1-2: content reads content/message/summary/caption/
+                      // filename; recipient falls back through phone/to.
+                      const previewText = getSchedulePreviewText(item);
                       // Per-row ownership gate: the server annotates each item
                       // with can_manage (owner or supervisor). Fall back to
                       // the list-wide permission only when unannotated.
@@ -357,7 +371,7 @@ export default function ScheduledPage() {
                       return (
                         <tr key={item.id} className="hover:bg-muted/20">
                           <td className="px-4 py-3 font-mono text-xs text-foreground" dir="ltr">
-                            {item.recipient}
+                            {getScheduleRecipient(item)}
                           </td>
                           <td className="px-4 py-3 text-xs text-muted-foreground">
                             {item.message_type}

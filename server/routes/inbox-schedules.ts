@@ -1,15 +1,20 @@
 import type {Router} from 'express';
-import {parseTimestampMs} from '../db.ts';
-import {GowaError, gowaFetch, type GowaPagination} from '../gowa-client.ts';
+import {getAccountAliases, parseTimestampMs} from '../db.ts';
+import {GowaError, gowaFetch, type GowaDevice, type GowaPagination} from '../gowa-client.ts';
 import {
   handleRouteError,
   requireAuth,
   requireDeviceParamAccess,
   requirePermission,
 } from '../middleware/auth.ts';
+import {filterAllowedDevices} from '../rbac.ts';
 import {decodeRouteParam} from '../security.ts';
 import {assertChatContentAccess, getChatContentAccessState} from '../services/chat-lifecycle.ts';
-import {normalizePhoneQueryForGowa, recipientMatchesChatJid} from '../services/chat-sync.ts';
+import {
+  normalizePhoneQueryForGowa,
+  recipientMatchesChatJid,
+  resolveAccountDisplayName,
+} from '../services/chat-sync.ts';
 import {
   createScheduleViaGowa,
   executeScheduleAction,
@@ -26,6 +31,58 @@ import {
 import type {AuthedRequest} from '../types.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
 
+/**
+ * P1-1 (decision 9): the drawer shows the chat's schedules from ALL of the
+ * user's allowed devices, not just the chat's own device. The gateway stores
+ * a schedule under whichever device created it, so a single-device query
+ * hides the rest. The scan is capped so one drawer open cannot fan out
+ * across an unbounded device list.
+ */
+const MAX_ALL_DEVICES_SCHEDULE_SCAN = 10;
+
+type ChatScheduleRow = Record<string, unknown> & {
+  id: string;
+  device_id: string;
+  device_name?: string;
+  can_manage: boolean;
+};
+
+async function fetchDeviceChatSchedules(
+  deviceId: string,
+  deviceName: string | undefined,
+  chatJid: string,
+  searchKey: string,
+  status: string | undefined,
+): Promise<Array<Record<string, unknown> & {id: string}>> {
+  const raw = await gowaFetch<{
+    data?: Array<Record<string, unknown>>;
+    pagination?: GowaPagination;
+  }>('/send/schedules', {
+    deviceId,
+    query: {
+      status: status && status !== 'all' ? status : undefined,
+      search: normalizePhoneQueryForGowa(searchKey) || searchKey,
+      limit: 100,
+      offset: 0,
+    },
+  });
+  // Live gateway records carry the recipient in `phone` (Schedule.phone) and
+  // no `recipient` field at all — match on the same fallback the UI uses.
+  return (raw?.data ?? [])
+    .filter((item) =>
+      recipientMatchesChatJid(
+        String(item.recipient || item.phone || item.to || ''),
+        chatJid,
+      ),
+    )
+    .map((item) => ({
+      ...item,
+      id: String(item.id || ''),
+      device_id: deviceId,
+      ...(deviceName ? {device_name: deviceName} : {}),
+    }));
+}
+
 export function registerInboxScheduleRoutes(router: Router, wsBridge: GowaWsBridge): void {
   router.get(
     '/api/unified/chats/:deviceId/:jid/schedules',
@@ -39,6 +96,7 @@ export function registerInboxScheduleRoutes(router: Router, wsBridge: GowaWsBrid
       const at = chatJid.indexOf('@');
       const localPart = at === -1 ? chatJid : chatJid.slice(0, at);
       const searchKey = localPart.split(':')[0] || chatJid;
+      const scanAllDevices = req.query.all_devices === '1' || req.query.all_devices === 'true';
 
       try {
         const access = getChatContentAccessState(req.user!, deviceId, chatJid);
@@ -55,21 +113,63 @@ export function registerInboxScheduleRoutes(router: Router, wsBridge: GowaWsBrid
           });
           return;
         }
-        const raw = await gowaFetch<{
-          data?: Array<Record<string, unknown>>;
-          pagination?: GowaPagination;
-        }>('/send/schedules', {
-          deviceId,
-          query: {
-            status: status && status !== 'all' ? status : undefined,
-            search: normalizePhoneQueryForGowa(searchKey) || searchKey,
-            limit: 100,
-            offset: 0,
-          },
-        });
-        const items = (raw?.data ?? []).filter((item) =>
-          recipientMatchesChatJid(String(item.recipient || ''), chatJid),
-        );
+        let items: ChatScheduleRow[];
+        if (!scanAllDevices) {
+          const rows = await fetchDeviceChatSchedules(
+            deviceId,
+            undefined,
+            chatJid,
+            searchKey,
+            status,
+          );
+          items = annotateSchedulesWithCanManage(req.user!, deviceId, rows) as ChatScheduleRow[];
+        } else {
+          // Allowed devices only, current device first, capped. A device
+          // that fails (offline gateway entry, timeout) is skipped rather
+          // than failing the whole drawer.
+          let allowedDevices: GowaDevice[] = [];
+          try {
+            const allDevices = (await gowaFetch<GowaDevice[]>('/devices')) ?? [];
+            allowedDevices = filterAllowedDevices(req.user!, allDevices);
+          } catch {
+            allowedDevices = [];
+          }
+          const aliases = getAccountAliases();
+          const byId = new Map(allowedDevices.map((dev) => [dev.id, dev]));
+          const orderedIds = [deviceId, ...allowedDevices.map((dev) => dev.id)].filter(
+            (id, index, list) => id && list.indexOf(id) === index,
+          );
+          const scannedIds = orderedIds.slice(0, MAX_ALL_DEVICES_SCHEDULE_SCAN);
+          const perDevice = await Promise.allSettled(
+            scannedIds.map(async (id) => {
+              const device = byId.get(id);
+              const rows = await fetchDeviceChatSchedules(
+                id,
+                device ? resolveAccountDisplayName(device, aliases) : undefined,
+                chatJid,
+                searchKey,
+                status,
+              );
+              return annotateSchedulesWithCanManage(
+                req.user!,
+                id,
+                rows,
+              ) as ChatScheduleRow[];
+            }),
+          );
+          const merged: ChatScheduleRow[] = [];
+          const seen = new Set<string>();
+          for (const result of perDevice) {
+            if (result.status !== 'fulfilled') continue;
+            for (const row of result.value) {
+              const key = `${row.device_id}:${row.id}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              merged.push(row);
+            }
+          }
+          items = merged;
+        }
         const priority = (st: unknown) => {
           if (st === 'active' || st === 'running') return 0;
           if (st === 'paused') return 1;
@@ -87,11 +187,7 @@ export function registerInboxScheduleRoutes(router: Router, wsBridge: GowaWsBrid
           code: 'SUCCESS',
           message: 'ok',
           results: {
-            data: annotateSchedulesWithCanManage(
-              req.user!,
-              deviceId,
-              items.map((item) => ({...item, id: String(item.id || '')})),
-            ),
+            data: items,
             pagination: {limit: 100, offset: 0, total: items.length},
           },
         });

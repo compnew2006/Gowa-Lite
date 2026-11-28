@@ -123,3 +123,33 @@ export function statusToneClass(status: ScheduleStatus): string {
       return 'text-muted-foreground';
   }
 }
+
+export type ScheduleDisplayFields = {
+  content?: string;
+  message?: string;
+  summary?: string;
+  caption?: string;
+  filename?: string;
+};
+
+/**
+ * P1-2: what a schedule row shows as its text. The gateway record carries
+ * the text in `summary` (live shape: phone + summary — see
+ * ScheduleService.scheduleView), older/mock shapes in `message`, and media
+ * rows in `caption`/`filename`. Never show a blank preview when any of these
+ * holds the text.
+ */
+export function getSchedulePreviewText(item: ScheduleDisplayFields): string {
+  return item.content || item.message || item.summary || item.caption || item.filename || '—';
+}
+
+export type ScheduleRecipientFields = {
+  recipient?: string;
+  phone?: string;
+  to?: string;
+};
+
+/** P1-2: the recipient, falling back through the gateway's `phone` field. */
+export function getScheduleRecipient(item: ScheduleRecipientFields): string {
+  return item.recipient || item.phone || item.to || '—';
+}

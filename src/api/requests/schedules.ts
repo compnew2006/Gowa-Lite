@@ -11,7 +11,13 @@ export async function listUnifiedChatSchedules(
 ): Promise<ScheduleList> {
   const res = await results<ScheduleList | null>(
     http.get(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/schedules`, {
-      params: {status: status && status !== 'all' ? status : undefined},
+      // P1-1 (decision 9): the drawer shows this chat's schedules from all
+      // of the user's allowed devices — a schedule is stored under whichever
+      // device created it, and the single-device query hid the rest.
+      params: {
+        status: status && status !== 'all' ? status : undefined,
+        all_devices: 1,
+      },
     }),
   );
   return {

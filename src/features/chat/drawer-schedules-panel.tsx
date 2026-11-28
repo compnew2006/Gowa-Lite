@@ -1,4 +1,5 @@
 import {useMemo, useState} from 'react';
+import {Link} from 'react-router-dom';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {
   Ban,
@@ -25,6 +26,7 @@ import {
 import type {ScheduleStatus, ScheduledSend, UnifiedChat} from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {
+  getSchedulePreviewText,
   minScheduleDateTimeLocal,
   statusToneClass,
   toLocalDateTimeInput,
@@ -82,8 +84,8 @@ function ScheduleItemCard({
   onStartEditing: (item: ScheduledSend) => void;
   onEditingTimeChange: (value: string) => void;
   onCancelEditing: () => void;
-  onSaveTime: (id: string) => void;
-  onAction: (id: string, action: 'pause' | 'resume' | 'cancel') => void;
+  onSaveTime: (id: string, deviceId?: string) => void;
+  onAction: (id: string, action: 'pause' | 'resume' | 'cancel', deviceId?: string) => void;
   onToggleCancelConfirm: (id: string) => void;
 }) {
   const {lang, t} = useI18n();
@@ -91,7 +93,12 @@ function ScheduleItemCard({
   const canPause = item.status === 'active';
   const canResume = item.status === 'paused';
   const canModify = item.status === 'active' || item.status === 'paused';
-  const previewText = item.content || item.caption || item.filename || '—';
+  const previewText = getSchedulePreviewText(item);
+  // P1-1 (decision 9): every row names the device that owns the schedule —
+  // the drawer spans all allowed devices, so the owner must be visible.
+  const ownerLabel = item.device_id
+    ? t.chats.scheduleDeviceName(item.device_name || item.device_id)
+    : null;
 
   return (
     <article className="group px-4 py-3 transition-colors hover:bg-secondary/25">
@@ -145,7 +152,7 @@ function ScheduleItemCard({
                   <button
                     type="button"
                     disabled={isBusy}
-                    onClick={() => onAction(item.id, 'pause')}
+                    onClick={() => onAction(item.id, 'pause', item.device_id)}
                     title={t.scheduled.pause}
                     aria-label={t.scheduled.pause}
                     className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-40"
@@ -157,7 +164,7 @@ function ScheduleItemCard({
                   <button
                     type="button"
                     disabled={isBusy}
-                    onClick={() => onAction(item.id, 'resume')}
+                    onClick={() => onAction(item.id, 'resume', item.device_id)}
                     title={t.scheduled.resume}
                     aria-label={t.scheduled.resume}
                     className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-40"
@@ -180,6 +187,10 @@ function ScheduleItemCard({
               </div>
             )}
           </div>
+
+          {ownerLabel && (
+            <p className="mt-0.5 text-[11px] text-muted-foreground">{ownerLabel}</p>
+          )}
 
           <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground/90">
             {previewText}
@@ -214,7 +225,7 @@ function ScheduleItemCard({
                   size="sm"
                   className="h-7 px-2.5 text-xs"
                   disabled={isBusy || !editingTime}
-                  onClick={() => onSaveTime(item.id)}
+                  onClick={() => onSaveTime(item.id, item.device_id)}
                 >
                   <Check className="size-3.5" />
                   <span>{t.save}</span>
@@ -244,7 +255,7 @@ function ScheduleItemCard({
                   variant="destructive"
                   className="h-6 px-2 text-[11px]"
                   disabled={isBusy}
-                  onClick={() => onAction(item.id, 'cancel')}
+                  onClick={() => onAction(item.id, 'cancel', item.device_id)}
                 >
                   {t.scheduled.confirmCancelBtn}
                 </Button>
@@ -286,12 +297,23 @@ export function ScheduledPanelBody({
     void queryClient.invalidateQueries({
       queryKey: ['unified-chat-schedules', chat.device_id, chat.jid],
     });
-    void queryClient.invalidateQueries({queryKey: ['schedules', chat.device_id]});
+    // Rows may belong to other devices (P1-1), so invalidate the whole
+    // scheduled-page list prefix, not just this chat's device.
+    void queryClient.invalidateQueries({queryKey: ['schedules']});
   };
 
   const actionMutation = useMutation({
-    mutationFn: ({id, action}: {id: string; action: 'pause' | 'resume' | 'cancel'}) =>
-      actionUnifiedChatSchedule(chat.device_id, chat.jid, id, action),
+    mutationFn: ({
+      id,
+      action,
+      deviceId,
+    }: {
+      id: string;
+      action: 'pause' | 'resume' | 'cancel';
+      deviceId?: string;
+    }) =>
+      // P1-1: act on the row's owning device, not the chat's device.
+      actionUnifiedChatSchedule(deviceId ?? chat.device_id, chat.jid, id, action),
     onSuccess: (_data, vars) => {
       if (vars.action === 'pause') toast.success(t.scheduled.pausedToast);
       else if (vars.action === 'resume') toast.success(t.scheduled.resumedToast);
@@ -305,8 +327,19 @@ export function ScheduledPanelBody({
   });
 
   const updateTimeMutation = useMutation({
-    mutationFn: ({id, scheduledAt}: {id: string; scheduledAt: string}) =>
-      updateUnifiedChatSchedule(chat.device_id, chat.jid, id, {scheduled_at: scheduledAt}),
+    mutationFn: ({
+      id,
+      scheduledAt,
+      deviceId,
+    }: {
+      id: string;
+      scheduledAt: string;
+      deviceId?: string;
+    }) =>
+      // P1-1: reschedule on the row's owning device, not the chat's device.
+      updateUnifiedChatSchedule(deviceId ?? chat.device_id, chat.jid, id, {
+        scheduled_at: scheduledAt,
+      }),
     onSuccess: () => {
       toast.success(t.chats.scheduleUpdatedToast);
       setEditingId(null);
@@ -351,10 +384,14 @@ export function ScheduledPanelBody({
     );
   };
 
-  const handleSaveTime = (id: string) => {
+  const handleSaveTime = (id: string, deviceId?: string) => {
     try {
       const ms = validateScheduleFutureMs(editingTime);
-      updateTimeMutation.mutate({id, scheduledAt: new Date(ms).toISOString()});
+      updateTimeMutation.mutate({
+        id,
+        scheduledAt: new Date(ms).toISOString(),
+        deviceId,
+      });
     } catch {
       toast.error(t.chats.schedulePastError);
     }
@@ -410,12 +447,20 @@ export function ScheduledPanelBody({
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
               {t.chats.noScheduledMessagesHint}
             </p>
+            {/* P1-19: point at the full list — schedules may live on another
+                device or have been created elsewhere. */}
+            <Link
+              to="/scheduled"
+              className="mt-3 text-xs font-medium text-primary underline-offset-2 hover:underline"
+            >
+              {t.chats.viewAllScheduled}
+            </Link>
           </div>
         ) : (
           <div className="divide-y divide-border/70">
             {items.map((item) => (
               <ScheduleItemCard
-                key={item.id}
+                key={`${item.device_id ?? chat.device_id}:${item.id}`}
                 item={item}
                 // Per-row ownership gate: the server annotates each item with
                 // can_manage (owner or supervisor). The edit pencil used to
@@ -439,7 +484,9 @@ export function ScheduledPanelBody({
                   setEditingTime('');
                 }}
                 onSaveTime={handleSaveTime}
-                onAction={(id, action) => actionMutation.mutate({id, action})}
+                onAction={(id, action, deviceId) =>
+                  actionMutation.mutate({id, action, deviceId})
+                }
                 onToggleCancelConfirm={(id) =>
                   setConfirmCancelId((prev) => (prev === id ? null : id))
                 }
@@ -448,6 +495,17 @@ export function ScheduledPanelBody({
           </div>
         )}
       </div>
+
+      {items.length > 0 && !schedulesQuery.isLoading && !schedulesQuery.isError && (
+        <div className="shrink-0 border-t border-border px-3 py-2.5 text-center">
+          <Link
+            to="/scheduled"
+            className="text-xs font-medium text-primary underline-offset-2 hover:underline"
+          >
+            {t.chats.viewAllScheduled}
+          </Link>
+        </div>
+      )}
     </div>
   );
 }
