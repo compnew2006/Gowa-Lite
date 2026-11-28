@@ -29,12 +29,23 @@ export function useChatScheduleActions(chat: UnifiedChat) {
     void queryClient.invalidateQueries({
       queryKey: ['unified-chat-schedules', chat.device_id, chat.jid],
     });
-    void queryClient.invalidateQueries({queryKey: ['schedules', chat.device_id]});
+    // Rows may belong to other devices (P1-1), so invalidate the whole
+    // scheduled-page list prefix, not just this chat's device.
+    void queryClient.invalidateQueries({queryKey: ['schedules']});
   };
 
   const actionMutation = useMutation({
-    mutationFn: ({id, action}: {id: string; action: 'pause' | 'resume' | 'cancel'}) =>
-      actionUnifiedChatSchedule(chat.device_id, chat.jid, id, action),
+    mutationFn: ({
+      id,
+      action,
+      deviceId,
+    }: {
+      id: string;
+      action: 'pause' | 'resume' | 'cancel';
+      deviceId?: string;
+    }) =>
+      // P1-1: act on the row's owning device, not the chat's device.
+      actionUnifiedChatSchedule(deviceId ?? chat.device_id, chat.jid, id, action),
     onSuccess: (_data, vars) => {
       if (vars.action === 'pause') toast.success(t.scheduled.pausedToast);
       else if (vars.action === 'resume') toast.success(t.scheduled.resumedToast);
@@ -48,8 +59,19 @@ export function useChatScheduleActions(chat: UnifiedChat) {
   });
 
   const updateTimeMutation = useMutation({
-    mutationFn: ({id, scheduledAt}: {id: string; scheduledAt: string}) =>
-      updateUnifiedChatSchedule(chat.device_id, chat.jid, id, {scheduled_at: scheduledAt}),
+    mutationFn: ({
+      id,
+      scheduledAt,
+      deviceId,
+    }: {
+      id: string;
+      scheduledAt: string;
+      deviceId?: string;
+    }) =>
+      // P1-1: reschedule on the row's owning device, not the chat's device.
+      updateUnifiedChatSchedule(deviceId ?? chat.device_id, chat.jid, id, {
+        scheduled_at: scheduledAt,
+      }),
     onSuccess: () => {
       toast.success(t.chats.scheduleUpdatedToast);
       setEditingId(null);
@@ -90,10 +112,10 @@ export function useChatScheduleActions(chat: UnifiedChat) {
     );
   };
 
-  const saveTime = (id: string) => {
+  const saveTime = (id: string, deviceId?: string) => {
     try {
       const ms = validateScheduleFutureMs(editingTime);
-      updateTimeMutation.mutate({id, scheduledAt: new Date(ms).toISOString()});
+      updateTimeMutation.mutate({id, scheduledAt: new Date(ms).toISOString(), deviceId});
     } catch {
       toast.error(t.chats.schedulePastError);
     }
@@ -114,8 +136,8 @@ export function useChatScheduleActions(chat: UnifiedChat) {
       setEditingTime('');
     },
     saveTime,
-    doAction: (id: string, action: 'pause' | 'resume' | 'cancel') =>
-      actionMutation.mutate({id, action}),
+    doAction: (id: string, action: 'pause' | 'resume' | 'cancel', deviceId?: string) =>
+      actionMutation.mutate({id, action, deviceId}),
     toggleCancelConfirm: (id: string) =>
       setConfirmCancelId((prev) => (prev === id ? null : id)),
   };

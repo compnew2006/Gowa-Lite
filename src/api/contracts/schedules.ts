@@ -19,9 +19,12 @@ export interface ScheduledSend {
   to?: string;
   content?: string;
   message?: string;
+  summary?: string;
   caption?: string;
   filename?: string;
   can_manage?: boolean;
+  device_id?: string;
+  device_name?: string;
   scheduled_at: string;
   timezone: string;
   recurrence: ScheduleRecurrence | string;
