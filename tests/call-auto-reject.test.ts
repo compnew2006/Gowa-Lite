@@ -8,6 +8,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {after, before, it} from 'node:test';
 import {WebSocket, WebSocketServer} from 'ws';
+import {expandWsFrame} from './ws-frame-helpers.ts';
 
 const deviceId = 'call-line';
 const deviceJid = '201000000021@s.whatsapp.net';
@@ -305,7 +306,9 @@ it('handles upstream WebSocket CALL_OFFER and broadcasts CALL_AUTO_REJECTED to a
   });
   clientWs.on('message', (data) => {
     try {
-      receivedEvents.push(JSON.parse(data.toString()));
+      for (const event of expandWsFrame(JSON.parse(data.toString()))) {
+        receivedEvents.push(event as {code: string; device_id?: string; result?: {call_id?: string}});
+      }
     } catch {
       // ignore non-json
     }

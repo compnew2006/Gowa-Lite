@@ -8,6 +8,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {after, before, it} from 'node:test';
 import {WebSocket, WebSocketServer} from 'ws';
+import {expandWsFrame} from './ws-frame-helpers.ts';
 
 const deviceId = 'test-line';
 const deviceJid = '61400123456@s.whatsapp.net';
@@ -78,11 +79,14 @@ function waitForReaction(): Promise<Record<string, unknown>> {
       reject(new Error('No message reaction arrived over WebSocket'));
     }, 1500);
     function onMessage(frame: Buffer) {
-      const event = JSON.parse(frame.toString());
-      if (event.code !== 'MESSAGE_REACTION' || event.result.message_id !== messageId) return;
-      clearTimeout(timer);
-      client.off('message', onMessage);
-      resolve(event.result);
+      for (const event of expandWsFrame(JSON.parse(frame.toString()))) {
+        const result = event.result as {message_id?: string} | undefined;
+        if (event.code !== 'MESSAGE_REACTION' || result?.message_id !== messageId) continue;
+        clearTimeout(timer);
+        client.off('message', onMessage);
+        resolve(result as Record<string, unknown>);
+        return;
+      }
     }
     client.on('message', onMessage);
   });
@@ -193,8 +197,11 @@ it('routes events from a shared upstream socket only to the identified account',
   assert.equal(upstreamClients.size, 2);
   const events: Array<{device_id: string; result: {id: string}}> = [];
   const collect = (frame: Buffer) => {
-    const event = JSON.parse(frame.toString());
-    if (event.code === 'MESSAGE_RECEIVED') events.push(event);
+    for (const event of expandWsFrame(JSON.parse(frame.toString()))) {
+      if (event.code === 'MESSAGE_RECEIVED') {
+        events.push(event as {device_id: string; result: {id: string}});
+      }
+    }
   };
   const payload = {...message, media_type: '', content: 'Message for one account'};
   client.on('message', collect);

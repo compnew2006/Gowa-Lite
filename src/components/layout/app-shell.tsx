@@ -30,8 +30,8 @@ import {Button} from '@/components/ui/button';
 import {NotificationControls} from '@/features/notifications/notification-controls';
 import {formatNavUnreadCount, shouldShowNavUnreadBadge} from '@/features/chat/chat-ui-helpers';
 import {createUnifiedChatsQueryOptions} from '@/features/chat/inbox-queries';
-import {onWsEvent, type WsEvent} from '@/lib/events';
-import {syncLiveQueryCache} from '@/lib/live-query-sync';
+import {onWsBatch, type WsEvent} from '@/lib/events';
+import {syncLiveQueryBatch, syncLiveQueryCache} from '@/lib/live-query-sync';
 import {useI18n} from '@/lib/i18n';
 import {
   extractIncomingAlertData,
@@ -115,7 +115,9 @@ export function AppShell() {
     };
   }, [t.appName, t.appSubtitle, totalUnread]);
 
-  const handleLiveEvent = useEffectEvent((event: WsEvent) => {
+  // skipCacheSync is set by handleLiveBatch, which already applied the whole
+  // batch's cache patches (with one coalesced inbox invalidation) up front.
+  const handleLiveEvent = useEffectEvent((event: WsEvent, skipCacheSync = false) => {
     if (!user) return;
     const code = (event.code || '').toUpperCase();
     if (code === 'USER_ACCESS_UPDATED') {
@@ -139,7 +141,7 @@ export function AppShell() {
       }
       return;
     }
-    syncLiveQueryCache(queryClient, event);
+    if (!skipCacheSync) syncLiveQueryCache(queryClient, event);
 
     if (code === 'CHAT_LIFECYCLE_UPDATED' && event.result && typeof event.result === 'object') {
       const payload = event.result as {
@@ -235,9 +237,19 @@ export function AppShell() {
     }
   });
 
+  // Batched delivery (P2): apply the whole batch's React Query patches first
+  // with one coalesced inbox invalidation, then run the per-event side
+  // effects (lifecycle map, alerts) for each event in order. Plain frames
+  // arrive here as one-event batches, so behaviour is unchanged for them.
+  const handleLiveBatch = useEffectEvent((events: WsEvent[]) => {
+    if (!user || events.length === 0) return;
+    syncLiveQueryBatch(queryClient, events);
+    for (const event of events) handleLiveEvent(event, true);
+  });
+
   const hasSession = Boolean(user);
   useEffect(() => {
-    if (hasSession) return onWsEvent(handleLiveEvent);
+    if (hasSession) return onWsBatch(handleLiveBatch);
   }, [hasSession]);
 
   const primaryNav = [

@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {after, before, describe, it} from 'node:test';
 import {WebSocket} from 'ws';
+import {expandWsFrame} from './ws-frame-helpers.ts';
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gowa-lite-phase9-'));
 const tempDbPath = path.join(tempDir, 'phase9.db');
@@ -287,10 +288,11 @@ describe('Phase 9 Assignable Accounts Resilience, Live WS Sync & Message Scoping
     const accessEventPromise = new Promise<{code: string; result: {user?: {allowed_device_ids?: string[]}}}>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Timed out waiting for USER_ACCESS_UPDATED')), 5_000);
       ws.on('message', (raw) => {
-        const parsed = JSON.parse(raw.toString()) as {code?: string; result?: {user?: {allowed_device_ids?: string[]}}};
-        if (parsed.code === 'USER_ACCESS_UPDATED') {
-          clearTimeout(timer);
-          resolve(parsed as {code: string; result: {user?: {allowed_device_ids?: string[]}}});
+        for (const parsed of expandWsFrame(JSON.parse(raw.toString()))) {
+          if (parsed.code === 'USER_ACCESS_UPDATED') {
+            clearTimeout(timer);
+            resolve(parsed as {code: string; result: {user?: {allowed_device_ids?: string[]}}});
+          }
         }
       });
     });

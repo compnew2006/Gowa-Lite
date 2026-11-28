@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {after, before, describe, it} from 'node:test';
 import {WebSocket} from 'ws';
+import {expandWsFrame} from './ws-frame-helpers.ts';
 
 function listen(server: Server): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -409,10 +410,11 @@ describe('Daily Assigned-Chat Reset HTTP & WebSocket Integration', () => {
     const resetWsPromise = new Promise<Record<string, unknown>>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Timed out waiting for CHAT_DAILY_RESET')), 4000);
       ws.on('message', (raw) => {
-        const msg = JSON.parse(raw.toString('utf8')) as Record<string, unknown>;
-        if (msg.code === 'CHAT_DAILY_RESET') {
-          clearTimeout(timer);
-          resolve(msg);
+        for (const msg of expandWsFrame(JSON.parse(raw.toString('utf8')))) {
+          if (msg.code === 'CHAT_DAILY_RESET') {
+            clearTimeout(timer);
+            resolve(msg);
+          }
         }
       });
     });

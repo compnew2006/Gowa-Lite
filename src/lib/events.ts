@@ -10,6 +10,7 @@ import {
 
 export type WsEventCode =
   | 'BRIDGE_STATUS'
+  | 'WS_BATCH'
   | 'LOGIN_SUCCESS'
   | 'LIST_DEVICES'
   | 'DEVICE_REMOVED'
@@ -225,8 +226,10 @@ export function extractWsIncomingMessage(
 }
 
 type Handler = (event: WsEvent) => void;
+type BatchHandler = (events: WsEvent[]) => void;
 
 const handlers = new Set<Handler>();
+const batchHandlers = new Set<BatchHandler>();
 
 export function onWsEvent(handler: Handler): () => void {
   handlers.add(handler);
@@ -235,8 +238,49 @@ export function onWsEvent(handler: Handler): () => void {
   };
 }
 
+export function onWsBatch(handler: BatchHandler): () => void {
+  batchHandlers.add(handler);
+  return () => {
+    batchHandlers.delete(handler);
+  };
+}
+
 export function emitWsEvent(event: WsEvent): void {
   for (const handler of handlers) {
     handler(event);
+  }
+}
+
+export function emitWsBatch(events: WsEvent[]): void {
+  for (const handler of batchHandlers) {
+    handler(events);
+  }
+}
+
+// Batch frame format agreed with server/ws-bridge.ts (P2):
+//   {code: 'WS_BATCH', message: '', result: {events: [<WsEvent>, ...]}}
+// Expands a batch frame into its events in arrival order; plain frames pass
+// through unchanged. A malformed batch (no events array) is returned as-is so
+// nothing is silently dropped.
+export function expandWsBatchFrame(frame: WsEvent): WsEvent[] {
+  if (frame.code !== 'WS_BATCH') return [frame];
+  const result = asRecord(frame.result);
+  const events = result?.events;
+  if (!Array.isArray(events)) return [frame];
+  return events.filter(
+    (entry): entry is WsEvent =>
+      typeof entry === 'object' && entry !== null &&
+      typeof (entry as {code?: unknown}).code === 'string',
+  );
+}
+
+export function emitWsFrame(frame: WsEvent): void {
+  // Every frame is delivered as a batch (size 1 for plain frames) so the
+  // batch-aware consumer can coalesce cache work; per-event consumers still
+  // receive each event individually, in order.
+  const events = expandWsBatchFrame(frame);
+  emitWsBatch(events);
+  for (const event of events) {
+    emitWsEvent(event);
   }
 }

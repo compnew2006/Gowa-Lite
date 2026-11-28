@@ -71,6 +71,57 @@ function patchReaction(client: QueryClient, event: WsEvent): void {
 }
 
 export function syncLiveQueryCache(client: QueryClient, event: WsEvent): void {
+  syncLiveQueryCacheInternal(client, event);
+}
+
+// Batched sync (P2): apply a whole WS_BATCH frame as one unit. Cache patches
+// (reactions, incoming messages, revokes) still run per event in arrival
+// order, but invalidations are collected and executed once at the end — the
+// unified inbox is invalidated at most once per batch (per device scope)
+// instead of once per event, so a burst triggers one inbox refetch.
+export function syncLiveQueryBatch(client: QueryClient, events: WsEvent[]): void {
+  const deferred = newDeferredInvalidations();
+  for (const event of events) syncLiveQueryCacheInternal(client, event, deferred);
+  flushDeferredInvalidations(client, deferred);
+}
+
+interface DeferredInvalidations {
+  inboxDevices: Set<string | undefined>;
+  roots: Set<string>;
+  chatTargets: Map<string, {root: string; target: {deviceId?: string; chatJid?: string}}>;
+  messageDevices: Map<string, {deviceId: string; chatJid: string}>;
+}
+
+function newDeferredInvalidations(): DeferredInvalidations {
+  return {inboxDevices: new Set(), roots: new Set(), chatTargets: new Map(), messageDevices: new Map()};
+}
+
+function flushDeferredInvalidations(client: QueryClient, deferred: DeferredInvalidations): void {
+  for (const deviceId of deferred.inboxDevices) invalidateInbox(client, deviceId);
+  for (const root of deferred.roots) void client.invalidateQueries({queryKey: [root]});
+  for (const {root, target} of deferred.chatTargets.values()) {
+    invalidateChatQueries(client, root, target);
+  }
+  for (const {deviceId, chatJid} of deferred.messageDevices.values()) {
+    void client.invalidateQueries({
+      queryKey: messageQueryKeys.device(deviceId),
+      predicate: (query) => {
+        const rawJid = query.queryKey[2];
+        return (
+          typeof rawJid === 'string' &&
+          (toWhatsAppJid(rawJid) || rawJid) === chatJid &&
+          !isUnfilteredPatchableMessageQuery(query)
+        );
+      },
+    });
+  }
+}
+
+function syncLiveQueryCacheInternal(
+  client: QueryClient,
+  event: WsEvent,
+  deferred?: DeferredInvalidations,
+): void {
   const code = event.code.toUpperCase();
   if (code === 'MESSAGE_REACTION') {
     patchReaction(client, event);
@@ -80,14 +131,51 @@ export function syncLiveQueryCache(client: QueryClient, event: WsEvent): void {
   const target = extractWsEventTarget(event);
   const jid = target.chatJid?.toLowerCase();
   const invalidate = (...roots: string[]) => {
+    if (deferred) {
+      for (const root of roots) deferred.roots.add(root);
+      return;
+    }
     for (const root of roots) void client.invalidateQueries({queryKey: [root]});
   };
   const invalidateChat = (...roots: string[]) => {
+    if (deferred) {
+      for (const root of roots) {
+        deferred.chatTargets.set(
+          JSON.stringify([root, target.deviceId ?? null, target.chatJid ?? null]),
+          {root, target},
+        );
+      }
+      return;
+    }
     for (const root of roots) invalidateChatQueries(client, root, target);
+  };
+  const invalidateInboxDeferred = (deviceId: string | undefined) => {
+    if (deferred) {
+      deferred.inboxDevices.add(deviceId);
+      return;
+    }
+    invalidateInbox(client, deviceId);
+  };
+  const invalidateNonPatchableMessages = (deviceId: string, chatJid: string) => {
+    if (deferred) {
+      deferred.messageDevices.set(`${deviceId}::${chatJid}`, {deviceId, chatJid});
+      return;
+    }
+    void client.invalidateQueries({
+      queryKey: messageQueryKeys.device(deviceId),
+      predicate: (query) => {
+        const rawJid = query.queryKey[2];
+        return (
+          typeof rawJid === 'string' &&
+          (toWhatsAppJid(rawJid) || rawJid) === chatJid &&
+          !isUnfilteredPatchableMessageQuery(query)
+        );
+      },
+    });
   };
 
   if (DEVICE_EVENTS.has(code)) {
-    invalidateInbox(client, target.deviceId);
+    invalidateInboxDeferred(target.deviceId);
     invalidateChat(messageQueryKeys.all[0]);
     invalidate('devices', 'unified-accounts', 'unified-accounts-assign',
       'unified-groups', 'unified-groups-unread', 'misc-statuses');
@@ -104,7 +192,7 @@ export function syncLiveQueryCache(client: QueryClient, event: WsEvent): void {
 
   if (revoke || MESSAGE_EVENTS.has(code)) {
     if (!jid || jid.endsWith('@g.us')) invalidate('unified-groups', 'unified-groups-unread');
-    if (!jid?.endsWith('@g.us')) invalidateInbox(client, target.deviceId);
+    if (!jid?.endsWith('@g.us')) invalidateInboxDeferred(target.deviceId);
 
     const incoming = !revoke ? extractWsIncomingMessage(event) : null;
     if (incoming) {
@@ -123,17 +211,7 @@ export function syncLiveQueryCache(client: QueryClient, event: WsEvent): void {
       client.setQueriesData<InfiniteMessagePagesShape>(patchFilters, (data) =>
         upsertIncomingMessageInPages(data, incoming.message),
       );
-      void client.invalidateQueries({
-        queryKey: messageQueryKeys.device(incoming.deviceId),
-        predicate: (query) => {
-          const rawJid = query.queryKey[2];
-          return (
-            typeof rawJid === 'string' &&
-            (toWhatsAppJid(rawJid) || rawJid) === normalizedChatJid &&
-            !isUnfilteredPatchableMessageQuery(query)
-          );
-        },
-      });
+      invalidateNonPatchableMessages(incoming.deviceId, normalizedChatJid);
     } else {
       invalidateChat(messageQueryKeys.all[0]);
     }
@@ -143,22 +221,22 @@ export function syncLiveQueryCache(client: QueryClient, event: WsEvent): void {
     invalidateChat('unified-chat-schedules');
     invalidate('schedules');
   } else if (code === 'CHAT_LIFECYCLE_UPDATED' || code === 'CHAT_DAILY_RESET') {
-    invalidateInbox(client, target.deviceId);
+    invalidateInboxDeferred(target.deviceId);
     invalidateChat(
       chatLifecycleQueryKeys.all[0],
       messageQueryKeys.all[0],
       'unified-chat-notes',
       'unified-chat-schedules',
     );
-    invalidateChatQueries(client, 'assignable-agents', {deviceId: target.deviceId});
-    if (code === 'CHAT_DAILY_RESET') invalidateChatQueries(client, 'account-daily-reset', {deviceId: target.deviceId});
+    invalidateChat('assignable-agents');
+    if (code === 'CHAT_DAILY_RESET') invalidateChat('account-daily-reset');
   } else if (code === 'INBOX_POLICY_UPDATED') {
     invalidate('inbox-policy');
   } else if (code === 'CHAT_CLOSE_RATING_UPDATED') {
-    invalidateChatQueries(client, 'account-close-ratings', {deviceId: target.deviceId});
+    invalidateChat('account-close-ratings');
     invalidate('users-ratings', 'user-ratings-detail');
   } else if (code === 'CALL_AUTO_REJECTED' && target.deviceId) {
-    invalidateChatQueries(client, 'call-auto-reject', {deviceId: target.deviceId});
+    invalidateChat('call-auto-reject');
   } else if (code === 'ROLE_UPDATED') {
     invalidate('roles', 'users');
   } else if (code === 'USERS_UPDATED') {

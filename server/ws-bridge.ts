@@ -28,6 +28,19 @@ interface TicketEntry {
 const TICKET_TTL_MS = 30_000;
 const MESSAGE_REPLAY_WINDOW_MS = 30_000;
 const MAX_RECENT_MESSAGES = 2_048;
+// WS event batching (P2): upstream events arriving in bursts are buffered per
+// client and flushed together instead of one frame per event.
+// Batch frame format (server + frontend client agree; both ship in one deploy):
+//   {code: 'WS_BATCH', message: '', result: {events: [<WsEvent>, ...]}}
+// Events inside a batch keep arrival order. A flush holding exactly one event
+// sends that event unwrapped (today's wire format) so single events — and any
+// raw WS consumer — see no change; only bursts become a batch frame.
+// Per-client queues preserve per-user filtering/redaction and ordering: an
+// event is filtered for a client when it is enqueued, and only that client's
+// allowed events ever enter its queue.
+export const WS_BATCH_CODE = 'WS_BATCH';
+export const WS_BATCH_FLUSH_MS = 100;
+export const WS_BATCH_MAX_EVENTS = 50;
 const tickets = new Map<string, TicketEntry>();
 
 export function issueWsTicket(user: PublicUser, token: string): string {
@@ -53,6 +66,7 @@ interface BridgeClient {
   socket: WebSocket;
   userId: number;
   sessionHash: string;
+  pending: unknown[];
 }
 
 export interface GowaUpstreamEvent {
@@ -314,6 +328,7 @@ export class GowaWsBridge {
   private recentMessages = new Map<string, number>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private syncTimer: ReturnType<typeof setInterval> | null = null;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private onUpstreamEvent?: (deviceId: string, event: GowaUpstreamEvent) => boolean | void;
   private userCache = new Map<number, {user: PublicUser | null; version: number; fetchedAt: number}>();
 
@@ -349,7 +364,7 @@ export class GowaWsBridge {
         return;
       }
 
-      const client: BridgeClient = {socket: ws, userId: liveUser.id, sessionHash: session.sessionHash};
+      const client: BridgeClient = {socket: ws, userId: liveUser.id, sessionHash: session.sessionHash, pending: []};
       this.clients.add(client);
 
       const allowedDevices = Array.from(this.upstreamSockets.keys()).filter((id) =>
@@ -390,6 +405,7 @@ export class GowaWsBridge {
   }
 
   private disconnectClient(client: BridgeClient): void {
+    client.pending = [];
     client.socket.close(4001, 'Session revoked');
     this.clients.delete(client);
   }
@@ -414,21 +430,45 @@ export class GowaWsBridge {
   }
 
   broadcast(payload: unknown): void {
-    let defaultSerialized: string | null = null;
     for (const client of this.clients) {
       if (client.socket.readyState !== WebSocket.OPEN) continue;
       const liveUser = this.getAuthenticatedClientUser(client);
       if (!liveUser) continue;
       const decision = shouldDeliverWsEventToUser(liveUser, payload);
       if (!decision.allowed) continue;
-      if (decision.filteredPayload !== undefined) {
-        client.socket.send(JSON.stringify(decision.filteredPayload));
-      } else {
-        if (defaultSerialized === null) {
-          defaultSerialized = JSON.stringify(payload);
-        }
-        client.socket.send(defaultSerialized);
+      client.pending.push(decision.filteredPayload !== undefined ? decision.filteredPayload : payload);
+      if (client.pending.length >= WS_BATCH_MAX_EVENTS) {
+        this.flushClient(client);
       }
+    }
+    this.scheduleFlush();
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer !== null) return;
+    if (![...this.clients].some((client) => client.pending.length > 0)) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      this.flushAll();
+    }, WS_BATCH_FLUSH_MS);
+  }
+
+  private flushAll(): void {
+    for (const client of [...this.clients]) this.flushClient(client);
+  }
+
+  private flushClient(client: BridgeClient): void {
+    if (client.pending.length === 0) return;
+    const events = client.pending;
+    client.pending = [];
+    if (client.socket.readyState !== WebSocket.OPEN) return;
+    // Re-check the session at flush time so a revocation between enqueue and
+    // flush drops the batch instead of delivering it.
+    if (!this.getAuthenticatedClientUser(client)) return;
+    if (events.length === 1) {
+      client.socket.send(JSON.stringify(events[0]));
+    } else {
+      client.socket.send(JSON.stringify({code: WS_BATCH_CODE, message: '', result: {events}}));
     }
   }
 
@@ -623,6 +663,11 @@ export class GowaWsBridge {
       clearInterval(this.syncTimer);
       this.syncTimer = null;
     }
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.flushAll();
     this.closeAllUpstreams();
     this.wss.close();
   }

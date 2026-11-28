@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {after, before, describe, it} from 'node:test';
 import {WebSocket} from 'ws';
+import {expandWsFrame} from './ws-frame-helpers.ts';
 
 function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -39,14 +40,15 @@ function createJsonCollector(ws: WebSocket): {
 
   ws.on('message', (raw) => {
     try {
-      const parsed = JSON.parse(raw.toString('utf8')) as Record<string, unknown>;
-      messages.push(parsed);
-      for (let i = waiters.length - 1; i >= 0; i -= 1) {
-        const w = waiters[i];
-        if (w.predicate(parsed)) {
-          clearTimeout(w.timer);
-          waiters.splice(i, 1);
-          w.resolve(parsed);
+      for (const parsed of expandWsFrame(JSON.parse(raw.toString('utf8')))) {
+        messages.push(parsed);
+        for (let i = waiters.length - 1; i >= 0; i -= 1) {
+          const w = waiters[i];
+          if (w.predicate(parsed)) {
+            clearTimeout(w.timer);
+            waiters.splice(i, 1);
+            w.resolve(parsed);
+          }
         }
       }
     } catch {
