@@ -29,7 +29,11 @@ const TICKET_TTL_MS = 30_000;
 const MESSAGE_REPLAY_WINDOW_MS = 30_000;
 const MAX_RECENT_MESSAGES = 2_048;
 // WS event batching (P2): upstream events arriving in bursts are buffered per
-// client and flushed together instead of one frame per event.
+// client and flushed together instead of one frame per event. Exception:
+// MESSAGE_REACTION bypasses the queue and is sent synchronously (see
+// broadcast/sendImmediate) — reactions are order- and latency-sensitive, and
+// a queued stale reaction must never overtake the fresh one a client is
+// already waiting for.
 // Batch frame format (server + frontend client agree; both ship in one deploy):
 //   {code: 'WS_BATCH', message: '', result: {events: [<WsEvent>, ...]}}
 // Events inside a batch keep arrival order. A flush holding exactly one event
@@ -430,6 +434,29 @@ export class GowaWsBridge {
   }
 
   broadcast(payload: unknown): void {
+    // MESSAGE_REACTION bypasses the batch queue (see sendImmediate): a
+    // reaction is order- and latency-sensitive — its sender already gated it
+    // by timestamp, and a client waiting for the next reaction must never
+    // observe an older queued reaction first. Every other event is buffered
+    // below and flushed together.
+    const code =
+      typeof (payload as {code?: unknown} | null)?.code === 'string'
+        ? ((payload as {code: string}).code as string)
+        : '';
+    if (isGowaReactionEvent(code)) {
+      for (const client of this.clients) {
+        if (client.socket.readyState !== WebSocket.OPEN) continue;
+        const liveUser = this.getAuthenticatedClientUser(client);
+        if (!liveUser) continue;
+        const decision = shouldDeliverWsEventToUser(liveUser, payload);
+        if (!decision.allowed) continue;
+        this.sendImmediate(
+          client,
+          decision.filteredPayload !== undefined ? decision.filteredPayload : payload,
+        );
+      }
+      return;
+    }
     for (const client of this.clients) {
       if (client.socket.readyState !== WebSocket.OPEN) continue;
       const liveUser = this.getAuthenticatedClientUser(client);
@@ -442,6 +469,21 @@ export class GowaWsBridge {
       }
     }
     this.scheduleFlush();
+  }
+
+  // Deliver one event synchronously, exactly as broadcast() did before
+  // batching: flush anything already queued for this client first so the
+  // immediate event never overtakes an earlier one, then send it without
+  // waiting for the flush window. Used for MESSAGE_REACTION, where the
+  // 100ms queue delay let a stale reaction from an earlier action be
+  // delivered after the next action had already started waiting for its own
+  // reaction (tests/message-reactions.test.ts: first-match waiters resolved
+  // on the stale event).
+  private sendImmediate(client: BridgeClient, payload: unknown): void {
+    this.flushClient(client);
+    if (client.socket.readyState !== WebSocket.OPEN) return;
+    if (!this.getAuthenticatedClientUser(client)) return;
+    client.socket.send(JSON.stringify(payload));
   }
 
   private scheduleFlush(): void {

@@ -144,6 +144,72 @@ describe('WS event batching (P2)', () => {
     }
   });
 
+  it('delivers a MESSAGE_REACTION immediately, after any queued burst, never behind it', async () => {
+    // Admin: lifecycle content access allows the reaction through (an agent
+    // with no assignment to this chat would be filtered out — that is the
+    // production RBAC behavior, not batching).
+    const agent = dbMod.createUser({
+      username: 'ws_batch_agent5',
+      display_name: 'WS Batch Agent 5',
+      role: 'admin',
+      password: 'Password123',
+      allowed_device_ids: ['dev-1'],
+    });
+    const port = await getFreePort();
+    const server = http.createServer((_req, res) => {
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
+    const bridge = new wsBridgeMod.GowaWsBridge(server);
+    try {
+      const ticket = wsBridgeMod.issueWsTicket(agent, dbMod.createSession(agent.id));
+      const clientWs = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${ticket}`);
+      const frames: unknown[] = [];
+      clientWs.on('message', (data) => {
+        frames.push(JSON.parse(data.toString()) as unknown);
+      });
+      await new Promise<void>((resolve) => clientWs.once('open', resolve));
+      await sleep(50);
+      assert.equal(frames.length, 1);
+
+      // A burst is buffered for the ~100ms flush window…
+      for (let i = 0; i < 3; i += 1) {
+        bridge.relayScopedEvent('dev-1', messageEvent('dev-1', `m-r${i}`, `msg ${i}`) as never);
+      }
+      await sleep(50);
+      assert.equal(frames.length, 1, 'burst must still be buffered before the flush window');
+
+      // …but a reaction must not wait behind it: it flushes the queued burst
+      // first (arrival order) and is delivered synchronously, unwrapped.
+      bridge.broadcast({
+        code: 'MESSAGE_REACTION',
+        message: 'reaction',
+        device_id: 'dev-1',
+        result: {
+          chat_jid: jid,
+          message_id: 'm-r0',
+          emoji: '❤️',
+          sender_jid: jid,
+          is_from_me: false,
+          timestamp: '2026-11-28T00:00:00Z',
+        },
+      });
+      await sleep(50);
+      assert.equal(frames.length, 3, 'reaction must arrive immediately, not after the flush window');
+      const batch = frames[1] as {code: string; result: {events: Array<{result: {id: string}}>} };
+      assert.equal(batch.code, 'WS_BATCH');
+      assert.equal(batch.result.events.length, 3);
+      const reaction = frames[2] as {code: string; result: {emoji: string}};
+      assert.equal(reaction.code, 'MESSAGE_REACTION');
+      assert.equal(reaction.result.emoji, '❤️');
+      clientWs.close();
+    } finally {
+      bridge.shutdown();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('dedup still drops replayed upstream events inside a batch', async () => {
     const agent = dbMod.createUser({
       username: 'ws_batch_agent2',
