@@ -1,5 +1,6 @@
 import {use} from 'react';
 import type {DeviceState} from '@/api/types';
+import {formatNumber} from './format';
 import {useAuthStore} from '@/stores/auth';
 
 export const bootingLabels = {ar: 'جاري تهيئة النظام...', en: 'Initializing system...'};
@@ -485,10 +486,10 @@ const ar = {
       tab: 'التقييمات',
       title: 'تقييم الخدمة بعد الإغلاق',
       enable: 'أرسل طلب تقييم على واتساب',
-      description: 'يقدر العميل يرد برقم من ١ إلى ٥ خلال ٤٨ ساعة من الطلب.',
+      description: 'يقدر العميل يرد برقم من 1 إلى 5 خلال 48 ساعة من الطلب.',
       webhookHint: 'اضبط Webhook الرسائل في GOWA لاستقبال التقييمات لحظيًا.',
       promptLabel: 'رسالة طلب التقييم',
-      promptHint: 'تُرسل هذه الرسالة للعميل على واتساب فور إغلاق المحادثة. تأكد من توضيح إمكانية الرد برقم من ١ إلى ٥.',
+      promptHint: 'تُرسل هذه الرسالة للعميل على واتساب فور إغلاق المحادثة. تأكد من توضيح إمكانية الرد برقم من 1 إلى 5.',
       promptPlaceholder: 'اكتب نص رسالة التقييم...',
       savePrompt: 'حفظ الرسالة',
       resetPrompt: 'استعادة الافتراضي',
@@ -497,7 +498,7 @@ const ar = {
       byUserTitle: 'تقييمات الموظفين على هذا الحساب',
       unknownUser: 'غير محدد',
       ratingsCountSuffix: (count: number) => `${count} تقييم`,
-      average: 'متوسط التقييم من ٥',
+      average: 'متوسط التقييم من 5',
       count: 'عدد التقييمات',
       recent: 'أحدث التقييمات',
       empty: 'لا توجد تقييمات لهذا الحساب بعد.',
@@ -555,7 +556,7 @@ const ar = {
     noRatingsYet: 'بدون تقييمات',
     ratingsDialogTitle: (name: string) => `تقييمات الخدمة — ${name}`,
     ratingsDialogDesc: 'التقييمات المسجلة للمحادثات التي تعامل معها وأغلقها هذا المستخدم عبر جميع الحسابات.',
-    ratingsAverageLabel: 'متوسط التقييم من ٥',
+    ratingsAverageLabel: 'متوسط التقييم من 5',
     ratingsTotalLabel: 'إجمالي التقييمات',
     ratingsByAccountTitle: 'التوزيع حسب الحساب',
     ratingsRecentTitle: 'أحدث التقييمات',
@@ -1006,7 +1007,7 @@ const ar = {
     viewStatusMedia: 'تحميل ومعاينة الوسائط',
     textStatusLabel: 'حالة نصية',
     accountsOverviewConnected: (online: number, total: number) => `${online} من ${total} حساب متصل`,
-    subscribersCount: (count: number) => `${count.toLocaleString()} متابع`,
+    subscribersCount: (count: number) => `${formatNumber(count, 'ar')} متابع`,
     unfollow: 'إلغاء المتابعة',
     follow: 'متابعة',
     followedToast: 'تمت متابعة القناة',
@@ -1024,7 +1025,7 @@ const ar = {
     liveToggleLabel: 'التحديث المباشر',
     loadOlderPosts: 'تحميل منشورات أقدم',
     noPosts: 'لا توجد منشورات متاحة لهذه القناة.',
-    viewsLabel: (count: number) => `${count.toLocaleString()} مشاهدة`,
+    viewsLabel: (count: number) => `${formatNumber(count, 'ar')} مشاهدة`,
     downloadAttachment: 'تحميل المرفق',
     directoryViewLabel: 'التصنيف',
     viewRecommended: 'مقترحة',

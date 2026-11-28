@@ -74,7 +74,7 @@ import {
 import {messageQueryKeys} from '@/features/chat/message-query-keys';
 import {chatUniqueKey} from '@/features/chat/selected-chat';
 import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
-import {formatShortTime} from '@/lib/format';
+import {formatNumber, formatShortTime} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {matchesNormalizedQuery} from '@/lib/phone';
@@ -295,7 +295,7 @@ const ChatListRow = memo(function ChatListRow({
                       title={t.chats.unreadLabel(unreadCount)}
                       className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-live px-1.5 text-[11px] font-semibold text-white tabular-nums"
                     >
-                      {String(unreadCount)}
+                      {formatNumber(unreadCount, lang)}
                     </span>
                   )}
                 </span>
@@ -432,7 +432,7 @@ export function ChatList({
   onSelect: (chat: UnifiedChat) => void;
 }) {
   const queryClient = useQueryClient();
-  const {isRtl, t} = useI18n();
+  const {isRtl, lang, t} = useI18n();
   const user = useAuthStore((s) => s.user);
   const canWriteChats = hasUserPermission(user, 'chats:write');
   const canRevokeChats = hasUserPermission(user, 'chats:revoke');
@@ -834,7 +834,7 @@ export function ChatList({
                         isActive ? 'text-accent-foreground' : 'text-muted-foreground',
                       )}
                     >
-                      {tabItem.count}
+                      {formatNumber(tabItem.count, lang)}
                     </span>
                   )}
                 </button>

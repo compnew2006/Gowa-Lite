@@ -23,11 +23,13 @@ export function isZeroTime(iso: string | null | undefined): boolean {
   return Number.isNaN(millis) || millis <= 0;
 }
 
+const LATIN_AR_LOCALE = 'ar-EG-u-nu-latn';
+
 const formatters = {
   ar: {
-    dateTime: new Intl.DateTimeFormat('ar-EG', {dateStyle: 'medium', timeStyle: 'short'}),
-    day: new Intl.DateTimeFormat('ar-EG', {dateStyle: 'medium'}),
-    timeOnly: new Intl.DateTimeFormat('ar-EG', {timeStyle: 'short'}),
+    dateTime: new Intl.DateTimeFormat(LATIN_AR_LOCALE, {dateStyle: 'long', timeStyle: 'short'}),
+    day: new Intl.DateTimeFormat(LATIN_AR_LOCALE, {dateStyle: 'long'}),
+    timeOnly: new Intl.DateTimeFormat(LATIN_AR_LOCALE, {timeStyle: 'short'}),
   },
   en: {
     dateTime: new Intl.DateTimeFormat('en-US', {dateStyle: 'medium', timeStyle: 'short'}),
@@ -35,6 +37,27 @@ const formatters = {
     timeOnly: new Intl.DateTimeFormat('en-US', {timeStyle: 'short'}),
   },
 };
+
+// Decision 1: Latin digits everywhere. The single home for number formatting;
+// every display site must go through this instead of building its own
+// Intl.NumberFormat or calling toLocaleString() without a locale.
+const numberFormatterCache = new Map<string, Intl.NumberFormat>();
+
+export function formatNumber(
+  n: number,
+  lang?: LanguagePreference,
+  options?: Intl.NumberFormatOptions,
+): string {
+  const activeLang = resolveLang(lang);
+  const locale = activeLang === 'ar' ? LATIN_AR_LOCALE : 'en-US';
+  const key = `${locale}|${JSON.stringify(options ?? {})}`;
+  let formatter = numberFormatterCache.get(key);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale, options);
+    numberFormatterCache.set(key, formatter);
+  }
+  return formatter.format(n);
+}
 
 export function formatDate(iso: string, lang?: LanguagePreference): string {
   if (isZeroTime(iso)) return '—';

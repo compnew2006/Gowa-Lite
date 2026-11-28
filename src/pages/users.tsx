@@ -14,7 +14,7 @@ import {Input} from '@/components/ui/input';
 import {Skeleton} from '@/components/ui/skeleton';
 import {summarizeAssignedAccounts} from '@/features/users/device-access-helpers';
 import type {UserDialogSelection} from '@/features/users/user-dialogs';
-import {formatDate} from '@/lib/format';
+import {formatDate, formatNumber} from '@/lib/format';
 import {useI18n} from '@/lib/i18n';
 import {hasUserPermission, isAdminUser, useAuthStore} from '@/stores/auth';
 
@@ -94,11 +94,6 @@ export default function UsersPage() {
     }
     return map;
   }, [ratingsQuery.data]);
-
-  const formatScoreNumber = useMemo(
-    () => new Intl.NumberFormat(lang, {maximumFractionDigits: 1}),
-    [lang],
-  );
 
   const users = usersQuery.data ?? [];
 
@@ -267,7 +262,7 @@ export default function UsersPage() {
                           <Star className="size-3.5 text-primary" aria-hidden />
                           <span>
                             {t.users.ratingsSummary(
-                              formatScoreNumber.format(ratingSummary.average),
+                              formatNumber(ratingSummary.average, lang, {maximumFractionDigits: 1}),
                               ratingSummary.count,
                             )}
                           </span>

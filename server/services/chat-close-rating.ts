@@ -24,7 +24,7 @@ import {GowaError, gowaFetch} from '../gowa-client.ts';
 
 const RATING_WINDOW_MS = 48 * 60 * 60 * 1000;
 export const DEFAULT_RATING_PROMPT =
-  'شكرًا لتواصلك معنا. قيّم الخدمة بإرسال رقم من ١ إلى ٥ (٥ = ممتاز).\nThanks for contacting us. Rate our service from 1 to 5 (5 = excellent).';
+  'شكرًا لتواصلك معنا. قيّم الخدمة بإرسال رقم من 1 إلى 5 (5 = ممتاز).\nThanks for contacting us. Rate our service from 1 to 5 (5 = excellent).';
 
 function ratingSettingKey(deviceId: string): string {
   return `close_rating_enabled:${deviceId}`;

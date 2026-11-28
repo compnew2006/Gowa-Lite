@@ -7,7 +7,7 @@ import {Button} from '@/components/ui/button';
 import {Label} from '@/components/ui/label';
 import {Skeleton} from '@/components/ui/skeleton';
 import {Switch} from '@/components/ui/switch';
-import {formatDate} from '@/lib/format';
+import {formatDate, formatNumber} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 
@@ -61,7 +61,6 @@ export function AccountCloseRatingPanel({deviceId, canWrite}: {deviceId: string;
   });
 
   const data = query.data;
-  const formatNumber = new Intl.NumberFormat(lang, {maximumFractionDigits: 1});
   const trimmedDraft = promptDraft.trim();
   const promptDirty = data !== undefined && trimmedDraft !== data.prompt_message.trim();
   const canReset = data !== undefined && (data.is_custom_prompt || trimmedDraft !== data.default_prompt);
@@ -153,12 +152,12 @@ export function AccountCloseRatingPanel({deviceId, canWrite}: {deviceId: string;
             <div>
               <dt className="text-xs text-muted-foreground">{copy.average}</dt>
               <dd className="mt-1 text-lg font-semibold tabular-nums">
-                {data.average === null ? '—' : formatNumber.format(data.average)}
+                {data.average === null ? '—' : formatNumber(data.average, lang, {maximumFractionDigits: 1})}
               </dd>
             </div>
             <div>
               <dt className="text-xs text-muted-foreground">{copy.count}</dt>
-              <dd className="mt-1 text-lg font-semibold tabular-nums">{formatNumber.format(data.count)}</dd>
+              <dd className="mt-1 text-lg font-semibold tabular-nums">{formatNumber(data.count, lang, {maximumFractionDigits: 1})}</dd>
             </div>
           </dl>
 
@@ -181,7 +180,7 @@ export function AccountCloseRatingPanel({deviceId, canWrite}: {deviceId: string;
                     </div>
                     <span className="inline-flex shrink-0 items-center gap-1 font-medium tabular-nums">
                       <Star className="size-3.5 text-primary" aria-hidden />
-                      <bdi>{formatNumber.format(entry.average)} / {formatNumber.format(5)}</bdi>
+                      <bdi>{formatNumber(entry.average, lang, {maximumFractionDigits: 1})} / {formatNumber(5, lang, {maximumFractionDigits: 1})}</bdi>
                     </span>
                   </li>
                 ))}
@@ -206,7 +205,7 @@ export function AccountCloseRatingPanel({deviceId, canWrite}: {deviceId: string;
                   </div>
                   <span className="inline-flex shrink-0 items-center gap-1 font-medium tabular-nums">
                     <Star className="size-3.5 text-primary" aria-hidden />
-                    <bdi>{formatNumber.format(rating.score)} / {formatNumber.format(5)}</bdi>
+                    <bdi>{formatNumber(rating.score, lang, {maximumFractionDigits: 1})} / {formatNumber(5, lang, {maximumFractionDigits: 1})}</bdi>
                   </span>
                 </li>
               ))}

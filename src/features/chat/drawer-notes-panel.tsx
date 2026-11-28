@@ -35,7 +35,7 @@ function formatRelativeNoteTime(iso: string, lang: 'ar' | 'en'): string {
   if (diffHours < 24) return lang === 'ar' ? `منذ ${diffHours} س` : `${diffHours}h ago`;
   const diffDays = Math.floor(diffHours / 24);
   if (diffDays < 7) return lang === 'ar' ? `منذ ${diffDays} ي` : `${diffDays}d ago`;
-  return new Intl.DateTimeFormat(lang === 'ar' ? 'ar-EG' : 'en-US', {
+  return new Intl.DateTimeFormat(lang === 'ar' ? 'ar-EG-u-nu-latn' : 'en-US', {
     month: 'short',
     day: 'numeric',
   }).format(date);
