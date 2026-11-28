@@ -155,6 +155,7 @@ const ar = {
       document: 'مستند',
       sticker: 'ملصق',
       file: 'ملف',
+      call: 'مكالمة واردة',
     } as Record<string, string>,
     copyText: 'نسخ النص',
     copiedToClipboard: 'تم نسخ النص',

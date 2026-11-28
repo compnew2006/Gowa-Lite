@@ -4,6 +4,12 @@
 // chat in the list response; this module turns those two fields into what
 // the row renders: the text itself, or — for a media message with no text —
 // a media-type icon + short label, never a blank line.
+//
+// Call rows are the exception to "text wins": the gateway stores incoming
+// calls as synthetic messages whose content is the raw English string
+// "Incoming call" (media_type "call"). Showing that verbatim would leak an
+// unlocalized label, so call rows render the localized call label instead
+// (P2-2a).
 
 export type ChatPreview =
   | {kind: 'text'; text: string}
@@ -19,13 +25,36 @@ export function normalizePreviewText(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * The gateway's raw text for an incoming-call row (upstream
+ * `CreateIncomingCallRecord`: content "Incoming call", media_type "call").
+ * Matched against the whole normalized text only, so an ordinary message
+ * that merely mentions a call keeps its own text.
+ */
+const GATEWAY_CALL_TEXT = 'incoming call';
+
+/**
+ * Whether this preview source is a call row. The gateway only records
+ * incoming calls (media_type "call", never from-me), so the incoming-call
+ * label is always the right one — there is no outgoing-call row to tell
+ * apart. The raw-text match covers rows cached before media_type was
+ * populated.
+ */
+function isCallPreview(text: string, mediaType: string): boolean {
+  if (mediaType.toLowerCase() === 'call') return true;
+  return text.toLowerCase() === GATEWAY_CALL_TEXT;
+}
+
 export function resolveChatPreview(
   chat: ChatPreviewSource,
   mediaLabels: Record<string, string>,
 ): ChatPreview | null {
   const text = normalizePreviewText(chat.last_message_text ?? '');
-  if (text) return {kind: 'text', text};
   const mediaType = (chat.last_message_type ?? '').trim();
+  if (isCallPreview(text, mediaType)) {
+    return {kind: 'media', mediaType: 'call', label: mediaLabels.call ?? 'call'};
+  }
+  if (text) return {kind: 'text', text};
   if (!mediaType) return null;
   return {kind: 'media', mediaType, label: mediaLabels[mediaType] ?? mediaType};
 }
