@@ -15,6 +15,7 @@ import {
   WorkspaceEmptyState,
 } from '@/components/layout/split-workspace';
 import {Button} from '@/components/ui/button';
+import {useDevicesQuery} from '@/components/device-selector-bar';
 import {ChatList} from '@/features/chat/chat-list';
 import {DeferredMessageView} from '@/features/chat/deferred-message-view';
 import {chatDisplayName} from '@/features/chat/display-name';
@@ -220,6 +221,21 @@ export default function ChatsPage() {
 
   const navigate = useNavigate();
 
+  // P2-6: the chats page subscribes to the same shared ['devices'] query
+  // as the scheduled page, and uses it as the source of which devices
+  // exist (pruning the saved filter, split-pane defaults). The inbox
+  // response's `accounts` still drives the chat data itself; the shared
+  // query only replaces it where the question is "does this device still
+  // exist". Until the shared query loads (or when the user lacks
+  // accounts:read and it errors), the inbox accounts are the fallback so
+  // a chat-only operator loses nothing.
+  const devicesQuery = useDevicesQuery();
+  const knownDeviceIds = useMemo(() => {
+    const shared = devicesQuery.data ?? [];
+    if (shared.length > 0) return shared.map((d) => d.id);
+    return accounts.map((a) => a.id);
+  }, [devicesQuery.data, accounts]);
+
   useEffect(() => {
     saveChatDeviceIds(selectedDeviceIds);
   }, [selectedDeviceIds]);
@@ -227,13 +243,13 @@ export default function ChatsPage() {
   // Drop restored ids whose device no longer exists (e.g. unlinked since
   // the last visit); an empty saved filter ("all accounts") stays empty.
   useEffect(() => {
-    if (accounts.length === 0 || selectedDeviceIds.length === 0) return;
+    if (knownDeviceIds.length === 0 || selectedDeviceIds.length === 0) return;
     const pruned = filterExistingDeviceIds(
       selectedDeviceIds,
-      accounts.map((a) => a.id),
+      knownDeviceIds,
     );
     if (pruned.length !== selectedDeviceIds.length) setSelectedDeviceIds(pruned);
-  }, [accounts, selectedDeviceIds]);
+  }, [knownDeviceIds, selectedDeviceIds]);
 
   useEffect(() => {
     if (lastAppliedParamsRef.current === searchParamsKey) return;
@@ -288,8 +304,8 @@ export default function ChatsPage() {
     setMode(nextMode);
     if (nextMode === 'split' && splitPanes.length === 0) {
       setSplitPanes([
-        {id: 'pane-1', deviceIds: accounts[0] ? [accounts[0].id] : []},
-        {id: 'pane-2', deviceIds: accounts[1] ? [accounts[1].id] : []},
+        {id: 'pane-1', deviceIds: knownDeviceIds[0] ? [knownDeviceIds[0]] : []},
+        {id: 'pane-2', deviceIds: knownDeviceIds[1] ? [knownDeviceIds[1]] : []},
       ]);
     }
   };
@@ -297,12 +313,12 @@ export default function ChatsPage() {
   const handleAddPane = () => {
     if (splitPanes.length >= 3) return;
     const usedIds = new Set(splitPanes.flatMap((p) => p.deviceIds));
-    const unusedAccount = accounts.find((a) => !usedIds.has(a.id));
+    const unusedAccountId = knownDeviceIds.find((id) => !usedIds.has(id));
     setSplitPanes((prev) => [
       ...prev,
       {
         id: `pane-${Date.now()}`,
-        deviceIds: unusedAccount ? [unusedAccount.id] : [],
+        deviceIds: unusedAccountId ? [unusedAccountId] : [],
       },
     ]);
   };

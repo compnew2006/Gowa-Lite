@@ -1,4 +1,4 @@
-import {useMemo, useState} from 'react';
+import {useEffect, useMemo, useState} from 'react';
 import {useSearchParams} from 'react-router-dom';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {
@@ -53,6 +53,25 @@ export default function ScheduledPage() {
   const canManageSchedules = hasUserPermission(user, 'schedules:manage');
   const deviceState = useActiveDevice();
   const deviceId = deviceState.selectedDeviceId;
+
+  // P2-6: refetch the shared ['devices'] query on entry when the cached
+  // copy is older than the app QueryClient's default staleTime (15s) —
+  // instead of trusting a stale list (the scheduled page previously showed
+  // 14 devices while chats showed 15, from a minutes-old fetch). A fresh
+  // copy is NOT refetched: the shared query already guarantees this page
+  // sees the same list as chats, and refetching it would disable the P1-9
+  // refresh button while the page loads.
+  const DEVICES_ENTRY_MAX_AGE_MS = 15_000;
+  useEffect(() => {
+    const state = queryClient.getQueryState(['devices']);
+    if (Date.now() - (state?.dataUpdatedAt ?? 0) > DEVICES_ENTRY_MAX_AGE_MS) {
+      void deviceState.refetch();
+    }
+  }, [queryClient, deviceState.refetch]);
+
+  // P2-4: a pending invalid free-text date blocks submitting (reported by
+  // the recurrence fields via onFreeTextErrorChange).
+  const [freeTextError, setFreeTextError] = useState<string | null>(null);
 
   const [statusFilter, setStatusFilter] = useState<'all' | ScheduleStatus>('all');
   const [messageTypeFilter, setMessageTypeFilter] = useState<string>('all');
@@ -113,6 +132,11 @@ export default function ScheduledPage() {
 
   const createMutation = useMutation({
     mutationFn: () => {
+      // P2-4: an unparsed free-text date must not be sent — the picker's
+      // previous value is not what the operator typed.
+      if (freeTextError) {
+        throw new ScheduleValidationError(freeTextError);
+      }
       const validated = validateAndBuildScheduleFields(
         {
           message,
@@ -221,6 +245,7 @@ export default function ScheduledPage() {
           <Button
             onClick={() => {
               setScheduledAtLocal(defaultScheduleDateTimeLocal(15));
+              setFreeTextError(null);
               setCreateOpen(true);
             }}
           >
@@ -552,6 +577,7 @@ export default function ScheduledPage() {
             onOccurrenceLimitChange={setOccurrenceLimit}
             endAtLocal={endAtLocal}
             onEndAtChange={setEndAtLocal}
+            onFreeTextErrorChange={setFreeTextError}
           />
 
           <ScheduleConfirmationSummary

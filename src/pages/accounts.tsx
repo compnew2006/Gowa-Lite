@@ -1,9 +1,10 @@
 import {useEffect, useMemo, useState} from 'react';
-import {useQuery} from '@tanstack/react-query';
-import {RefreshCw, Search, Smartphone} from 'lucide-react';
-import {listDevices} from '@/api/client';
+import {useQueryClient} from '@tanstack/react-query';
+import {QrCode, RefreshCw, Search, Smartphone} from 'lucide-react';
 import type {RegistryDevice} from '@/api/types';
 import {ContactAvatar} from '@/components/contact-avatar';
+import {Button} from '@/components/ui/button';
+import {useDevicesQuery} from '@/components/device-selector-bar';
 import {
   GowaSetupNotice,
   isGowaConnectionError,
@@ -43,11 +44,9 @@ export default function AccountsPage() {
   const [codeDevice, setCodeDevice] = useState<RegistryDevice | null>(null);
   const [aliasDevice, setAliasDevice] = useState<RegistryDevice | null>(null);
 
-  const query = useQuery({
-    queryKey: ['devices'],
-    queryFn: listDevices,
-    refetchInterval: 15_000,
-  });
+  // P2-6: the accounts list subscribes to the shared ['devices'] query
+  // (live polling every 15s, as before).
+  const query = useDevicesQuery({refetchInterval: 15_000});
 
   const devices = query.data ?? [];
 
@@ -198,12 +197,13 @@ export default function AccountsPage() {
                     const isSelected = selectedDeviceId === dev.id;
                     const title = dev.resolved_name || dev.alias || dev.display_name || dev.id;
                     const accountPhone = dev.phone_number || phoneFromJid(dev.jid);
+                    const isLoggedIn = dev.state === 'logged_in';
                     const stateLabel =
                       t.accounts.states[dev.state] ?? t.accounts.states.disconnected;
                     const toneClass = accountStateToneClass[dev.state] ?? accountStateToneClass.disconnected;
 
                     return (
-                      <li key={dev.id}>
+                      <li key={dev.id} className="flex items-center gap-1">
                         <button
                           type="button"
                           onClick={() => {
@@ -211,7 +211,7 @@ export default function AccountsPage() {
                             setMobileShowDetail(true);
                           }}
                           className={cn(
-                            'flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-start transition-colors',
+                            'flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-start transition-colors',
                             isSelected ? 'bg-secondary' : 'hover:bg-secondary/60',
                           )}
                         >
@@ -268,6 +268,25 @@ export default function AccountsPage() {
                             </div>
                           </div>
                         </button>
+                        {/* P2-5 (decision 21): a direct reconnect button on
+                            disconnected rows — it opens the same QR pairing
+                            dialog as the workspace panel (the phone-code
+                            dialog stays one click away there). Showing the
+                            disconnect reason is out of scope: no layer
+                            carries a reason (upstream question, deferred). */}
+                        {!isLoggedIn && canWriteAccounts && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setQrDevice(dev)}
+                            title={t.accounts.reconnectRow}
+                            aria-label={`${t.accounts.reconnectRow} — ${title}`}
+                            className="shrink-0"
+                          >
+                            <QrCode className="size-3.5" />
+                            <span className="hidden xl:inline">{t.accounts.reconnectRow}</span>
+                          </Button>
+                        )}
                       </li>
                     );
                   })}
