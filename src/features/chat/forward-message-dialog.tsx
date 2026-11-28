@@ -2,6 +2,7 @@ import {useEffect, useMemo, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {AlertTriangle, Forward, Loader2} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {forwardUnifiedMessage} from '@/api/client';
 import type {MessageInfo} from '@/api/types';
 import {Button} from '@/components/ui/button';
@@ -15,6 +16,8 @@ import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {isCallMessage} from '@/lib/chat-preview';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
+import {buildConversationDeepLink} from '@/lib/deep-links';
 import {toWhatsAppJid} from '@/lib/phone';
 
 export function ForwardMessageDialog({
@@ -32,6 +35,7 @@ export function ForwardMessageDialog({
 }) {
   const {t} = useI18n();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const [targetDeviceId, setTargetDeviceId] = useState(sourceDeviceId);
   const [recipient, setRecipient] = useState('');
@@ -81,7 +85,11 @@ export function ForwardMessageDialog({
       });
     },
     onSuccess: (_res, vars) => {
-      toast.success(t.chats.forwardedToast);
+      toastWithView(t.chats.forwardedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(vars.targetDeviceId, vars.targetJid),
+        navigate,
+      });
       void queryClient.invalidateQueries({
         queryKey: messageQueryKeys.chat(vars.targetDeviceId, vars.targetJid),
       });

@@ -2,6 +2,7 @@ import {useEffect, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {Loader2, RotateCcw, Star} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {getAccountCloseRatings, saveAccountCloseRatings} from '@/api/client';
 import {Button} from '@/components/ui/button';
 import {Label} from '@/components/ui/label';
@@ -10,11 +11,13 @@ import {Switch} from '@/components/ui/switch';
 import {formatDate, formatNumber} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 
 const MAX_PROMPT_LENGTH = 1000;
 
 export function AccountCloseRatingPanel({deviceId, canWrite}: {deviceId: string; canWrite: boolean}) {
   const {lang, t} = useI18n();
+  const navigate = useNavigate();
   const copy = t.accounts.closeRatings;
   const queryClient = useQueryClient();
   const queryKey = ['account-close-ratings', deviceId] as const;
@@ -43,7 +46,11 @@ export function AccountCloseRatingPanel({deviceId, canWrite}: {deviceId: string;
     mutationFn: (enabled: boolean) => saveAccountCloseRatings(deviceId, {enabled}),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKey, data);
-      toast.success(copy.saved);
+      toastWithView(copy.saved, {
+        label: t.scheduled.viewAction,
+        to: '/account',
+        navigate,
+      });
     },
     onError: (error) => toast.error(toApiError(error).message),
   });
@@ -55,7 +62,11 @@ export function AccountCloseRatingPanel({deviceId, canWrite}: {deviceId: string;
       queryClient.setQueryData(queryKey, data);
       setPromptDraft(data.prompt_message);
       setPromptSyncedFrom(data.prompt_message);
-      toast.success(variables.isReset ? copy.promptReset : copy.promptSaved);
+      toastWithView(variables.isReset ? copy.promptReset : copy.promptSaved, {
+        label: t.scheduled.viewAction,
+        to: '/account',
+        navigate,
+      });
     },
     onError: (error) => toast.error(toApiError(error).message),
   });

@@ -2,6 +2,7 @@ import {useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {Loader2, Star} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {createUser, deleteUser, getUserRatings, updateUser} from '@/api/requests/users';
 import type {AssignableAccountSummary, RoleRecord, User} from '@/api/types';
 import {Button} from '@/components/ui/button';
@@ -15,6 +16,7 @@ import {validateDeviceAccessSelection, type DeviceAccessMode} from '@/features/u
 import {formatDate, formatNumber} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 
 export type UserDialogSelection =
   | {kind: 'create'}
@@ -65,6 +67,7 @@ function CreateUserDialog({
 }: EditFields & {defaultRoleId: number | ''}) {
   const {t} = useI18n();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [newName, setNewName] = useState('');
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -85,7 +88,11 @@ function CreateUserDialog({
         ...(canAssignDevices ? {allowed_device_ids: resolvedDeviceIds} : {}),
       }),
     onSuccess: () => {
-      toast.success(t.users.createdToast);
+      toastWithView(t.users.createdToast, {
+        label: t.scheduled.viewAction,
+        to: '/settings/users',
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['users']});
       void queryClient.invalidateQueries({queryKey: ['roles']});
       onClose();
@@ -222,6 +229,7 @@ function EditUserDialog({
 }) {
   const {t} = useI18n();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const initialIds = editingUser.allowed_device_ids ?? [];
   const [editName, setEditName] = useState(editingUser.display_name);
   const [editRoleId, setEditRoleId] = useState<number | ''>(editingUser.role_id);
@@ -244,7 +252,11 @@ function EditUserDialog({
       });
     },
     onSuccess: () => {
-      toast.success(t.users.updatedToast);
+      toastWithView(t.users.updatedToast, {
+        label: t.scheduled.viewAction,
+        to: '/settings/users',
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['users']});
       void queryClient.invalidateQueries({queryKey: ['roles']});
       onClose();
@@ -375,6 +387,7 @@ function UserAccountsDialog({
 }: AccountFields & {managingAccountsUser: User; onClose: () => void}) {
   const {t} = useI18n();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const initialIds = managingAccountsUser.allowed_device_ids ?? [];
   const [quickDeviceMode, setQuickDeviceMode] = useState<DeviceAccessMode>(initialIds.length ? 'specific' : 'all');
   const [quickDeviceIds, setQuickDeviceIds] = useState(initialIds);
@@ -387,7 +400,11 @@ function UserAccountsDialog({
       });
     },
     onSuccess: () => {
-      toast.success(t.users.accountsUpdatedToast);
+      toastWithView(t.users.accountsUpdatedToast, {
+        label: t.scheduled.viewAction,
+        to: '/settings/users',
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['users']});
       void queryClient.invalidateQueries({queryKey: ['unified-accounts-assign']});
       onClose();
@@ -452,10 +469,15 @@ function UserAccountsDialog({
 function DeleteUserDialog({deletingUser, onClose}: {deletingUser: User; onClose: () => void}) {
   const {t} = useI18n();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const deleteMutation = useMutation({
     mutationFn: (id: number) => deleteUser(id),
     onSuccess: () => {
-      toast.success(t.users.deletedToast);
+      toastWithView(t.users.deletedToast, {
+        label: t.scheduled.viewAction,
+        to: '/settings/users',
+        navigate,
+      });
       onClose();
       void queryClient.invalidateQueries({queryKey: ['users']});
       void queryClient.invalidateQueries({queryKey: ['roles']});

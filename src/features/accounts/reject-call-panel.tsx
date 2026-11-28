@@ -2,6 +2,7 @@ import {useEffect, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {Loader2, PhoneOff, RotateCcw} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {
   getCallAutoRejectSettings,
   rejectCall,
@@ -15,6 +16,9 @@ import {Switch} from '@/components/ui/switch';
 import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
+import {toWhatsAppJid} from '@/lib/phone';
+import {buildConversationDeepLink} from '@/lib/deep-links';
 
 const MAX_REPLY_LENGTH = 1000;
 
@@ -27,6 +31,7 @@ function formatCallerLabel(callerName: string, callerJid: string): string {
 
 export function RejectCallPanel({deviceId}: {deviceId: string}) {
   const {lang, t} = useI18n();
+  const navigate = useNavigate();
   const copy = t.misc.callAutoReject;
   const queryClient = useQueryClient();
   const queryKey = ['call-auto-reject', deviceId] as const;
@@ -59,7 +64,11 @@ export function RejectCallPanel({deviceId}: {deviceId: string}) {
     mutationFn: (enabled: boolean) => saveCallAutoRejectSettings(deviceId, {enabled}),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKey, data);
-      toast.success(copy.saved);
+      toastWithView(copy.saved, {
+        label: t.scheduled.viewAction,
+        to: '/account',
+        navigate,
+      });
     },
     onError: (err) => toast.error(toApiError(err).message),
   });
@@ -71,7 +80,11 @@ export function RejectCallPanel({deviceId}: {deviceId: string}) {
       queryClient.setQueryData(queryKey, data);
       setReplyDraft(data.reply_message);
       setSyncedFrom(data.reply_message);
-      toast.success(variables.reset_message ? copy.replyReset : copy.replySaved);
+      toastWithView(variables.reset_message ? copy.replyReset : copy.replySaved, {
+        label: t.scheduled.viewAction,
+        to: '/account',
+        navigate,
+      });
     },
     onError: (err) => toast.error(toApiError(err).message),
   });
@@ -83,7 +96,14 @@ export function RejectCallPanel({deviceId}: {deviceId: string}) {
         call_id: callId.trim(),
       }),
     onSuccess: () => {
-      toast.success(t.misc.callRejectedToast);
+      // P2-10: the rejected call's caller chat is the viewable item —
+      // capture the JID before the form is cleared below.
+      const target = toWhatsAppJid(callerJid.trim());
+      toastWithView(t.misc.callRejectedToast, {
+        label: t.scheduled.viewAction,
+        to: target ? buildConversationDeepLink(deviceId, target) : '/account',
+        navigate,
+      });
       setCallerJid('');
       setCallId('');
     },

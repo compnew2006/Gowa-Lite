@@ -2,6 +2,7 @@ import {useEffect, useRef, useState, type FormEvent} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {Check, Copy, Loader2} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {getDeviceStatus, loginDeviceCode} from '@/api/client';
 import type {RegistryDevice} from '@/api/types';
 import {Button} from '@/components/ui/button';
@@ -12,6 +13,7 @@ import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {copyTextWithFallback} from '@/lib/clipboard';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 
 const STATUS_POLL_MS = 3_000;
 
@@ -24,6 +26,7 @@ export function LoginCodeDialog({
 }) {
   const queryClient = useQueryClient();
   const {t} = useI18n();
+  const navigate = useNavigate();
   const [phone, setPhone] = useState('');
   const [pairCode, setPairCode] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -46,7 +49,11 @@ export function LoginCodeDialog({
         .then((st) => {
           if (st.is_logged_in && !succeededRef.current) {
             succeededRef.current = true;
-            toast.success(t.accounts.linkedSuccessToast);
+            toastWithView(t.accounts.linkedSuccessToast, {
+              label: t.scheduled.viewAction,
+              to: '/accounts',
+              navigate,
+            });
             void queryClient.invalidateQueries({queryKey: ['devices']});
             void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
             onOpenChange(false);
@@ -55,7 +62,7 @@ export function LoginCodeDialog({
         .catch(() => undefined);
     }, STATUS_POLL_MS);
     return () => window.clearInterval(poll);
-  }, [deviceId, pairCode, queryClient, onOpenChange, t.accounts.linkedSuccessToast]);
+  }, [deviceId, navigate, pairCode, queryClient, onOpenChange, t.accounts.linkedSuccessToast]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();

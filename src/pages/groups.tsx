@@ -1,7 +1,7 @@
 import {useEffect, useMemo, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {UsersRound} from 'lucide-react';
-import {useSearchParams} from 'react-router-dom';
+import {useNavigate, useSearchParams} from 'react-router-dom';
 import {toast} from 'sonner';
 import {
   createGroup,
@@ -35,6 +35,8 @@ import {
 import {NewsletterWorkspacePanel} from '@/features/groups/newsletter-workspace-panel';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
+import {buildGroupDeepLink} from '@/lib/deep-links';
 import {parseParticipantsList} from '@/lib/participants';
 import {toWhatsAppJid} from '@/lib/phone';
 import {hasUserAnyPermission, hasUserPermission, useAuthStore} from '@/stores/auth';
@@ -48,6 +50,7 @@ function isOnlineAccount(account: AccountSummary): boolean {
 export default function GroupsPage() {
   const queryClient = useQueryClient();
   const {t} = useI18n();
+  const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const canWriteGroups = hasUserPermission(user, 'groups:write');
   const canViewSettings = hasUserAnyPermission(user, ['settings:read', 'settings:write']);
@@ -124,7 +127,11 @@ export default function GroupsPage() {
         participants: parseParticipantsList(newParticipants),
       }),
     onSuccess: (res) => {
-      toast.success(t.groups.createdToast);
+      toastWithView(t.groups.createdToast, {
+        label: t.scheduled.viewAction,
+        to: buildGroupDeepLink(resolvedTargetDeviceId, res?.group_id),
+        navigate,
+      });
       setCreateOpen(false);
       setNewTitle('');
       setNewParticipants('');
@@ -140,7 +147,11 @@ export default function GroupsPage() {
   const joinMutation = useMutation({
     mutationFn: () => joinGroupWithLink(resolvedTargetDeviceId, joinLink.trim()),
     onSuccess: (res) => {
-      toast.success(t.groups.joinedToast);
+      toastWithView(t.groups.joinedToast, {
+        label: t.scheduled.viewAction,
+        to: buildGroupDeepLink(resolvedTargetDeviceId, res?.group_id),
+        navigate,
+      });
       setJoinOpen(false);
       setJoinLink('');
       if (res?.group_id && resolvedTargetDeviceId) {

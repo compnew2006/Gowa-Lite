@@ -2,6 +2,7 @@ import {useEffect, useState, type FormEvent} from 'react';
 import {useMutation, useQueryClient} from '@tanstack/react-query';
 import {Check, Loader2, Plus, Trash2} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {assignUnifiedChatLists, createChatList, deleteChatList} from '@/api/client';
 import type {ChatListSummary, UnifiedChat} from '@/api/types';
 import {Button} from '@/components/ui/button';
@@ -10,6 +11,8 @@ import {chatDisplayName} from '@/features/chat/display-name';
 import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
+import {buildConversationDeepLink} from '@/lib/deep-links';
 import {cn} from '@/lib/utils';
 
 export function ChatListAssignDialog({
@@ -25,6 +28,7 @@ export function ChatListAssignDialog({
 }) {
   const {t} = useI18n();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [newListName, setNewListName] = useState('');
 
@@ -41,7 +45,11 @@ export function ChatListAssignDialog({
   const createMutation = useMutation({
     mutationFn: (name: string) => createChatList(name),
     onSuccess: (created) => {
-      toast.success(t.chats.listCreatedToast);
+      toastWithView(t.chats.listCreatedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(chat?.device_id, chat?.jid),
+        navigate,
+      });
       setNewListName('');
       setSelectedIds((prev) => (prev.includes(created.id) ? prev : [...prev, created.id]));
       invalidate();
@@ -52,7 +60,11 @@ export function ChatListAssignDialog({
   const deleteMutation = useMutation({
     mutationFn: (listId: number) => deleteChatList(listId),
     onSuccess: (_data, listId) => {
-      toast.success(t.chats.listDeletedToast);
+      toastWithView(t.chats.listDeletedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(chat?.device_id, chat?.jid),
+        navigate,
+      });
       setSelectedIds((prev) => prev.filter((id) => id !== listId));
       invalidate();
     },
@@ -65,7 +77,11 @@ export function ChatListAssignDialog({
       return assignUnifiedChatLists(chat.device_id, chat.jid, selectedIds);
     },
     onSuccess: () => {
-      toast.success(t.chats.listsSavedToast);
+      toastWithView(t.chats.listsSavedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(chat?.device_id, chat?.jid),
+        navigate,
+      });
       invalidate();
       onOpenChange(false);
     },

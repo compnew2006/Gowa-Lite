@@ -2,15 +2,18 @@ import {useEffect, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {Loader2, Save} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {getInboxPolicy, saveInboxPolicy} from '@/api/requests/settings';
 import type {ClosedReplyPolicy, UnassignedReplyPolicy} from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 
 export function InboxPolicyForm({canWrite}: {canWrite: boolean}) {
   const queryClient = useQueryClient();
   const {t} = useI18n();
+  const navigate = useNavigate();
   const [unassignedPolicy, setUnassignedPolicy] = useState<UnassignedReplyPolicy>('auto_claim');
   const [closedPolicy, setClosedPolicy] = useState<ClosedReplyPolicy>('block');
 
@@ -33,7 +36,11 @@ export function InboxPolicyForm({canWrite}: {canWrite: boolean}) {
         closed_reply_policy: closedPolicy,
       }),
     onSuccess: () => {
-      toast.success(t.settings.policySavedToast);
+      toastWithView(t.settings.policySavedToast, {
+        label: t.scheduled.viewAction,
+        to: '/settings',
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['inbox-policy']});
     },
     onError: (err) => toast.error(toApiError(err).message),

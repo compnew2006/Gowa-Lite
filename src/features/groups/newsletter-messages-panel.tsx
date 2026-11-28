@@ -2,6 +2,7 @@ import {useEffect, useState} from 'react';
 import {useMutation} from '@tanstack/react-query';
 import {Download, Eye, RefreshCw} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {
   downloadNewsletterMedia,
   fetchAuthorizedBlobUrl,
@@ -18,6 +19,7 @@ import {Switch} from '@/components/ui/switch';
 import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 import {resolveMediaFilename} from '@/lib/media-download';
 import {cn} from '@/lib/utils';
 import {hasUserPermission, useAuthStore} from '@/stores/auth';
@@ -58,6 +60,7 @@ export function NewsletterMessagesPanel({
   switchId?: string;
 }) {
   const {lang, t} = useI18n();
+  const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const canManageChannels = hasUserPermission(user, 'misc:channels.manage');
   const newsletterId = newsletter.id;
@@ -138,7 +141,11 @@ export function NewsletterMessagesPanel({
       }
     },
     onSuccess: (_res, enable) => {
-      toast.success(enable ? t.misc.liveStartedToast : t.misc.liveStoppedToast);
+      toastWithView(enable ? t.misc.liveStartedToast : t.misc.liveStoppedToast, {
+        label: t.scheduled.viewAction,
+        to: '/misc',
+        navigate,
+      });
       onLiveChanged();
     },
     onError: (err) => toast.error(toApiError(err).message),

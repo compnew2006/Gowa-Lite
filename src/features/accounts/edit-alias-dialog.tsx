@@ -2,6 +2,7 @@ import {useEffect, useState, type FormEvent} from 'react';
 import {useMutation, useQueryClient} from '@tanstack/react-query';
 import {Loader2} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {updateDeviceAlias} from '@/api/client';
 import type {RegistryDevice} from '@/api/types';
 import {Button} from '@/components/ui/button';
@@ -11,6 +12,7 @@ import {Label} from '@/components/ui/label';
 import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 
 export function EditAliasDialog({
   device,
@@ -21,6 +23,7 @@ export function EditAliasDialog({
 }) {
   const queryClient = useQueryClient();
   const {t} = useI18n();
+  const navigate = useNavigate();
   const [alias, setAlias] = useState('');
 
   useEffect(() => {
@@ -35,7 +38,11 @@ export function EditAliasDialog({
       return updateDeviceAlias(device.id, alias);
     },
     onSuccess: () => {
-      toast.success(t.accounts.aliasUpdatedToast);
+      toastWithView(t.accounts.aliasUpdatedToast, {
+        label: t.scheduled.viewAction,
+        to: '/accounts',
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['devices']});
       void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
       onOpenChange(false);

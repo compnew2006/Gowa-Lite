@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useMemo, useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {bulkUnifiedChatsLifecycle} from '@/api/requests/workflow';
 import type {UnifiedChat, UnifiedChatTab} from '@/api/types';
 import {chatLifecycleQueryKeys} from '@/features/chat/message-query-keys';
@@ -12,6 +13,7 @@ import {chatUniqueKey, resolveSelectedUnifiedChat} from '@/features/chat/selecte
 import {usePaginatedChats} from '@/features/chat/use-paginated-chats';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 import {useAuthStore} from '@/stores/auth';
 
 function isChatRedactedForUser(
@@ -73,6 +75,7 @@ export function buildBulkLifecycleRequest(
 export function useInboxController(deviceIds: string[], canViewAll: boolean) {
   const queryClient = useQueryClient();
   const {t} = useI18n();
+  const navigate = useNavigate();
   const userId = useAuthStore((s) => s.user?.id);
   const allowedDeviceIds = useAuthStore((s) => s.user?.allowed_device_ids);
   const [search, setSearch] = useState('');
@@ -134,9 +137,18 @@ export function useInboxController(deviceIds: string[], canViewAll: boolean) {
         const okCount = res.succeeded.length;
         const failCount = res.failed.length;
         if (failCount === 0) {
-          toast.success(t.chats.bulkResultToast(okCount));
+          toastWithView(t.chats.bulkResultToast(okCount), {
+            label: t.scheduled.viewAction,
+            to: '/chats',
+            navigate,
+          });
         } else if (okCount > 0) {
-          toast.warning(t.chats.bulkPartialToast(okCount, okCount + failCount));
+          toastWithView(t.chats.bulkPartialToast(okCount, okCount + failCount), {
+            label: t.scheduled.viewAction,
+            to: '/chats',
+            navigate,
+            kind: 'warning',
+          });
         } else {
           toast.error(res.failed[0]?.message || t.chats.bulkPartialToast(0, failCount));
         }
