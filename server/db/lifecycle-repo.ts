@@ -351,6 +351,7 @@ export function listAssignmentsForDevices(deviceIds: string[]): Map<string, Chat
 export function getAssignmentStatsForDevices(
   deviceIds: string[],
   meOwnerUserId: number | null,
+  closedOwnerUserId?: number | null,
 ): {allOpen: number; closed: number; meOpen: number} {
   const cleanIds = Array.from(new Set(deviceIds.map((d) => d.trim()).filter(Boolean)));
   if (cleanIds.length === 0) return {allOpen: 0, closed: 0, meOpen: 0};
@@ -359,15 +360,16 @@ export function getAssignmentStatsForDevices(
   const rows = queryAll<{
     status: ChatLifecycleStatus;
     assigned_user_id: number | null;
+    closed_by_id: number | null;
     total: number;
   }>(
-    `SELECT status, assigned_user_id, COUNT(*) AS total
+    `SELECT status, assigned_user_id, closed_by_id, COUNT(*) AS total
      FROM chat_assignments
      WHERE device_id IN (${placeholders})
        AND LOWER(chat_jid) <> 'status@broadcast'
        AND LOWER(chat_jid) NOT LIKE '%@newsletter'
        AND LOWER(chat_jid) NOT LIKE '%@g.us'
-     GROUP BY status, assigned_user_id`,
+     GROUP BY status, assigned_user_id, closed_by_id`,
     ...cleanIds,
   );
 
@@ -377,7 +379,16 @@ export function getAssignmentStatsForDevices(
   for (const row of rows) {
     const count = Number(row.total) || 0;
     if (row.status === 'closed') {
-      closed += count;
+      // Closed rows always have assigned_user_id NULL — closed_by_id is the
+      // only owner column. null/undefined owner counts every closed row
+      // (supervisor / legacy callers); a number counts only that closer's.
+      if (
+        closedOwnerUserId === null ||
+        closedOwnerUserId === undefined ||
+        row.closed_by_id === closedOwnerUserId
+      ) {
+        closed += count;
+      }
     } else if (row.status === 'open' && row.assigned_user_id !== null) {
       allOpen += count;
       if (meOwnerUserId === null || row.assigned_user_id === meOwnerUserId) {
@@ -408,7 +419,7 @@ export function batchUpdateAssignmentMetadata(
 export function listDbChatsByLifecycleStatus(params: {
   deviceIds: string[];
   status: 'closed' | 'open';
-  assignedUserId?: number | null;
+  ownerUserId?: number | null;
   limit?: number;
   offset?: number;
 }): DbLifecycleChatEntry[] {
@@ -420,9 +431,16 @@ export function listDbChatsByLifecycleStatus(params: {
   let ownerClause = '';
   if (params.status === 'open') {
     ownerClause = ' AND ca.assigned_user_id IS NOT NULL';
-    if (typeof params.assignedUserId === 'number' && params.assignedUserId > 0) {
+    if (typeof params.ownerUserId === 'number' && params.ownerUserId > 0) {
       ownerClause += ' AND ca.assigned_user_id = ?';
-      args.push(params.assignedUserId);
+      args.push(params.ownerUserId);
+    }
+  } else if (params.status === 'closed') {
+    // Closed rows always have assigned_user_id NULL (closeChat clears it) —
+    // the only owner column is closed_by_id.
+    if (typeof params.ownerUserId === 'number' && params.ownerUserId > 0) {
+      ownerClause = ' AND ca.closed_by_id = ?';
+      args.push(params.ownerUserId);
     }
   }
 

@@ -598,13 +598,15 @@ describe('Phase 5 & Phase 6 End-to-End Verification (TEST-PHASE5-01 & CHAT-TABS-
     const badAssignedRes = await api('/api/unified/chats?tab=me&assignedTo=abc', {token: leadToken});
     assert.equal(badAssignedRes.status, 400);
 
-    // Regular Agent 1 denied 'all' and viewing Agent 2's chats, while 'closed' is accessible for allowed devices
+    // Regular Agent 1 denied 'all' and viewing Agent 2's chats, while 'closed' is
+    // accessible for allowed devices — but P0-1: it shows only chats Agent 1
+    // closed themselves, and all 4 remaining closed chats were closed by the lead.
     const agentAllDenied = await api('/api/unified/chats?tab=all', {token: agent1Token});
     assert.equal(agentAllDenied.status, 403);
     const agentClosedAllowed = await api('/api/unified/chats?tab=closed', {token: agent1Token});
     assert.equal(agentClosedAllowed.status, 200);
     const agentClosedData = (agentClosedAllowed.body?.results as {data: Array<{jid: string}>}).data;
-    assert.equal(agentClosedData.length, 4);
+    assert.equal(agentClosedData.length, 0);
     const agentOtherDenied = await api(`/api/unified/chats?tab=me&assignedTo=${agent2Id}`, {
       token: agent1Token,
     });
@@ -620,7 +622,7 @@ describe('Phase 5 & Phase 6 End-to-End Verification (TEST-PHASE5-01 & CHAT-TABS-
     assert.equal(agentMeResults.tab_counts.me, 1);
     assert.equal(agentMeResults.tab_counts.pending, 2); // Customer Pending One + reopened Customer Closed Three
     assert.equal(agentMeResults.tab_counts.all, 0);
-    assert.equal(agentMeResults.tab_counts.closed, 4);
+    assert.equal(agentMeResults.tab_counts.closed, 0); // P0-1: Agent 1 closed none of these
     assert.deepEqual(
       agentMeResults.data.map((c) => c.jid),
       [raceJid],

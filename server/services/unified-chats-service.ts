@@ -391,7 +391,13 @@ export function computeUnifiedTabCounts(params: {
   let dbMeOpenCount = 0;
   let dbAllOpenCount = 0;
   if (skipRemoteScan) {
-    const stats = getAssignmentStatsForDevices(targetDeviceIds, effectiveMeOwnerId);
+    // Supervisors (null closed owner) count every closed row; agents count
+    // only the chats they closed (closed_by_id).
+    const stats = getAssignmentStatsForDevices(
+      targetDeviceIds,
+      effectiveMeOwnerId,
+      query.isSupervisor ? null : (userId ?? effectiveMeOwnerId),
+    );
     dbClosedCount = stats.closed;
     dbMeOpenCount = stats.meOpen;
     dbAllOpenCount = query.isSupervisor ? stats.allOpen : stats.meOpen;
@@ -399,7 +405,10 @@ export function computeUnifiedTabCounts(params: {
     for (const row of assignmentsMap.values()) {
       if (isExcludedFromUnifiedChats(row.chat_jid)) continue;
       if (row.status === 'closed') {
-        dbClosedCount += 1;
+        // Closed rows have assigned_user_id NULL — filter on closed_by_id.
+        if (query.isSupervisor || userId === undefined || row.closed_by_id === userId) {
+          dbClosedCount += 1;
+        }
       } else if (row.status === 'open' && row.assigned_user_id !== null) {
         if (query.isSupervisor || (userId !== undefined && row.assigned_user_id === userId) || effectiveMeOwnerId === null || row.assigned_user_id === effectiveMeOwnerId) {
           dbAllOpenCount += 1;
@@ -502,7 +511,7 @@ export function paginateUnifiedChats(params: {
     const entries = listDbChatsByLifecycleStatus({
       deviceIds: targetDeviceIds,
       status,
-      assignedUserId: ownerUserId ?? undefined,
+      ownerUserId: ownerUserId ?? undefined,
       limit: dbLimit,
       offset: dbOffset,
     });
@@ -562,15 +571,17 @@ export function paginateUnifiedChats(params: {
 
   const canDirectSqlPaginate = !query.isSearchMode && !query.hasMedia;
   if (query.requestedTab === 'closed') {
+    // Agents see only the chats they closed; supervisors see all.
+    const closedOwnerId = query.isSupervisor ? null : userId;
     if (canDirectSqlPaginate) {
-      const paged = buildFromDbEntries('closed', undefined, query.limit, query.offset);
+      const paged = buildFromDbEntries('closed', closedOwnerId, query.limit, query.offset);
       return {
         pagedChats: paged,
         totalAvailable: tabCounts.closed,
         hasMore: query.offset + paged.length < tabCounts.closed,
       };
     }
-    const list = buildFromDbEntries('closed');
+    const list = buildFromDbEntries('closed', closedOwnerId);
     const paged = list.slice(query.offset, query.offset + query.limit);
     return {pagedChats: paged, totalAvailable: list.length, hasMore: query.offset + paged.length < list.length};
   }
