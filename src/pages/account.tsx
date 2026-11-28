@@ -39,6 +39,7 @@ import {
 } from '@/components/layout/split-workspace';
 import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
+import {Skeleton} from '@/components/ui/skeleton';
 import {formatJidPhone} from '@/features/chat/display-name';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -314,9 +315,10 @@ export default function AccountPage() {
             )}
 
             {deviceState.isLoading || contactsQuery.isLoading ? (
-              <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" />
-                <span>{t.loading}</span>
+              <div className="space-y-0.5" aria-busy="true">
+                {Array.from({length: 6}).map((_, index) => (
+                  <Skeleton key={index} className="h-14 w-full" />
+                ))}
               </div>
             ) : deviceErr ? (
               <div className="p-6 text-center text-sm text-destructive">{deviceErr.message}</div>

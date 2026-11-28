@@ -1,6 +1,6 @@
 import {useEffect, useMemo, useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
-import {Loader2, RefreshCw, Search, Smartphone} from 'lucide-react';
+import {RefreshCw, Search, Smartphone} from 'lucide-react';
 import {listDevices} from '@/api/client';
 import type {RegistryDevice} from '@/api/types';
 import {ContactAvatar} from '@/components/contact-avatar';
@@ -10,12 +10,14 @@ import {
   SplitWorkspace,
   WorkspaceEmptyState,
 } from '@/components/layout/split-workspace';
+import {Skeleton} from '@/components/ui/skeleton';
 import {AccountWorkspacePanel} from '@/features/accounts/account-workspace-panel';
 import {CreateDeviceDialog} from '@/features/accounts/create-device-dialog';
 import {EditAliasDialog} from '@/features/accounts/edit-alias-dialog';
 import {LoginCodeDialog} from '@/features/accounts/login-code-dialog';
 import {LoginQrDialog} from '@/features/accounts/login-qr-dialog';
 import {accountDotTone, accountStateToneClass} from '@/features/accounts/account-display';
+import {phoneFromJid} from '@/features/chat/display-name';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {matchesNormalizedQuery} from '@/lib/phone';
@@ -174,9 +176,10 @@ export default function AccountsPage() {
             {/* Account Rows */}
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
               {query.isLoading ? (
-                <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" />
-                  <span>{t.loading}</span>
+                <div className="space-y-0.5" aria-busy="true">
+                  {Array.from({length: 6}).map((_, index) => (
+                    <Skeleton key={index} className="h-14 w-full" />
+                  ))}
                 </div>
               ) : apiErr ? (
                 <div className="p-6 text-center text-sm text-destructive">{apiErr.message}</div>
@@ -194,6 +197,7 @@ export default function AccountsPage() {
                   {visibleDevices.map((dev) => {
                     const isSelected = selectedDeviceId === dev.id;
                     const title = dev.resolved_name || dev.alias || dev.display_name || dev.id;
+                    const accountPhone = dev.phone_number || phoneFromJid(dev.jid);
                     const stateLabel =
                       t.accounts.states[dev.state] ?? t.accounts.states.disconnected;
                     const toneClass = accountStateToneClass[dev.state] ?? accountStateToneClass.disconnected;
@@ -250,14 +254,14 @@ export default function AccountsPage() {
                               <span dir="ltr" className="truncate font-mono text-[11px]">
                                 {dev.id}
                               </span>
-                              {dev.phone_number && (
+                              {accountPhone && (
                                 <>
                                   <span aria-hidden="true">·</span>
                                   <span
                                     dir="ltr"
                                     className="truncate font-mono text-[11px] tabular-nums"
                                   >
-                                    {dev.phone_number}
+                                    {accountPhone}
                                   </span>
                                 </>
                               )}
