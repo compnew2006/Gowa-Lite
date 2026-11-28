@@ -54,6 +54,7 @@ import {Dialog} from '@/components/ui/dialog';
 import {shortAccountWidgetLabel} from '@/features/accounts/account-display';
 import {AccountMultiSelect} from '@/features/accounts/account-multi-select';
 import {ChatListAssignDialog} from '@/features/chat/chat-list-assign-dialog';
+import {ChatPreviewLine} from '@/features/chat/chat-preview-line';
 import {ChatRowMenu, type ChatRowMenuAction} from '@/features/chat/chat-row-menu';
 import {
   formatSecondaryChatPhone,
@@ -74,6 +75,7 @@ import {
 import {messageQueryKeys} from '@/features/chat/message-query-keys';
 import {chatUniqueKey} from '@/features/chat/selected-chat';
 import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
+import {resolveChatPreview} from '@/lib/chat-preview';
 import {formatNumber, formatShortTime} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
@@ -239,6 +241,8 @@ const ChatListRow = memo(function ChatListRow({
                 </span>
               )}
             </div>
+
+            <ChatPreviewLine preview={resolveChatPreview(chat, t.chats.mediaLabels)} />
 
             {secondaryPhone && (
               <p
