@@ -1,12 +1,15 @@
 import {useEffect, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
-import {CalendarClock, Loader2} from 'lucide-react';
+import {CalendarClock, Loader2, Paperclip} from 'lucide-react';
 import {toast} from 'sonner';
-import {createUnifiedChatSchedule, listDevices} from '@/api/client';
+import {
+  createUnifiedChatSchedule,
+  createUnifiedChatScheduleWithMedia,
+  listDevices,
+} from '@/api/client';
 import type {ScheduleRecurrence, UnifiedChat} from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
-import {Label} from '@/components/ui/label';
 import {ScheduleRecurrenceFields} from '@/features/schedules/schedule-recurrence-fields';
 import {
   ScheduleAccountLine,
@@ -14,24 +17,33 @@ import {
 } from '@/features/schedules/schedule-account-line';
 import {
   ScheduleValidationError,
-  defaultScheduleDateTimeLocal,
   validateAndBuildScheduleFields,
 } from '@/features/schedules/schedule-utils';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 
+/**
+ * Schedule the message written in the composer itself (P1-23 + P1-3).
+ * The dialog receives the composer draft — text plus an attached file, if
+ * any — and shows it read-only: there is no separate message field here.
+ * Decision 5: no time default — the field starts empty and a future time
+ * is required. Media is scheduled through the gateway's media endpoints,
+ * which accept the same schedule fields (verified in gateway 9.10.0).
+ */
 export function ScheduleMessageDialog({
   open,
   onOpenChange,
   chat,
   initialMessage,
+  initialAttachment = null,
   onScheduled,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   chat: UnifiedChat;
   initialMessage: string;
-  onScheduled?: (submittedMessage: string) => void;
+  initialAttachment?: File | null;
+  onScheduled?: (submittedMessage: string, hadAttachment?: boolean) => void;
 }) {
   const {lang, t} = useI18n();
   const queryClient = useQueryClient();
@@ -49,9 +61,8 @@ export function ScheduleMessageDialog({
     (devicesQuery.data ?? []).find((d) => d.id === chat.device_id) ?? null;
 
   const [message, setMessage] = useState('');
-  const [scheduledAtLocal, setScheduledAtLocal] = useState(() =>
-    defaultScheduleDateTimeLocal(5),
-  );
+  const [attachment, setAttachment] = useState<File | null>(null);
+  const [scheduledAtLocal, setScheduledAtLocal] = useState('');
   const [timezone, setTimezone] = useState(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
   );
@@ -64,17 +75,18 @@ export function ScheduleMessageDialog({
   useEffect(() => {
     if (!open) return;
     setMessage(initialMessage);
-    setScheduledAtLocal(defaultScheduleDateTimeLocal(5));
+    setAttachment(initialAttachment);
+    setScheduledAtLocal('');
     setRecurrence('once');
     setWeekdays([]);
     setDayOfMonth('1');
     setOccurrenceLimit('');
     setEndAtLocal('');
-  }, [open, initialMessage]);
+  }, [open, initialMessage, initialAttachment]);
 
   const createMutation = useMutation({
     mutationFn: () => {
-      const payload = validateAndBuildScheduleFields(
+      const fields = validateAndBuildScheduleFields(
         {
           message,
           scheduledAtLocal,
@@ -87,18 +99,36 @@ export function ScheduleMessageDialog({
         },
         {
           pastTime: t.chats.schedulePastError,
+          emptyTime: t.chats.scheduleTimeRequired,
           invalidEndAt:
             lang === 'ar'
               ? 'تاريخ انتهاء التكرار يجب أن يكون بعد موعد البدء'
               : 'End date must be after scheduled send time',
         },
       );
-      return createUnifiedChatSchedule(chat.device_id, chat.jid, payload);
+      if (attachment) {
+        const form = new FormData();
+        form.append('file', attachment, attachment.name || 'attachment');
+        form.append('message', fields.message);
+        form.append('scheduled_at', fields.scheduled_at);
+        if (fields.timezone) form.append('timezone', fields.timezone);
+        form.append('recurrence', fields.recurrence);
+        if (fields.weekdays) form.append('weekdays', JSON.stringify(fields.weekdays));
+        if (fields.day_of_month !== undefined) {
+          form.append('day_of_month', String(fields.day_of_month));
+        }
+        if (fields.end_at) form.append('end_at', fields.end_at);
+        if (fields.occurrence_limit !== undefined) {
+          form.append('occurrence_limit', String(fields.occurrence_limit));
+        }
+        return createUnifiedChatScheduleWithMedia(chat.device_id, chat.jid, form);
+      }
+      return createUnifiedChatSchedule(chat.device_id, chat.jid, fields);
     },
     onSuccess: () => {
       toast.success(t.scheduled.createdToast);
       onOpenChange(false);
-      onScheduled?.(message.trim());
+      onScheduled?.(message.trim(), Boolean(attachment));
       void queryClient.invalidateQueries({
         queryKey: ['unified-chat-schedules', chat.device_id, chat.jid],
       });
@@ -115,9 +145,13 @@ export function ScheduleMessageDialog({
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
-    if (!message.trim() || !scheduledAtLocal || createMutation.isPending) return;
+    if ((!message.trim() && !attachment) || !scheduledAtLocal || createMutation.isPending) {
+      return;
+    }
     createMutation.mutate();
   };
+
+  const hasDraft = Boolean(message.trim() || attachment);
 
   return (
     <Dialog
@@ -130,17 +164,36 @@ export function ScheduleMessageDialog({
       <form onSubmit={handleSubmit} className="space-y-4">
         <ScheduleAccountLine device={accountDevice} />
 
-        <div>
-          <Label htmlFor="chat-sched-msg">{t.scheduled.messageLabel}</Label>
-          <textarea
-            id="chat-sched-msg"
-            rows={3}
-            required
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder={t.scheduled.messagePlaceholder}
-            className="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring"
-          />
+        <div
+          data-testid="schedule-draft-preview"
+          className="rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-sm"
+        >
+          <p className="font-medium text-foreground">{t.chats.scheduleDraftLabel}</p>
+          {message.trim() ? (
+            <p className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-foreground/90">
+              {message}
+            </p>
+          ) : null}
+          {attachment ? (
+            <p
+              data-testid="schedule-attachment-preview"
+              className="mt-1.5 flex items-center gap-1.5 text-muted-foreground"
+            >
+              <Paperclip className="size-3.5 shrink-0" />
+              <span className="min-w-0 truncate" dir="ltr">
+                {attachment.name}
+              </span>
+              <span className="shrink-0 text-xs">({t.chats.scheduleAttachmentLabel})</span>
+            </p>
+          ) : null}
+          {!hasDraft ? (
+            <p
+              data-testid="schedule-empty-draft-hint"
+              className="mt-1 text-muted-foreground"
+            >
+              {t.chats.scheduleEmptyDraftHint}
+            </p>
+          ) : null}
         </div>
 
         <ScheduleRecurrenceFields
@@ -174,7 +227,7 @@ export function ScheduleMessageDialog({
           </Button>
           <Button
             type="submit"
-            disabled={createMutation.isPending || !message.trim() || !scheduledAtLocal}
+            disabled={createMutation.isPending || !hasDraft || !scheduledAtLocal}
           >
             {createMutation.isPending ? (
               <Loader2 className="size-4 animate-spin" />

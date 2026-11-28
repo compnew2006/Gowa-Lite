@@ -1,5 +1,4 @@
-import {useMemo, useState} from 'react';
-import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
+import {useQuery} from '@tanstack/react-query';
 import {
   Ban,
   CalendarClock,
@@ -16,27 +15,18 @@ import {
   Plus,
   Video,
 } from 'lucide-react';
-import {toast} from 'sonner';
-import {
-  actionUnifiedChatSchedule,
-  listUnifiedChatSchedules,
-  updateUnifiedChatSchedule,
-} from '@/api/client';
+import {listUnifiedChatSchedules} from '@/api/client';
 import type {ScheduleStatus, ScheduledSend, UnifiedChat} from '@/api/types';
 import {Button} from '@/components/ui/button';
-import {
-  minScheduleDateTimeLocal,
-  statusToneClass,
-  toLocalDateTimeInput,
-  validateScheduleFutureMs,
-} from '@/features/schedules/schedule-utils';
+import {useChatScheduleActions} from '@/features/chat/use-chat-schedule-actions';
+import {statusToneClass} from '@/features/schedules/schedule-utils';
 import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {cn} from '@/lib/utils';
 import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
-function ScheduleTypeIcon({type}: {type: string}) {
+export function ScheduleTypeIcon({type}: {type: string}) {
   switch (type) {
     case 'image':
       return <ImageIcon className="size-3.5 shrink-0 text-muted-foreground" />;
@@ -267,14 +257,9 @@ export function ScheduledPanelBody({
   onOpenCreateSchedule: () => void;
 }) {
   const {t} = useI18n();
-  const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const canWriteSchedules = hasUserPermission(user, 'schedules:write');
   const canManageSchedules = hasUserPermission(user, 'schedules:manage');
-
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingTime, setEditingTime] = useState('');
-  const [confirmCancelId, setConfirmCancelId] = useState<string | null>(null);
 
   const schedulesQuery = useQuery({
     queryKey: ['unified-chat-schedules', chat.device_id, chat.jid],
@@ -282,83 +267,25 @@ export function ScheduledPanelBody({
     enabled: !isContentRedacted,
   });
 
-  const invalidateSchedules = () => {
-    void queryClient.invalidateQueries({
-      queryKey: ['unified-chat-schedules', chat.device_id, chat.jid],
-    });
-    void queryClient.invalidateQueries({queryKey: ['schedules', chat.device_id]});
-  };
-
-  const actionMutation = useMutation({
-    mutationFn: ({id, action}: {id: string; action: 'pause' | 'resume' | 'cancel'}) =>
-      actionUnifiedChatSchedule(chat.device_id, chat.jid, id, action),
-    onSuccess: (_data, vars) => {
-      if (vars.action === 'pause') toast.success(t.scheduled.pausedToast);
-      else if (vars.action === 'resume') toast.success(t.scheduled.resumedToast);
-      else {
-        toast.success(t.scheduled.cancelledToast);
-        setConfirmCancelId(null);
-      }
-      invalidateSchedules();
-    },
-    onError: (err) => toast.error(toApiError(err).message),
-  });
-
-  const updateTimeMutation = useMutation({
-    mutationFn: ({id, scheduledAt}: {id: string; scheduledAt: string}) =>
-      updateUnifiedChatSchedule(chat.device_id, chat.jid, id, {scheduled_at: scheduledAt}),
-    onSuccess: () => {
-      toast.success(t.chats.scheduleUpdatedToast);
-      setEditingId(null);
-      setEditingTime('');
-      invalidateSchedules();
-    },
-    onError: (err) => toast.error(toApiError(err).message),
-  });
-
-  const statusLabels = useMemo<Record<ScheduleStatus, string>>(
-    () => ({
-      active: t.scheduled.statusActive,
-      running: t.scheduled.statusRunning,
-      paused: t.scheduled.statusPaused,
-      completed: t.scheduled.statusCompleted,
-      failed: t.scheduled.statusFailed,
-      cancelled: t.scheduled.statusCancelled,
-    }),
-    [t],
-  );
-
-  const recurrenceLabels: Record<string, string> = {
-    once: t.scheduled.recurrenceOnce,
-    daily: t.scheduled.recurrenceDaily,
-    weekly: t.scheduled.recurrenceWeekly,
-    monthly: t.scheduled.recurrenceMonthly,
-  };
+  // Edit-time / pause / resume / cancel live in the shared hook so the
+  // scheduled bubble in the chat timeline uses the exact same routes.
+  const {
+    statusLabels,
+    recurrenceLabels,
+    isBusy,
+    editingId,
+    editingTime,
+    setEditingTime,
+    confirmCancelId,
+    minLocal,
+    startEditing,
+    cancelEditing,
+    saveTime,
+    doAction,
+    toggleCancelConfirm,
+  } = useChatScheduleActions(chat);
 
   const items: ScheduledSend[] = schedulesQuery.data?.data ?? [];
-  const minLocal = minScheduleDateTimeLocal();
-  const isBusy = actionMutation.isPending || updateTimeMutation.isPending;
-
-  const startEditing = (item: ScheduledSend) => {
-    const rawDate = item.next_run_at || item.scheduled_at;
-    const parsed = rawDate ? new Date(rawDate) : new Date(Date.now() + 5 * 60_000);
-    setConfirmCancelId(null);
-    setEditingId(item.id);
-    setEditingTime(
-      toLocalDateTimeInput(
-        Number.isNaN(parsed.getTime()) ? new Date(Date.now() + 5 * 60_000) : parsed,
-      ),
-    );
-  };
-
-  const handleSaveTime = (id: string) => {
-    try {
-      const ms = validateScheduleFutureMs(editingTime);
-      updateTimeMutation.mutate({id, scheduledAt: new Date(ms).toISOString()});
-    } catch {
-      toast.error(t.chats.schedulePastError);
-    }
-  };
 
   const redacted = isContentRedacted || Boolean(schedulesQuery.data?.content_redacted);
   if (redacted) {
@@ -434,15 +361,10 @@ export function ScheduledPanelBody({
                 isConfirmingCancel={confirmCancelId === item.id}
                 onStartEditing={startEditing}
                 onEditingTimeChange={setEditingTime}
-                onCancelEditing={() => {
-                  setEditingId(null);
-                  setEditingTime('');
-                }}
-                onSaveTime={handleSaveTime}
-                onAction={(id, action) => actionMutation.mutate({id, action})}
-                onToggleCancelConfirm={(id) =>
-                  setConfirmCancelId((prev) => (prev === id ? null : id))
-                }
+                onCancelEditing={cancelEditing}
+                onSaveTime={saveTime}
+                onAction={doAction}
+                onToggleCancelConfirm={toggleCancelConfirm}
               />
             ))}
           </div>
