@@ -104,6 +104,7 @@ export function ScheduleMessageDialog({
             lang === 'ar'
               ? 'تاريخ انتهاء التكرار يجب أن يكون بعد موعد البدء'
               : 'End date must be after scheduled send time',
+          recurrenceEndRequired: t.scheduled.recurrenceEndRequired,
         },
       );
       if (attachment) {

@@ -754,6 +754,7 @@ const en: AppTranslations = {
     offlineNotice: 'Selected account is currently offline; live operations may fail until reconnected.',
     stateLoggedIn: 'Connected',
     stateOffline: 'Offline',
+    refreshingTitle: 'Refreshing accounts list…',
   },
 
   scheduled: {
@@ -815,6 +816,10 @@ const en: AppTranslations = {
     dayOfMonthLabel: 'Day of Month (1-31)',
     occurrenceLimitLabel: 'Occurrence Limit (optional)',
     endAtLabel: 'End Date (optional)',
+    recurrenceEndRequired:
+      'Recurring sends need an end date or an occurrence limit — enter one of them',
+    recurrenceEndHint:
+      'Enter an end date or an occurrence limit — one of them is required for recurring sends',
     createSubmit: 'Create Schedule',
     createdToast: 'Message scheduled successfully',
     accountLabel: 'Sending account',

@@ -134,6 +134,10 @@ function clickButtonWithText(text: string): void {
 }
 
 beforeEach(() => {
+  // P1-8 persists the selected device in localStorage; each test in this
+  // file must start from a clean slate or the previous test's selection
+  // (e.g. Tayba) would be restored instead of the first logged-in device.
+  window.localStorage.clear();
   useAuthStore.setState({language: 'ar', user: writerUser, status: 'authenticated'});
 });
 
@@ -149,6 +153,7 @@ afterEach(async () => {
     container = null;
   }
   document.body.innerHTML = '';
+  window.localStorage.clear();
   useAuthStore.setState({user: null, status: 'unauthenticated'});
 });
 

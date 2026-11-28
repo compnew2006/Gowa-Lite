@@ -125,6 +125,17 @@ export function validateAndBuildSchedulePayload(
     payload.occurrence_limit = limit;
   }
 
+  // P1-21 (decision 6): a recurrence must end — either an end date or an
+  // occurrence limit is required. No default limit is imposed, and
+  // already-created open-ended recurrences keep working untouched.
+  if (recurrenceRaw !== 'once' && !payload.end_at && !payload.occurrence_limit) {
+    throw new GowaError(
+      400,
+      'VALIDATION_ERROR',
+      'التكرار يتطلب تاريخ انتهاء أو حد مرات — أدخل أحدهما',
+    );
+  }
+
   return payload;
 }
 

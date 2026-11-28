@@ -86,6 +86,11 @@ describe('Phase 2 WebSocket Auth & Schedule/Participant DRY Helpers', () => {
         scheduled_at: validTime,
         recurrence: 'weekly',
         weekdays: [1, 3, 1],
+        // P1-21 (Phase 2, Path C): a recurrence must end — the pre-existing
+        // fixture now carries an end date so it still exercises the valid
+        // path; open-ended recurrences are covered by
+        // tests/phase2-device-recurrence.test.ts.
+        end_at: new Date(now + 7 * 86_400_000).toISOString(),
       },
       {fixedPhone: '966500000000@s.whatsapp.net', nowMs: now},
     );
@@ -111,7 +116,7 @@ describe('Phase 2 WebSocket Auth & Schedule/Participant DRY Helpers', () => {
         occurrenceLimit: '2',
         endAtLocal: '',
       },
-      {pastTime: 'past', invalidEndAt: 'invalid_end'},
+      {pastTime: 'past', invalidEndAt: 'invalid_end', recurrenceEndRequired: 'recurrence_end'},
       now,
     );
     assert.equal(fields.message, 'Reminder');

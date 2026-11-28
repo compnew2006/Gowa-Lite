@@ -125,6 +125,7 @@ export default function ScheduledPage() {
             lang === 'ar'
               ? 'تاريخ انتهاء التكرار يجب أن يكون بعد موعد البدء'
               : 'End date must be after scheduled send time',
+          recurrenceEndRequired: t.scheduled.recurrenceEndRequired,
         },
       );
       return createSchedule(deviceId, {
@@ -233,7 +234,7 @@ export default function ScheduledPage() {
           deviceState.setSelectedDeviceId(id);
         }}
         isLoading={deviceState.isLoading}
-        isFetching={schedulesQuery.isFetching}
+        isFetching={deviceState.isFetching}
         error={deviceState.error}
         onRefresh={() => {
           void deviceState.refetch();
