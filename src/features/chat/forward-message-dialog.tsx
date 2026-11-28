@@ -12,6 +12,7 @@ import {chatDisplayName, formatJidPhone} from '@/features/chat/display-name';
 import {messageQueryKeys} from '@/features/chat/message-query-keys';
 import {createUnifiedChatsQueryOptions} from '@/features/chat/inbox-queries';
 import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
+import {isCallMessage} from '@/lib/chat-preview';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {toWhatsAppJid} from '@/lib/phone';
@@ -104,10 +105,12 @@ export function ForwardMessageDialog({
   };
 
   const previewText = message
-    ? message.content?.trim() ||
-      message.filename ||
-      t.chats.mediaLabels[message.media_type] ||
-      t.messageFallback
+    ? isCallMessage(message.content, message.media_type)
+      ? t.chats.mediaLabels.call
+      : message.content?.trim() ||
+        message.filename ||
+        t.chats.mediaLabels[message.media_type] ||
+        t.messageFallback
     : '';
 
   return (

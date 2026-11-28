@@ -25,6 +25,7 @@ import {toast} from 'sonner';
 import type {MessageInfo} from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {senderDisplayName} from '@/features/chat/display-name';
+import {isCallMessage} from '@/lib/chat-preview';
 import {formatBytes} from '@/lib/format';
 import {useI18n} from '@/lib/i18n';
 
@@ -251,11 +252,13 @@ export function MessageComposer({
               )}
             </p>
             <p className="truncate text-xs text-muted-foreground">
-              {replyingTo.content ||
-                replyingTo.filename ||
-                t.chats.mediaLabels[replyingTo.media_type] ||
-                replyingTo.media_type ||
-                t.messageFallback}
+              {isCallMessage(replyingTo.content, replyingTo.media_type)
+                ? t.chats.mediaLabels.call
+                : replyingTo.content ||
+                  replyingTo.filename ||
+                  t.chats.mediaLabels[replyingTo.media_type] ||
+                  replyingTo.media_type ||
+                  t.messageFallback}
             </p>
           </div>
           <button
