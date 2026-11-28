@@ -169,6 +169,7 @@ export const SYSTEM_ROLE_DEFINITIONS: SystemRoleDefinition[] = [
       'notes:write',
       'schedules:read',
       'schedules:write',
+      'schedules:manage',
       'accounts:read',
     ],
   },

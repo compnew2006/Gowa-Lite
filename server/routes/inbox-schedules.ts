@@ -1,6 +1,6 @@
 import type {Router} from 'express';
 import {parseTimestampMs} from '../db.ts';
-import {gowaFetch, type GowaPagination} from '../gowa-client.ts';
+import {GowaError, gowaFetch, type GowaPagination} from '../gowa-client.ts';
 import {
   handleRouteError,
   requireAuth,
@@ -17,6 +17,12 @@ import {
   validateAndBuildSchedulePayload,
   type ScheduleInputBody,
 } from '../services/schedule-service.ts';
+import {
+  annotateSchedulesWithCanManage,
+  canManageSchedule,
+  deleteScheduleOwnership,
+  recordCreatedScheduleOwnership,
+} from '../services/schedule-ownership.ts';
 import type {AuthedRequest} from '../types.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
 
@@ -81,7 +87,11 @@ export function registerInboxScheduleRoutes(router: Router, wsBridge: GowaWsBrid
           code: 'SUCCESS',
           message: 'ok',
           results: {
-            data: items,
+            data: annotateSchedulesWithCanManage(
+              req.user!,
+              deviceId,
+              items.map((item) => ({...item, id: String(item.id || '')})),
+            ),
             pagination: {limit: 100, offset: 0, total: items.length},
           },
         });
@@ -105,6 +115,16 @@ export function registerInboxScheduleRoutes(router: Router, wsBridge: GowaWsBrid
           fixedPhone: chatJid,
         });
         const result = await createScheduleViaGowa(deviceId, payload, wsBridge, chatJid);
+        await recordCreatedScheduleOwnership(
+          deviceId,
+          {
+            phone: String(payload.phone || ''),
+            message: String(payload.message || ''),
+            scheduled_at: String(payload.scheduled_at || ''),
+          },
+          result,
+          req.user!,
+        );
         res.status(201).json({code: 'SUCCESS', message: 'تمت جدولة الرسالة', results: result});
       } catch (err) {
         handleRouteError(res, err);
@@ -123,6 +143,9 @@ export function registerInboxScheduleRoutes(router: Router, wsBridge: GowaWsBrid
         const chatJid = decodeRouteParam(req.params.jid);
         assertChatContentAccess(req.user!, deviceId, chatJid);
         const scheduleId = decodeRouteParam(req.params.id);
+        if (!canManageSchedule(req.user!, deviceId, scheduleId)) {
+          throw new GowaError(403, 'FORBIDDEN', 'ليس لديك صلاحية إدارة هذه الجدولة');
+        }
         const body = req.body as {scheduled_at?: unknown; message?: unknown};
         const result = await rescheduleChatSchedule(deviceId, chatJid, scheduleId, body, wsBridge);
         res.json({code: 'SUCCESS', message: 'تم تحديث موعد الجدولة', results: result});
@@ -143,7 +166,13 @@ export function registerInboxScheduleRoutes(router: Router, wsBridge: GowaWsBrid
         const chatJid = decodeRouteParam(req.params.jid);
         assertChatContentAccess(req.user!, deviceId, chatJid);
         const scheduleId = decodeRouteParam(req.params.id);
+        if (!canManageSchedule(req.user!, deviceId, scheduleId)) {
+          throw new GowaError(403, 'FORBIDDEN', 'ليس لديك صلاحية إدارة هذه الجدولة');
+        }
         await executeScheduleAction(deviceId, scheduleId, req.params.action, wsBridge, chatJid);
+        if (req.params.action === 'cancel') {
+          deleteScheduleOwnership(scheduleId);
+        }
         res.json({code: 'SUCCESS', message: 'تم تحديث الجدولة'});
       } catch (err) {
         handleRouteError(res, err);

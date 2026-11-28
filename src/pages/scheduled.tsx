@@ -176,6 +176,22 @@ export default function ScheduledPage() {
   const fromIdx = total === 0 ? 0 : offset + 1;
   const toIdx = Math.min(offset + rows.length, total);
 
+  // Cancel-confirm details with safe fallbacks — never "undefined".
+  const cancelRecipient =
+    confirmCancelTarget?.recipient ||
+    confirmCancelTarget?.phone ||
+    confirmCancelTarget?.to ||
+    '—';
+  const cancelContent =
+    confirmCancelTarget?.content ||
+    confirmCancelTarget?.message ||
+    confirmCancelTarget?.caption ||
+    confirmCancelTarget?.filename ||
+    '—';
+  const cancelWhenRaw = confirmCancelTarget
+    ? confirmCancelTarget.next_run_at || confirmCancelTarget.scheduled_at
+    : '';
+
   const statusFilters: Array<{key: 'all' | ScheduleStatus; label: string}> = [
     {key: 'all', label: t.scheduled.statusAll},
     {key: 'active', label: t.scheduled.statusActive},
@@ -314,9 +330,7 @@ export default function ScheduledPage() {
                       <th className="px-4 py-3 font-medium">{t.scheduled.colNextRun}</th>
                       <th className="px-4 py-3 font-medium">{t.scheduled.colProgress}</th>
                       <th className="px-4 py-3 font-medium">{t.scheduled.colStatus}</th>
-                      {canManageSchedules && (
-                        <th className="px-4 py-3 text-end font-medium">{t.scheduled.colActions}</th>
-                      )}
+                      <th className="px-4 py-3 text-end font-medium">{t.scheduled.colActions}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -326,6 +340,15 @@ export default function ScheduledPage() {
                       const canCancel = item.status === 'active' || item.status === 'paused';
                       const nextRunRaw = item.next_run_at || item.scheduled_at;
                       const previewText = item.content || item.caption || item.filename || '—';
+                      // Per-row ownership gate: the server annotates each item
+                      // with can_manage (owner or supervisor). Fall back to
+                      // the list-wide permission only when unannotated.
+                      const canManageRow = item.can_manage ?? canManageSchedules;
+                      const manageDisabledTitle = !canManageSchedules
+                        ? t.scheduled.manageRequiresSupervisor
+                        : !canManageRow
+                          ? t.scheduled.createdByAnotherAgent
+                          : undefined;
 
                       return (
                         <tr key={item.id} className="hover:bg-muted/20">
@@ -364,53 +387,51 @@ export default function ScheduledPage() {
                               {statusLabels[item.status] || item.status}
                             </span>
                           </td>
-                          {canManageSchedules && (
-                            <td className="px-4 py-3 text-end">
-                              <div className="inline-flex items-center justify-end gap-1.5">
-                                {canPause && (
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    disabled={actionMutation.isPending}
-                                    onClick={() =>
-                                      actionMutation.mutate({id: item.id, action: 'pause'})
-                                    }
-                                    title={t.scheduled.pause}
-                                  >
-                                    <Pause className="size-3.5" />
-                                    <span>{t.scheduled.pause}</span>
-                                  </Button>
-                                )}
-                                {canResume && (
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    disabled={actionMutation.isPending}
-                                    onClick={() =>
-                                      actionMutation.mutate({id: item.id, action: 'resume'})
-                                    }
-                                    title={t.scheduled.resume}
-                                  >
-                                    <Play className="size-3.5" />
-                                    <span>{t.scheduled.resume}</span>
-                                  </Button>
-                                )}
-                                {canCancel && (
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                                    disabled={actionMutation.isPending}
-                                    onClick={() => setConfirmCancelTarget(item)}
-                                    title={t.scheduled.cancelSchedule}
-                                  >
-                                    <Ban className="size-3.5" />
-                                    <span>{t.scheduled.cancelSchedule}</span>
-                                  </Button>
-                                )}
-                              </div>
-                            </td>
-                          )}
+                          <td className="px-4 py-3 text-end">
+                            <div className="inline-flex items-center justify-end gap-1.5">
+                              {canPause && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={!canManageRow || actionMutation.isPending}
+                                  onClick={() =>
+                                    actionMutation.mutate({id: item.id, action: 'pause'})
+                                  }
+                                  title={manageDisabledTitle ?? t.scheduled.pause}
+                                >
+                                  <Pause className="size-3.5" />
+                                  <span>{t.scheduled.pause}</span>
+                                </Button>
+                              )}
+                              {canResume && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={!canManageRow || actionMutation.isPending}
+                                  onClick={() =>
+                                    actionMutation.mutate({id: item.id, action: 'resume'})
+                                  }
+                                  title={manageDisabledTitle ?? t.scheduled.resume}
+                                >
+                                  <Play className="size-3.5" />
+                                  <span>{t.scheduled.resume}</span>
+                                </Button>
+                              )}
+                              {canCancel && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                  disabled={!canManageRow || actionMutation.isPending}
+                                  onClick={() => setConfirmCancelTarget(item)}
+                                  title={manageDisabledTitle ?? t.scheduled.cancelSchedule}
+                                >
+                                  <Ban className="size-3.5" />
+                                  <span>{t.scheduled.cancelSchedule}</span>
+                                </Button>
+                              )}
+                            </div>
+                          </td>
                         </tr>
                       );
                     })}
@@ -525,10 +546,34 @@ export default function ScheduledPage() {
           if (!open) setConfirmCancelTarget(null);
         }}
         title={t.scheduled.cancelConfirmTitle}
-        description={
-          confirmCancelTarget ? t.scheduled.cancelConfirmDesc(confirmCancelTarget.recipient) : ''
-        }
+        description={confirmCancelTarget ? t.scheduled.cancelConfirmDesc(cancelRecipient) : ''}
       >
+        {confirmCancelTarget && (
+          <dl className="space-y-1.5 rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-xs">
+            <div className="flex items-start gap-2">
+              <dt className="shrink-0 font-medium text-muted-foreground">
+                {t.scheduled.recipientLabel}
+              </dt>
+              <dd className="min-w-0 break-words font-mono text-foreground" dir="ltr">
+                {cancelRecipient}
+              </dd>
+            </div>
+            <div className="flex items-start gap-2">
+              <dt className="shrink-0 font-medium text-muted-foreground">
+                {t.scheduled.scheduledAtLabel}
+              </dt>
+              <dd className="min-w-0 text-foreground tabular-nums">
+                {cancelWhenRaw ? formatDate(cancelWhenRaw, lang) : '—'}
+              </dd>
+            </div>
+            <div className="flex items-start gap-2">
+              <dt className="shrink-0 font-medium text-muted-foreground">
+                {t.scheduled.messageLabel}
+              </dt>
+              <dd className="min-w-0 break-words text-foreground">{cancelContent}</dd>
+            </div>
+          </dl>
+        )}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="outline" onClick={() => setConfirmCancelTarget(null)}>
             {t.cancel}
