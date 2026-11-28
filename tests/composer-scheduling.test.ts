@@ -286,6 +286,7 @@ describe('validateAndBuildScheduleFields time rules (decision 5)', () => {
     pastTime: 'PAST',
     invalidEndAt: 'BAD_END',
     emptyTime: 'EMPTY',
+    recurrenceEndRequired: 'NO_END',
   };
 
   it('rejects an empty time with the required-time message', () => {
