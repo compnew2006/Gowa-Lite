@@ -5,9 +5,11 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
+import {useVirtualizer} from '@tanstack/react-virtual';
 import {
   Archive,
   ArrowLeft,
@@ -64,6 +66,7 @@ import {
   shouldShowRowAccountName,
   shouldShowRowLifecycle,
 } from '@/features/chat/chat-ui-helpers';
+import {shouldAutoLoadMore} from '@/features/chat/scroll-behavior';
 import {chatDisplayName, formatJidPhone} from '@/features/chat/display-name';
 import {
   buildJidAccountsMap,
@@ -98,7 +101,15 @@ interface ChatListRowProps {
   onToggleBulkItem: (key: string) => void;
   onSelect: (chat: UnifiedChat) => void;
   onOpenMenu: (chat: UnifiedChat, anchor: {x: number; y: number}) => void;
+  // Virtualization: the row is absolutely positioned by the virtualizer.
+  // rowTop is a primitive so memo() still skips unchanged rows; the style
+  // object is built inside with useMemo instead of being passed in.
+  rowTop?: number;
+  rowIndex?: number;
+  rowRef?: (node: HTMLLIElement | null) => void;
 }
+
+const EMPTY_OTHER_ACCOUNTS: OtherAccountRef[] = [];
 
 const ChatListRow = memo(function ChatListRow({
   chat,
@@ -113,8 +124,24 @@ const ChatListRow = memo(function ChatListRow({
   onToggleBulkItem,
   onSelect,
   onOpenMenu,
+  rowTop,
+  rowIndex,
+  rowRef,
 }: ChatListRowProps) {
   const {isRtl, lang, t} = useI18n();
+  const rowStyle = useMemo<CSSProperties | undefined>(
+    () =>
+      rowTop === undefined
+        ? undefined
+        : {
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            transform: `translateY(${rowTop}px)`,
+          },
+    [rowTop],
+  );
   const key = chatUniqueKey(chat);
   const name = chatDisplayName(chat);
   const secondaryPhone = formatSecondaryChatPhone(name, formatJidPhone(chat.jid));
@@ -150,7 +177,7 @@ const ChatListRow = memo(function ChatListRow({
         : 'text-amber-700 dark:text-amber-400';
 
   return (
-    <li className="chat-list-row">
+    <li ref={rowRef} data-index={rowIndex} style={rowStyle} className="chat-list-row">
       <div
         onContextMenu={(event) => {
           if (bulkMode) return;
@@ -428,6 +455,17 @@ export function ChatList({
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [listAssignChat, setListAssignChat] = useState<UnifiedChat | null>(null);
   const tabRefs = useRef<Partial<Record<UnifiedChatTab, HTMLButtonElement | null>>>({});
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  // onSelect / onLoadMore arrive as fresh inline closures from the page on
+  // every render; routing them through refs keeps the row callbacks (and
+  // therefore ChatListRow's memo) stable.
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+  const onLoadMoreRef = useRef(onLoadMore);
+  onLoadMoreRef.current = onLoadMore;
+  const handleSelectRow = useCallback((chat: UnifiedChat) => {
+    onSelectRef.current(chat);
+  }, []);
 
   const availableTabs = useMemo(() => {
     const list: Array<{id: UnifiedChatTab; label: string; count?: number}> = [];
@@ -498,6 +536,50 @@ export function ChatList({
       ),
     );
   }, [archivedOnly, chats, favouritesOnly, search, selectedListId, unreadOnly]);
+
+  // Stable per-chat other-account arrays: getOtherAccountsForChat returns a
+  // fresh array every call, which would defeat ChatListRow's memo.
+  const otherAccountsByKey = useMemo(() => {
+    const map = new Map<string, OtherAccountRef[]>();
+    for (const chat of visibleChats) {
+      map.set(
+        chatUniqueKey(chat),
+        getOtherAccountsForChat(resolvedJidAccountsMap, chat.device_id, chat.jid),
+      );
+    }
+    return map;
+  }, [resolvedJidAccountsMap, visibleChats]);
+
+  // Virtualized rows: only the visible window (+ overscan) is in the DOM.
+  // Rows are variable height (name / phone / account / lifecycle lines), so
+  // they are measured live; 72px matches the CSS contain-intrinsic-size.
+  const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLLIElement>({
+    count: visibleChats.length,
+    getScrollElement: () => listScrollRef.current,
+    estimateSize: () => 72,
+    overscan: 8,
+    gap: 2,
+    getItemKey: (index) => chatUniqueKey(visibleChats[index]),
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const lastVirtualIndex =
+    virtualRows.length > 0 ? virtualRows[virtualRows.length - 1].index : -1;
+
+  // Auto-fetch the next server page when the rendered window reaches the end,
+  // so the user never has to scroll through empty space to find the button.
+  // The manual load-more button below stays as the fallback.
+  useEffect(() => {
+    if (
+      shouldAutoLoadMore({
+        lastRenderedIndex: lastVirtualIndex,
+        totalCount: visibleChats.length,
+        hasMore,
+        isLoadingMore,
+      })
+    ) {
+      onLoadMoreRef.current?.();
+    }
+  }, [hasMore, isLoadingMore, lastVirtualIndex, visibleChats.length]);
 
   const activeListAssignChat = useMemo(() => {
     if (!listAssignChat) return null;
@@ -1018,8 +1100,8 @@ export function ChatList({
         )}
       </div>
 
-      {/* Chat Rows */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      {/* Chat Rows (virtualized: only the visible window is in the DOM) */}
+      <div ref={listScrollRef} className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {archivedOnly && (
           <button
             type="button"
@@ -1071,14 +1153,21 @@ export function ChatList({
             {archivedOnly ? t.chats.archivedEmpty : t.chats.noMatchingChats}
           </div>
         ) : (
-          <ul className="space-y-0.5">
-            {visibleChats.map((chat) => {
+          <ul
+            style={{height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative'}}
+            className="w-full"
+          >
+            {virtualRows.map((virtualRow) => {
+              const chat = visibleChats[virtualRow.index];
               const key = chatUniqueKey(chat);
               const isMenuOpen =
                 Boolean(menuState) && chatUniqueKey(menuState!.chat) === key;
               return (
                 <ChatListRow
-                  key={key}
+                  key={virtualRow.key}
+                  rowRef={rowVirtualizer.measureElement}
+                  rowIndex={virtualRow.index}
+                  rowTop={virtualRow.start}
                   chat={chat}
                   isSelected={selectedKey === key}
                   isMenuOpen={isMenuOpen}
@@ -1087,13 +1176,9 @@ export function ChatList({
                   currentUserId={user?.id}
                   activeTab={activeTab}
                   showAccountName={showRowAccountName}
-                  otherAccounts={getOtherAccountsForChat(
-                    resolvedJidAccountsMap,
-                    chat.device_id,
-                    chat.jid,
-                  )}
+                  otherAccounts={otherAccountsByKey.get(key) ?? EMPTY_OTHER_ACCOUNTS}
                   onToggleBulkItem={handleToggleBulkItem}
-                  onSelect={onSelect}
+                  onSelect={handleSelectRow}
                   onOpenMenu={handleOpenMenu}
                 />
               );
