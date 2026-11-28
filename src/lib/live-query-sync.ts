@@ -222,10 +222,23 @@ function syncLiveQueryCacheInternal(
     } else {
       invalidateChat(messageQueryKeys.all[0]);
     }
+    // P2-11: an edit or a revoke can record a lifecycle event on the
+    // server (message_edited / message_revoked), so the timeline's system
+    // line needs a refetch too. A revoke/edit frame with no recorded event
+    // (e.g. a customer's own delete) just refetches the same list.
+    if (code === 'MESSAGE_EDITED' || code === 'MESSAGE.EDITED' || revoke) {
+      invalidateChat(chatLifecycleQueryKeys.all[0]);
+    }
   } else if (code === 'CONVERSATION_NOTE_UPDATED') {
     invalidateChat('unified-chat-notes');
+    // P2-11: a note add/edit/delete also records a lifecycle event, so the
+    // timeline's system line appears without waiting for a refetch.
+    invalidateChat(chatLifecycleQueryKeys.all[0]);
   } else if (code === 'SCHEDULE_UPDATED') {
     invalidateChat('unified-chat-schedules');
+    // P2-11: a schedule create/pause/resume/cancel also records a
+    // lifecycle event for the chat timeline.
+    invalidateChat(chatLifecycleQueryKeys.all[0]);
     invalidate('schedules');
   } else if (code === 'CHAT_LIFECYCLE_UPDATED' || code === 'CHAT_DAILY_RESET') {
     invalidateInboxDeferred(target.deviceId);
@@ -241,6 +254,9 @@ function syncLiveQueryCacheInternal(
     invalidate('inbox-policy');
   } else if (code === 'CHAT_CLOSE_RATING_UPDATED') {
     invalidateChat('account-close-ratings');
+    // P2-11: a submitted rating also records a lifecycle event, so its
+    // system line appears in the chat timeline.
+    invalidateChat(chatLifecycleQueryKeys.all[0]);
     invalidate('users-ratings', 'user-ratings-detail');
   } else if (code === 'CALL_AUTO_REJECTED' && target.deviceId) {
     invalidateChat('call-auto-reject');

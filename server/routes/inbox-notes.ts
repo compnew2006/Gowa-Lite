@@ -15,6 +15,7 @@ import {
 } from '../middleware/auth.ts';
 import {hasPermission, isAdminSubject} from '../rbac.ts';
 import {decodeRouteParam} from '../security.ts';
+import {recordChatActionEvent} from '../db/lifecycle-repo.ts';
 import {assertChatContentAccess, getChatContentAccessState} from '../services/chat-lifecycle.ts';
 import type {AuthedRequest} from '../types.ts';
 import {
@@ -80,6 +81,16 @@ export function registerInboxNoteRoutes(router: Router, wsBridge: GowaWsBridge):
           content: parsed.content,
           isPinned: parsed.is_pinned === true,
         });
+        // P2-11: the add shows as a system line in the chat timeline
+        // (recorded server-side, with a short excerpt of the note text).
+        recordChatActionEvent({
+          deviceId,
+          chatJid,
+          eventType: 'note_added',
+          actorUserId: req.user!.id,
+          actorName: req.user!.display_name,
+          note: parsed.content.slice(0, 200),
+        });
         wsBridge.broadcast({
           code: 'CONVERSATION_NOTE_UPDATED',
           message: 'created',
@@ -126,6 +137,18 @@ export function registerInboxNoteRoutes(router: Router, wsBridge: GowaWsBridge):
           content: parsed.content,
           is_pinned: hasPin ? Boolean(parsed.is_pinned) : undefined,
         });
+        // P2-11: a content change shows as a system line. A pin-only
+        // toggle is not a content edit — it records nothing (no noise).
+        if (parsed.content !== undefined && parsed.content !== existing.content) {
+          recordChatActionEvent({
+            deviceId,
+            chatJid,
+            eventType: 'note_edited',
+            actorUserId: req.user!.id,
+            actorName: req.user!.display_name,
+            note: parsed.content.slice(0, 200),
+          });
+        }
         wsBridge.broadcast({
           code: 'CONVERSATION_NOTE_UPDATED',
           message: 'updated',
@@ -164,6 +187,16 @@ export function registerInboxNoteRoutes(router: Router, wsBridge: GowaWsBridge):
         }
 
         deleteConversationNote(noteId, deviceId, chatJid);
+        // P2-11: the deletion shows as a system line carrying an excerpt
+        // of the deleted text, so the removal itself leaves a trace.
+        recordChatActionEvent({
+          deviceId,
+          chatJid,
+          eventType: 'note_deleted',
+          actorUserId: req.user!.id,
+          actorName: req.user!.display_name,
+          note: existing.content.slice(0, 200),
+        });
         wsBridge.broadcast({
           code: 'CONVERSATION_NOTE_UPDATED',
           message: 'deleted',

@@ -11,7 +11,20 @@ export type ChatLifecycleEventType =
   | 'released'
   | 'closed'
   | 'reopened'
-  | 'reopened_by_customer';
+  | 'reopened_by_customer'
+  // P2-11: every operator/customer action gets a system line, not just the
+  // eight lifecycle transitions above. Recorded server-side at the action
+  // (never from the UI): notes, schedules, revoke, message edits, ratings.
+  | 'note_added'
+  | 'note_edited'
+  | 'note_deleted'
+  | 'schedule_created'
+  | 'schedule_paused'
+  | 'schedule_resumed'
+  | 'schedule_cancelled'
+  | 'message_revoked'
+  | 'message_edited'
+  | 'rating_submitted';
 
 export interface ChatAssignmentInfo {
   device_id: string;
@@ -540,6 +553,56 @@ export function listDbChatsByLifecycleStatus(params: {
       };
     })
     .sort((a, b) => b.last_activity_ms - a.last_activity_ms);
+}
+
+/**
+ * P2-11: record a non-transition action (note, schedule, revoke, message
+ * edit, customer rating) as a lifecycle event so it renders as a system
+ * line in the chat timeline. Called server-side at the moment the action
+ * executes — never from the UI.
+ *
+ * Returns null (and records nothing) for chats that have no lifecycle
+ * timeline at all — groups, newsletters, status broadcasts — so those
+ * actions never produce noise lines. Never throws: a failed audit insert
+ * must not fail the action itself (same fail-open rule as schedule
+ * ownership recording); the failure is logged for the operator to see.
+ */
+export function recordChatActionEvent(params: {
+  deviceId: string;
+  chatJid: string;
+  eventType: ChatLifecycleEventType;
+  actorUserId: number | null;
+  actorName: string;
+  targetUserId?: number | null;
+  targetName?: string;
+  note?: string;
+}): ChatLifecycleEvent | null {
+  const deviceId = params.deviceId.trim();
+  const chatJid = params.chatJid.trim();
+  if (
+    !deviceId ||
+    !chatJid ||
+    isStatusBroadcastJid(chatJid) ||
+    isNewsletterJid(chatJid) ||
+    isGroupJid(chatJid)
+  ) {
+    return null;
+  }
+  try {
+    return insertChatLifecycleEventRow({
+      deviceId,
+      chatJid,
+      eventType: params.eventType,
+      actorUserId: params.actorUserId,
+      actorName: params.actorName,
+      targetUserId: params.targetUserId ?? null,
+      targetName: params.targetName ?? '',
+      note: params.note ?? '',
+    });
+  } catch (err) {
+    console.error('[lifecycle] failed to record action event', params.eventType, err);
+    return null;
+  }
 }
 
 export function listChatLifecycleEventRows(

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import {
+  getCachedMessage,
   markCachedMessageRevoked,
   parseTimestampMs,
   syncChatWatermarks,
@@ -10,6 +11,7 @@ import {GowaError, type GowaChatInfo, type GowaDevice} from '../gowa-client.ts';
 import type {GowaUpstreamEvent} from '../ws-bridge.ts';
 import {handleIncomingCallOffer, isCallOfferEventCode} from './call-auto-reject.ts';
 import {buildCloseRatingUpdatedEvent, captureChatCloseRating} from './chat-close-rating.ts';
+import {recordChatActionEvent} from '../db/lifecycle-repo.ts';
 import {
   handleIncomingCustomerMessageLifecycle,
   type ChatLifecycleWsPayload,
@@ -410,7 +412,7 @@ export function handleUpstreamGowaEvent(
       ? captureChatCloseRating(deviceId, chatJid, {
         id, text: msg.content, mediaType: msg.media_type,
         timestampMs: parseTimestampMs(timestamp), replyToId: repliedToId || undefined,
-      })
+      }, msg.sender_display_name)
       : undefined;
     upsertCachedMessages(deviceId, chatJid, [msg], {markUnreadCandidate: !rating});
     if (rating) {
@@ -458,6 +460,27 @@ export function handleUpstreamGowaEvent(
         deviceOwnJid,
         typeof editedGatewayFlag === 'boolean' ? editedGatewayFlag : undefined,
       );
+
+      // P2-11: an edit shows as a system line in the chat timeline. The
+      // gateway can deliver the same edit twice (WS + webhook), so record
+      // only when the cached content actually changes — a replay of the
+      // same text is not a new event.
+      const cachedBeforeEdit = getCachedMessage(deviceId, chatJid, id);
+      const isReplay =
+        cachedBeforeEdit !== null && (cachedBeforeEdit.content ?? '') === editedBody;
+      if (!isReplay) {
+        const editorName =
+          (typeof raw.sender_display_name === 'string' && raw.sender_display_name.trim()) ||
+          (typeof raw.pushname === 'string' && raw.pushname.trim()) ||
+          (cachedBeforeEdit?.sender_display_name ?? '').trim();
+        recordChatActionEvent({
+          deviceId,
+          chatJid,
+          eventType: 'message_edited',
+          actorUserId: null,
+          actorName: editorName || '',
+        });
+      }
 
       upsertCachedMessages(deviceId, chatJid, [
         {

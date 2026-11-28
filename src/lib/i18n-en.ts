@@ -322,6 +322,20 @@ const en: AppTranslations = {
           ? `${actor} reopened and assigned to ${target}`
           : `${actor} reopened the conversation`,
       reopened_by_customer: 'Customer reopened the conversation with a new message',
+      note_added: (actor: string) => `${actor} added a note`,
+      note_edited: (actor: string) => `${actor} edited a note`,
+      note_deleted: (actor: string) => `${actor} deleted a note`,
+      schedule_created: (actor: string) => `${actor} scheduled a message`,
+      schedule_paused: (actor: string) => `${actor} paused a scheduled message`,
+      schedule_resumed: (actor: string) => `${actor} resumed a scheduled message`,
+      schedule_cancelled: (actor: string) => `${actor} cancelled a scheduled message`,
+      message_revoked: (actor: string) => `${actor} revoked a message`,
+      message_edited: (actor: string) =>
+        actor ? `${actor} edited a message` : 'A message was edited',
+      rating_submitted: (actor: string, score?: string) =>
+        actor
+          ? `${actor} rated the conversation ${score ?? '?'}/5`
+          : `The customer rated the conversation ${score ?? '?'}/5`,
     },
     tabsLabel: 'Inbox lifecycle tabs',
     tabAll: 'All',

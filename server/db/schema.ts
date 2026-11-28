@@ -320,6 +320,7 @@ db.exec(`
     device_id TEXT NOT NULL,
     created_by_user_id INTEGER NOT NULL,
     created_by_name TEXT NOT NULL DEFAULT '',
+    chat_jid TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
   );
 
@@ -360,6 +361,17 @@ db.exec(`
   const readCols = queryAll<{name: string}>('PRAGMA table_info(user_chat_read_states)');
   if (!readCols.some((c) => c.name === 'manual_unread')) {
     db.exec('ALTER TABLE user_chat_read_states ADD COLUMN manual_unread INTEGER NOT NULL DEFAULT 0');
+  }
+}
+
+// P2-11: the recipient chat of a gateway schedule, so pause/resume/cancel
+// from the Schedules page (which has no chat in the URL) can still record
+// a system line in that chat's timeline. Rows created before this column
+// keep '' and resolve to no line (their chat is unknown locally).
+{
+  const ownershipCols = queryAll<{name: string}>('PRAGMA table_info(schedule_ownership)');
+  if (!ownershipCols.some((c) => c.name === 'chat_jid')) {
+    db.exec("ALTER TABLE schedule_ownership ADD COLUMN chat_jid TEXT NOT NULL DEFAULT ''");
   }
 }
 

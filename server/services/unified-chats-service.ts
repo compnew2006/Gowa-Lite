@@ -702,7 +702,7 @@ export async function runInitialUnreadCatchup(params: {
             const rating = captureChatCloseRating(deviceId, chatJid, {
               id: msg.id, text: msg.content ?? '', mediaType: msg.media_type,
               timestampMs: ms, contextMetadata: msg.context_metadata,
-            });
+            }, msg.sender_display_name);
             if (rating) {
               ratings.push(msg);
               if (rating === 'recorded') {

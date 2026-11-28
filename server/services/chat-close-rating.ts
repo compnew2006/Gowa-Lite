@@ -21,6 +21,7 @@ import {
   upsertCachedMessages,
 } from '../db.ts';
 import {GowaError, gowaFetch} from '../gowa-client.ts';
+import {recordChatActionEvent} from '../db/lifecycle-repo.ts';
 
 const RATING_WINDOW_MS = 48 * 60 * 60 * 1000;
 export const DEFAULT_RATING_PROMPT =
@@ -200,6 +201,7 @@ export function captureChatCloseRating(
   deviceId: string,
   chatJid: string,
   message: RatingMessage,
+  actorName?: string,
 ): 'recorded' | 'duplicate' | undefined {
   if (!message.id || message.mediaType) return;
   const number = /^([1-5])(?:\s*\/\s*5)?$/u.exec(normalizeArabicDigits(message.text.trim()))?.[1];
@@ -211,9 +213,22 @@ export function captureChatCloseRating(
   if (!message.timestampMs || isChatBlocked(deviceId, chatJid)) return;
   const now = Date.now();
   const quote = quotedMessageId(message) ?? null;
-  return recordPendingRating({
+  const recorded = recordPendingRating({
     score, messageId: message.id, deviceId, chatJid, now, timestampMs: message.timestampMs, quote,
-  }) ? 'recorded' : undefined;
+  });
+  if (!recorded) return undefined;
+  // P2-11: the submitted rating shows as a system line in the chat
+  // timeline. The score travels in the event note; the line text renders
+  // it as "5/5" and the note sub-line stays hidden for this type.
+  recordChatActionEvent({
+    deviceId,
+    chatJid,
+    eventType: 'rating_submitted',
+    actorUserId: null,
+    actorName: (actorName ?? '').trim(),
+    note: String(score),
+  });
+  return 'recorded';
 }
 
 export function buildCloseRatingUpdatedEvent(deviceId: string) {

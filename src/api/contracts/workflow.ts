@@ -87,7 +87,18 @@ export type ChatLifecycleEventType =
   | 'released'
   | 'closed'
   | 'reopened'
-  | 'reopened_by_customer';
+  | 'reopened_by_customer'
+  // P2-11: action system lines (recorded server-side at the action).
+  | 'note_added'
+  | 'note_edited'
+  | 'note_deleted'
+  | 'schedule_created'
+  | 'schedule_paused'
+  | 'schedule_resumed'
+  | 'schedule_cancelled'
+  | 'message_revoked'
+  | 'message_edited'
+  | 'rating_submitted';
 
 export interface ChatAssignmentInfo extends ChatAssignmentSummary {
   device_id: string;

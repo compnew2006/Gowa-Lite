@@ -76,7 +76,8 @@ const ScheduleMessageDialog = lazy(() =>
 );
 import {useChatReadSync} from '@/features/chat/use-chat-read-sync';
 import {useMediaBatch} from '@/features/chat/use-media-batch';
-import {formatDay, formatShortTime} from '@/lib/format';
+import {formatDay} from '@/lib/format';
+import {LifecycleTimelineLine} from '@/features/chat/lifecycle-timeline-line';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
 import {isDownloadableMedia} from '@/lib/media-download';
@@ -88,32 +89,6 @@ type TimelineItem =
   | {kind: 'message'; key: string; timestamp: string; timestampMs: number; message: MessageInfo}
   | {kind: 'lifecycle'; key: string; timestamp: string; timestampMs: number; event: ChatLifecycleEvent}
   | {kind: 'scheduled'; key: string; timestamp: string; timestampMs: number; item: ScheduledSend};
-
-function formatLifecycleEventText(
-  event: ChatLifecycleEvent,
-  t: ReturnType<typeof useI18n>['t'],
-): string {
-  const actor = event.actor_name || '—';
-  const target = event.target_name || '—';
-  switch (event.event_type) {
-    case 'claimed':
-      return t.chats.timelineEvents.claimed(actor);
-    case 'auto_claimed':
-      return t.chats.timelineEvents.auto_claimed(actor);
-    case 'assigned':
-      return t.chats.timelineEvents.assigned(actor, target);
-    case 'transferred':
-      return t.chats.timelineEvents.transferred(actor, target);
-    case 'released':
-      return t.chats.timelineEvents.released(actor);
-    case 'closed':
-      return t.chats.timelineEvents.closed(actor);
-    case 'reopened':
-      return t.chats.timelineEvents.reopened(actor, event.target_name || undefined);
-    case 'reopened_by_customer':
-      return t.chats.timelineEvents.reopened_by_customer;
-  }
-}
 
 export function MessageView({
   chat,
@@ -881,19 +856,7 @@ export function MessageView({
                         </div>
                       )}
                       {item.kind === 'lifecycle' ? (
-                        <div className="mx-auto my-0.5 flex w-full max-w-4xl justify-center px-4 sm:px-8 lg:px-14">
-                          <div className="max-w-md rounded-lg border border-border/80 bg-card/90 px-3 py-1 text-center text-[11px] text-muted-foreground shadow-2xs">
-                            <span>{formatLifecycleEventText(item.event, t)}</span>
-                            <span className="ms-1.5 text-[10px] opacity-75 tabular-nums">
-                              {formatShortTime(item.event.created_at, lang)}
-                            </span>
-                            {item.event.note && (
-                              <p className="mt-0.5 text-[10px] text-foreground/80">
-                                {item.event.note}
-                              </p>
-                            )}
-                          </div>
-                        </div>
+                        <LifecycleTimelineLine event={item.event} />
                       ) : item.kind === 'scheduled' ? (
                         <div className="mx-auto flex w-full max-w-4xl justify-end px-4 sm:px-8 lg:px-14">
                           <ScheduledMessageBubble
