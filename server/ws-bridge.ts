@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type {Server as HttpServer} from 'node:http';
 import {WebSocket, WebSocketServer} from 'ws';
-import {normalizeWhatsAppJid} from '../shared/whatsapp-identity.ts';
+import {normalizeWhatsAppJid, resolveDeviceOwnJid} from '../shared/whatsapp-identity.ts';
 import {getGowaConfig, getUserById, getUserCacheVersion, hasActiveSession, hashSessionToken, type PublicUser} from './db.ts';
 import {gowaFetch, type GowaDevice} from './gowa-client.ts';
 import {hasAnyPermission, hasChatReadPermission, hasDeviceAccess, hasPermission} from './rbac.ts';
@@ -525,6 +525,20 @@ export class GowaWsBridge {
   async resolveWebhookDevice(source: string, sessionId: string): Promise<string | undefined> {
     return findEventDevice(this.upstreamDevices, source, sessionId) ??
       findEventDevice(await gowaFetch<GowaDevice[]>('/devices') ?? [], source, sessionId);
+  }
+
+  /**
+   * The device's own WhatsApp JID, resolved from the last `/devices` list
+   * (reconciled every 15s). '' when the device is unknown or carries no
+   * usable JID/phone — callers then fall back to the gateway flag alone.
+   */
+  getDeviceOwnJid(deviceId: string): string {
+    const device = this.upstreamDevices.find((dev) => dev.id === deviceId);
+    if (device) {
+      const resolved = resolveDeviceOwnJid(device);
+      if (resolved) return resolved;
+    }
+    return resolveDeviceOwnJid({id: deviceId});
   }
 
   relayScopedEvent(deviceId: string, event: GowaUpstreamEvent): void {

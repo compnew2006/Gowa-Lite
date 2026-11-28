@@ -21,6 +21,7 @@ import {
   isStatusBroadcastJid,
   matchesNormalizedSearch,
   normalizeWhatsAppJid,
+  resolveIsFromMe,
 } from '../../shared/whatsapp-identity.ts';
 import {
   asRecord,
@@ -276,6 +277,11 @@ export function handleUpstreamGowaEvent(
   event: GowaUpstreamEvent,
   onLifecycleEvent?: (payload: ChatLifecycleWsPayload | Record<string, unknown>) => void,
   onRatingConsumed?: () => void,
+  // The device's own JID (from the gateway `/devices` list, via
+  // GowaWsBridge.getDeviceOwnJid). `is_from_me` is derived from
+  // sender_jid == device JID (decision 19); without it the derivation
+  // falls back to the gateway flag alone.
+  deviceOwnJid?: string,
 ): ChatLifecycleWsPayload | null {
   if (!deviceId) return null;
   const code = (event.code || '').toUpperCase();
@@ -360,7 +366,12 @@ export function handleUpstreamGowaEvent(
     const chatJid = readGowaEventChatJid(event.result);
     if (!id || !chatJid || isNewsletterJid(chatJid)) return null;
 
-    const isFromMe = Boolean(raw.is_from_me ?? raw.from_me);
+    const gatewayFlag = raw.is_from_me ?? raw.from_me;
+    const isFromMe = resolveIsFromMe(
+      String(raw.sender_jid || raw.from || ''),
+      deviceOwnJid,
+      typeof gatewayFlag === 'boolean' ? gatewayFlag : undefined,
+    );
 
     const media = extractMediaFromWsPayload(raw);
     const timestamp =
@@ -441,6 +452,12 @@ export function handleUpstreamGowaEvent(
             : undefined;
       const timestamp =
         typeof raw.timestamp === 'string' && raw.timestamp.trim() ? raw.timestamp.trim() : '';
+      const editedGatewayFlag = raw.is_from_me ?? raw.from_me;
+      const editedIsFromMe = resolveIsFromMe(
+        String(raw.sender_jid || raw.from || ''),
+        deviceOwnJid,
+        typeof editedGatewayFlag === 'boolean' ? editedGatewayFlag : undefined,
+      );
 
       upsertCachedMessages(deviceId, chatJid, [
         {
@@ -455,7 +472,7 @@ export function handleUpstreamGowaEvent(
                 : undefined,
           content: editedBody,
           timestamp,
-          is_from_me: Boolean(raw.is_from_me ?? raw.from_me),
+          is_from_me: editedIsFromMe,
           media_type: media.mediaType,
           context_metadata: contextMetadata,
           filename: media.filename,
