@@ -357,6 +357,15 @@ const ar = {
     bulkReleaseBtn: 'تحرير للانتظار',
     bulkReopenBtn: 'إعادة فتح المحدد',
     bulkClaimBtn: 'استلام المحدد',
+    bulkAssignBtn: 'تعيين المحدد',
+    bulkAssignDialogTitle: 'تعيين المحدد لوكيل',
+    bulkAssignDialogDesc: (count: number) =>
+      `اختر وكيلًا مخوّلًا للوصول إلى حسابات المحادثات المحددة ليتولى ${count} محادثة.`,
+    bulkAssignSubmitBtn: 'تعيين المحدد',
+    bulkAssignAgentsEmpty: 'لا يوجد وكلاء نشطون مخوّلون لكل الحسابات المحددة.',
+    bulkAssignMultiDeviceHint:
+      'المحدد من أكثر من حساب — تُعرض فقط الوكلاء المخولون لكل الحسابات.',
+    bulkAssignTransferWarning: 'سيُنقل المحدد من قائمتك النشطة إلى الوكيل المختار.',
     bulkResultToast: (count: number) => `تم تنفيذ الإجراء على ${count} محادثة`,
     bulkPartialToast: (succeeded: number, total: number) =>
       `نجح التنفيذ على ${succeeded} من أصل ${total} محادثة`,
@@ -819,6 +828,17 @@ const ar = {
     pausedToast: 'تم إيقاف الجدولة مؤقتًا',
     resumedToast: 'تم استئناف الجدولة',
     cancelledToast: 'تم إلغاء الجدولة',
+    editSchedule: 'تعديل الجدولة',
+    editTitle: 'تعديل الرسالة المجدولة',
+    editDesc: (recipient: string) =>
+      `عدّل موعد الإرسال أو نص الرسالة المجدولة للمستلم «${recipient}». تعديل النص يعيد إنشاء الجدولة ويلغي القديمة.`,
+    editTimeLabel: 'موعد الإرسال الجديد',
+    editMessageLabel: 'نص الرسالة',
+    editMessageHint: 'تعديل النص متاح للرسائل النصية فقط، ويعيد إنشاء الجدولة.',
+    editTimeOnlyNote: 'رسائل الوسائط: تعديل الوقت فقط — النص جزء من المرفق ولا يمكن تغييره هنا.',
+    editSubmitBtn: 'حفظ التعديل',
+    editedToast: 'تم تحديث الجدولة',
+    editNoChange: 'لا يوجد تغيير لحفظه',
     cancelConfirmTitle: 'تأكيد إلغاء الرسالة المجدولة',
     cancelConfirmDesc: (recipient: string) =>
       `هل أنت متأكد من إلغاء الرسالة المجدولة للمستلم «${recipient}»؟ لن يتم إرسالها لاحقًا.`,

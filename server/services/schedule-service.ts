@@ -1,8 +1,10 @@
 import {parseTimestampMs} from '../db.ts';
 import {GowaError, gowaFetch, type GowaPagination} from '../gowa-client.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
+import {normalizeWhatsAppJid} from '../../shared/whatsapp-identity.ts';
 import {recipientMatchesChatJid, resolveGowaMediaTarget} from './chat-sync.ts';
 import {
+  getScheduleChatJid,
   resolveCreatedScheduleId,
   transferScheduleOwnership,
 } from './schedule-ownership.ts';
@@ -264,31 +266,38 @@ export async function rescheduleChatSchedule(
   deviceId: string,
   chatJid: string,
   scheduleId: string,
-  input: {scheduled_at?: unknown; message?: unknown},
+  input: {scheduled_at?: unknown; message?: unknown; forceRecreate?: boolean},
   wsBridge: GowaWsBridge,
 ): Promise<unknown> {
   const {scheduledAt} = validateScheduleTimestamp(input.scheduled_at);
   const message = typeof input.message === 'string' ? input.message.trim() : undefined;
 
-  try {
-    const patched = await gowaFetch(`/send/schedules/${encodeURIComponent(scheduleId)}`, {
-      method: 'PATCH',
-      deviceId,
-      body: {
-        scheduled_at: scheduledAt,
-        ...(message ? {message} : {}),
-      },
-    });
-    wsBridge.broadcast({
-      code: 'SCHEDULE_UPDATED',
-      message: 'updated',
-      device_id: deviceId,
-      result: {chat_jid: chatJid},
-    });
-    return patched;
-  } catch (err) {
-    if (!(err instanceof GowaError) || (err.status !== 404 && err.status !== 405)) {
-      throw err;
+  // P2-9: a text change must actually change the text. A gateway PATCH may
+  // silently ignore an unsupported `message` field while returning 200, so
+  // when the caller asks for a recreate (text edits from the Scheduled
+  // page), skip PATCH entirely and take the recreate path below, where the
+  // new text is part of the created schedule.
+  if (!input.forceRecreate) {
+    try {
+      const patched = await gowaFetch(`/send/schedules/${encodeURIComponent(scheduleId)}`, {
+        method: 'PATCH',
+        deviceId,
+        body: {
+          scheduled_at: scheduledAt,
+          ...(message ? {message} : {}),
+        },
+      });
+      wsBridge.broadcast({
+        code: 'SCHEDULE_UPDATED',
+        message: 'updated',
+        device_id: deviceId,
+        result: {chat_jid: chatJid},
+      });
+      return patched;
+    } catch (err) {
+      if (!(err instanceof GowaError) || (err.status !== 404 && err.status !== 405)) {
+        throw err;
+      }
     }
   }
 
@@ -388,16 +397,36 @@ export async function rescheduleChatSchedule(
       deviceId,
     });
   } catch {
+    // P2-9: the old schedule could not be cancelled, so roll the new one
+    // back — otherwise the old and the new would both be active and the
+    // message would send twice. If the rollback itself fails (or the new
+    // id was never resolved, so there is nothing to roll back), say so
+    // explicitly with both ids: the previous code threw the same
+    // "rolled back" message either way, hiding a live double-send.
+    let rollbackOk = Boolean(resolvedNewId);
     if (resolvedNewId) {
-      await gowaFetch(`/send/schedules/${encodeURIComponent(resolvedNewId)}/cancel`, {
-        method: 'POST',
-        deviceId,
-      }).catch(() => undefined);
+      try {
+        await gowaFetch(`/send/schedules/${encodeURIComponent(resolvedNewId)}/cancel`, {
+          method: 'POST',
+          deviceId,
+        });
+      } catch {
+        rollbackOk = false;
+      }
+    }
+    if (!rollbackOk) {
+      throw new GowaError(
+        502,
+        'RESCHEDULE_ROLLBACK_FAILED',
+        'تعذر إلغاء الجدولة القديمة، وتعذر أيضاً التراجع عن الجدولة الجديدة — قد تكون الجدولتان نشطتين الآن؛ ألغِ إحداهما يدوياً من صفحة المجدولة',
+        {old_schedule_id: scheduleId, new_schedule_id: resolvedNewId || null},
+      );
     }
     throw new GowaError(
       502,
       'RESCHEDULE_CANCEL_FAILED',
       'تعذر إلغاء الجدولة القديمة؛ تم التراجع عن التعديل لتجنب الإرسال المزدوج',
+      {old_schedule_id: scheduleId, new_schedule_id: resolvedNewId || null},
     );
   }
 
@@ -415,6 +444,76 @@ export async function rescheduleChatSchedule(
     result: {chat_jid: chatJid},
   });
   return created;
+}
+
+/**
+ * P2-9: find a schedule's recipient chat by scanning the gateway list for
+ * its id. Used only when the ownership row has no chat (schedules created
+ * before the chat_jid column existed, or created outside Lite). Bounded
+ * like the reschedule fallback scan below (500 records).
+ */
+async function findScheduleChatJidById(
+  deviceId: string,
+  scheduleId: string,
+): Promise<string | null> {
+  for (let pageOffset = 0; pageOffset < 500; pageOffset += 100) {
+    let listRes: {data?: Array<Record<string, unknown>>; pagination?: GowaPagination};
+    try {
+      listRes = await gowaFetch<{data?: Array<Record<string, unknown>>; pagination?: GowaPagination}>(
+        '/send/schedules',
+        {deviceId, query: {limit: 100, offset: pageOffset}},
+      );
+    } catch {
+      return null;
+    }
+    const items = listRes?.data ?? [];
+    const match = items.find((item) => String(item.id || '') === scheduleId);
+    if (match) {
+      const recipient = String(match.recipient || match.phone || match.to || '').trim();
+      if (!recipient) return null;
+      return normalizeWhatsAppJid(recipient);
+    }
+    const total = listRes?.pagination?.total ?? 0;
+    if (items.length < 100 || (total > 0 && pageOffset + items.length >= total)) {
+      break;
+    }
+  }
+  return null;
+}
+
+/**
+ * P2-9: reschedule a schedule from the Scheduled page, which carries no
+ * chat in its URL. The recipient chat is resolved from the ownership row
+ * first (recorded at creation), else from the gateway record itself; without
+ * a chat the drawer's reschedule cannot run its fallback search, so it
+ * fails with 404 instead of guessing.
+ *
+ * Text edits always take the recreate path (`forceRecreate`): a gateway
+ * PATCH may silently ignore an unsupported `message` field while returning
+ * 200, and the recreate path is the only one that provably carries the new
+ * text. Time-only edits keep the PATCH-first behaviour the drawer uses.
+ * Non-text schedules therefore expose time-only editing in the UI — the
+ * recreate path rejects them (RESCHEDULE_NOT_SUPPORTED) when PATCH is
+ * unavailable.
+ */
+export async function reschedulePageSchedule(
+  deviceId: string,
+  scheduleId: string,
+  input: {scheduled_at?: unknown; message?: unknown},
+  wsBridge: GowaWsBridge,
+): Promise<unknown> {
+  const chatJid =
+    getScheduleChatJid(deviceId, scheduleId) ??
+    (await findScheduleChatJidById(deviceId, scheduleId));
+  if (!chatJid) {
+    throw new GowaError(404, 'NOT_FOUND', 'تعذر تحديد محادثة الجدولة المطلوبة');
+  }
+  const message = typeof input.message === 'string' ? input.message.trim() : undefined;
+  return rescheduleChatSchedule(deviceId, chatJid, scheduleId, {
+    scheduled_at: input.scheduled_at,
+    ...(message ? {message} : {}),
+    forceRecreate: Boolean(message),
+  }, wsBridge);
 }
 
 export async function executeScheduleAction(

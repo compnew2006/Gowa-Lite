@@ -1,4 +1,4 @@
-import {CheckCircle2, Hand, RotateCcw, UserMinus, X} from 'lucide-react';
+import {CheckCircle2, Hand, RotateCcw, UserCheck, UserMinus, X} from 'lucide-react';
 import type {UnifiedChatTab} from '@/api/types';
 import type {BulkLifecycleAction} from '@/features/chat/use-inbox-controller';
 import {useI18n} from '@/lib/i18n';
@@ -9,9 +9,11 @@ import {useI18n} from '@/lib/i18n';
  *
  * P1-5: "Claim selected" calls the same bulk-lifecycle endpoint with the
  * `assign` action; the controller attaches assigned_user_id = the current
- * user. Bulk assign to another agent is P2-8 (phase 5) and is not offered
- * here. Claiming only makes sense for pending chats (and `all`, which
- * contains them) — the same scope as the single-chat claim button.
+ * user. P2-8: "Assign selected" opens the agent picker and assigns the
+ * selection to the chosen agent instead. Claiming only makes sense for
+ * pending chats (and `all`, which contains them) — the same scope as the
+ * single-chat claim button; assigning to another agent also covers open
+ * chats (transfers, enforced per chat server-side).
  */
 export function BulkActionBar({
   selectedCount,
@@ -20,6 +22,7 @@ export function BulkActionBar({
   canClose,
   isBulkPending,
   onRunBulk,
+  onOpenBulkAssign,
   onSelectAllVisible,
   onCancel,
 }: {
@@ -29,6 +32,7 @@ export function BulkActionBar({
   canClose: boolean;
   isBulkPending: boolean;
   onRunBulk: (action: BulkLifecycleAction) => void;
+  onOpenBulkAssign?: () => void;
   onSelectAllVisible: () => void;
   onCancel: () => void;
 }) {
@@ -57,6 +61,17 @@ export function BulkActionBar({
           >
             <Hand className="size-3" />
             <span>{t.chats.bulkClaimBtn}</span>
+          </button>
+        )}
+        {canAssign && onOpenBulkAssign && activeTab !== 'closed' && (
+          <button
+            type="button"
+            disabled={selectedCount === 0 || isBulkPending}
+            onClick={onOpenBulkAssign}
+            className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border border-border bg-card px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-ring whitespace-nowrap"
+          >
+            <UserCheck className="size-3" />
+            <span>{t.chats.bulkAssignBtn}</span>
           </button>
         )}
         {canClose && activeTab !== 'closed' && (

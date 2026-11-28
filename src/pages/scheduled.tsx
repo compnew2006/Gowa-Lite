@@ -6,12 +6,13 @@ import {
   Ban,
   CalendarClock,
   Pause,
+  Pencil,
   Play,
   Plus,
   Search,
 } from 'lucide-react';
 import {toast} from 'sonner';
-import {actionSchedule, createSchedule, listSchedules} from '@/api/client';
+import {actionSchedule, createSchedule, listSchedules, rescheduleSchedule} from '@/api/client';
 import type {
   ScheduleRecurrence,
   ScheduleStatus,
@@ -24,6 +25,7 @@ import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
 import {Skeleton} from '@/components/ui/skeleton';
 import {ScheduleRecurrenceFields} from '@/features/schedules/schedule-recurrence-fields';
+import {ScheduleEditDialog} from '@/features/schedules/schedule-edit-dialog';
 import {
   ScheduleAccountLine,
   ScheduleConfirmationSummary,
@@ -65,6 +67,7 @@ export default function ScheduledPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [confirmCancelTarget, setConfirmCancelTarget] = useState<ScheduledSend | null>(null);
+  const [editTarget, setEditTarget] = useState<ScheduledSend | null>(null);
 
   const [phone, setPhone] = useState('');
   const [message, setMessage] = useState('');
@@ -106,6 +109,27 @@ export default function ScheduledPage() {
         toast.success(t.scheduled.cancelledToast);
         setConfirmCancelTarget(null);
       }
+      void queryClient.invalidateQueries({queryKey: ['schedules', deviceId]});
+    },
+    onError: (err) => toast.error(toApiError(err).message),
+  });
+
+  // P2-9: edit time (and text for text rows) from the Scheduled page. The
+  // server reuses the drawer's reschedule service; a changed text forces
+  // the recreate path there. A failed edit surfaces the server's error —
+  // including RESCHEDULE_ROLLBACK_FAILED, which names the new schedule so
+  // it can be cancelled by hand instead of silently sending twice.
+  const editMutation = useMutation({
+    mutationFn: ({
+      id,
+      payload,
+    }: {
+      id: string;
+      payload: {scheduled_at: string; message?: string};
+    }) => rescheduleSchedule(deviceId, id, payload),
+    onSuccess: () => {
+      toast.success(t.scheduled.editedToast);
+      setEditTarget(null);
       void queryClient.invalidateQueries({queryKey: ['schedules', deviceId]});
     },
     onError: (err) => toast.error(toApiError(err).message),
@@ -413,6 +437,22 @@ export default function ScheduledPage() {
                           </td>
                           <td className="px-4 py-3 text-end">
                             <div className="inline-flex items-center justify-end gap-1.5">
+                              {(canPause || canResume) && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={
+                                    !canManageRow ||
+                                    actionMutation.isPending ||
+                                    editMutation.isPending
+                                  }
+                                  onClick={() => setEditTarget(item)}
+                                  title={manageDisabledTitle ?? t.scheduled.editSchedule}
+                                >
+                                  <Pencil className="size-3.5" />
+                                  <span>{t.scheduled.editSchedule}</span>
+                                </Button>
+                              )}
                               {canPause && (
                                 <Button
                                   variant="outline"
@@ -571,6 +611,21 @@ export default function ScheduledPage() {
           </div>
         </form>
       </Dialog>
+
+      {/* Edit Schedule Dialog (P2-9) */}
+      {editTarget && (
+        <ScheduleEditDialog
+          open={Boolean(editTarget)}
+          onOpenChange={(open) => {
+            if (!open) setEditTarget(null);
+          }}
+          item={editTarget}
+          isSaving={editMutation.isPending}
+          onSave={(payload) =>
+            editMutation.mutateAsync({id: editTarget.id, payload}).then(() => undefined)
+          }
+        />
+      )}
 
       {/* Cancel Confirm Dialog */}
       <Dialog

@@ -13,9 +13,11 @@ import {normalizePhoneQueryForGowa} from '../services/chat-sync.ts';
 import {
   createScheduleViaGowa,
   executeScheduleAction,
+  reschedulePageSchedule,
   validateAndBuildSchedulePayload,
   type ScheduleInputBody,
 } from '../services/schedule-service.ts';
+import type {GowaWsBridge} from '../ws-bridge.ts';
 import {
   annotateScheduleListResults,
   canManageSchedule,
@@ -26,7 +28,7 @@ import {
 import {normalizeWhatsAppJid} from '../../shared/whatsapp-identity.ts';
 import type {AuthedRequest} from '../types.ts';
 
-export function registerScheduleRoutes(): Router {
+export function registerScheduleRoutes(wsBridge: GowaWsBridge): Router {
   const router = createApiRouter();
 
   router.get(
@@ -98,6 +100,33 @@ export function registerScheduleRoutes(): Router {
           actorName: req.user!.display_name,
         });
         res.status(201).json({code: 'SUCCESS', message: 'تمت جدولة الرسالة', results: result});
+      } catch (err) {
+        handleRouteError(res, err);
+      }
+    },
+  );
+
+  // P2-9: edit a schedule from the Scheduled page (time, and text for text
+  // schedules). Same reschedule service as the chat drawer (PATCH-first,
+  // recreate-then-cancel fallback); the page URL carries no chat, so the
+  // service resolves it from the ownership row / gateway record. Gated by
+  // schedules:manage + the P0-2 ownership rule: an agent edits only their
+  // own schedules (supervisors/admins manage all).
+  router.patch(
+    '/api/devices/:deviceId/schedules/:id',
+    requireAuth,
+    requirePermission('schedules', 'manage'),
+    async (req: AuthedRequest, res) => {
+      try {
+        const deviceId = decodeRouteParam(req.params.deviceId);
+        assertDeviceAccess(req.user, deviceId);
+        const scheduleId = decodeRouteParam(req.params.id);
+        if (!canManageSchedule(req.user!, deviceId, scheduleId)) {
+          throw new GowaError(403, 'FORBIDDEN', 'ليس لديك صلاحية إدارة هذه الجدولة');
+        }
+        const body = req.body as {scheduled_at?: unknown; message?: unknown};
+        const result = await reschedulePageSchedule(deviceId, scheduleId, body, wsBridge);
+        res.json({code: 'SUCCESS', message: 'تم تحديث الجدولة', results: result});
       } catch (err) {
         handleRouteError(res, err);
       }
