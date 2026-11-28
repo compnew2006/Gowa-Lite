@@ -346,6 +346,9 @@ export class GowaWsBridge {
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private syncTimer: ReturnType<typeof setInterval> | null = null;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  // Test-only guard: when true, reconcileUpstreams() is a no-op (see below).
+  // Production bridges never set this — they always reconcile /devices.
+  private readonly reconcileDisabled: boolean;
   // P2-1 presence (first bidirectional channel): in-memory viewers registry.
   // TTL defaults to VIEWER_TTL_MS (45s, heartbeat every 15s); both are
   // overridable for tests so TTL expiry is observable without waiting 45s.
@@ -361,9 +364,16 @@ export class GowaWsBridge {
       onUpstreamEvent?: (deviceId: string, event: GowaUpstreamEvent) => boolean | void;
       viewerTtlMs?: number;
       presenceSweepMs?: number;
+      // Test-only: skip the /devices reconcile entirely (no fetch, no
+      // upstream sockets from it). The relay test seeds upstreamDevices
+      // directly; a live /devices fetch would replace the seed and the
+      // derived is_from_me flag with it (VPS failure #63, P1-18).
+      // Defaults to false — production behavior is unchanged.
+      disableReconcile?: boolean;
     },
   ) {
     this.onUpstreamEvent = options?.onUpstreamEvent;
+    this.reconcileDisabled = options?.disableReconcile ?? false;
     this.viewerTtlMs = options?.viewerTtlMs ?? VIEWER_TTL_MS;
     this.wss = new WebSocketServer({noServer: true});
 
@@ -734,6 +744,14 @@ export class GowaWsBridge {
   }
 
   async reconcileUpstreams(): Promise<void> {
+    // Test-only guard (disableReconcile): the bridge under test owns its
+    // upstreamDevices list (seeded by the test). Fetching /devices here
+    // would let an outside gateway replace that list — on the VPS the live
+    // .env's GOWA_URL did exactly that and wiped the relay test's fake
+    // device (P1-18 failure #63). Skipping the fetch changes nothing in
+    // production: the flag defaults to false and every production bridge
+    // reconciles as before.
+    if (this.reconcileDisabled) return;
     const config = getGowaConfig();
     if (!config.url) {
       this.closeAllUpstreams();
