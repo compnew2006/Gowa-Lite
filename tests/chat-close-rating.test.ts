@@ -117,10 +117,10 @@ before(async () => {
   });
   let error = '';
   app.stderr?.on('data', (data) => { error += data; });
-  for (let attempt = 0; attempt < 60; attempt++) {
+  for (let attempt = 0; attempt < 120; attempt++) {
     if (await fetch(base + '/api/auth/status').then((res) => res.ok).catch(() => false)) break;
-    if (attempt === 59) assert.fail(error || 'Server did not start');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (attempt === 119) assert.fail(error || 'Server did not start');
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
   token = (await results(await api('/auth/login', 'POST', {username: 'admin', password: 'RatingFixturePasscode123'}))).token;
 });

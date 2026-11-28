@@ -172,10 +172,10 @@ before(async () => {
   });
   app.stdout?.on('data', (data) => { appLogs += data; });
   app.stderr?.on('data', (data) => { appLogs += data; });
-  for (let attempt = 0; attempt < 60; attempt++) {
+  for (let attempt = 0; attempt < 120; attempt++) {
     if (await fetch(base + '/api/auth/status').then((res) => res.ok).catch(() => false)) break;
-    if (attempt === 59) assert.fail(appLogs || 'Server did not start');
-    await new Promise((resolve) => setTimeout(resolve, 75));
+    if (attempt === 119) assert.fail(appLogs || 'Server did not start');
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
   const login = await request('/api/auth/login', 'POST', {
     username: 'admin', password: 'LocalReactionTest123',

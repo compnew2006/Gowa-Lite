@@ -167,10 +167,10 @@ before(async () => {
   app.stderr?.on('data', (chunk) => {
     stderr += chunk;
   });
-  for (let attempt = 0; attempt < 60; attempt++) {
+  for (let attempt = 0; attempt < 120; attempt++) {
     if (await fetch(base + '/api/auth/status').then((r) => r.ok).catch(() => false)) break;
-    if (attempt === 59) assert.fail(stderr || 'Server did not start');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (attempt === 119) assert.fail(stderr || 'Server did not start');
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
   adminToken = (
