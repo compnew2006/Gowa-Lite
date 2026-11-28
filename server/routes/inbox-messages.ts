@@ -1,4 +1,5 @@
 import express, {type Router} from 'express';
+import multer, {type MulterError} from 'multer';
 import {
   getCachedMessage,
   markCachedMessageRevoked,
@@ -44,6 +45,49 @@ import {recordMessageReaction} from '../services/message-reactions.ts';
 import type {AuthedRequest} from '../types.ts';
 import {parseSchema, reactionBodySchema, sendTextMessageSchema} from '../validation/schemas.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
+
+// Multipart upload for /send-media: the client sends the file as FormData
+// (field name `file`) so large files are streamed by the browser instead of
+// being copied into an in-memory ArrayBuffer first. Memory storage keeps the
+// file in RAM exactly like the previous raw-body path; the 20 MB cap is
+// enforced by multer before the handler runs.
+const mediaUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {fileSize: MAX_MEDIA_UPLOAD_BYTES},
+});
+
+function parseMediaUpload(
+  req: AuthedRequest,
+  res: express.Response,
+  next: express.NextFunction,
+): void {
+  const contentType = req.headers['content-type'] || '';
+  if (contentType.startsWith('multipart/form-data')) {
+    mediaUpload.single('file')(req, res, (err: unknown) => {
+      if (!err) {
+        next();
+        return;
+      }
+      if ((err as MulterError).code === 'LIMIT_FILE_SIZE') {
+        res.status(413).json({
+          code: 'PAYLOAD_TOO_LARGE',
+          message: 'حجم الملف يتجاوز الحد الأقصى المسموح به (20 ميجابايت)',
+        });
+        return;
+      }
+      if (err instanceof Error && (err as MulterError).code) {
+        res.status(400).json({code: 'VALIDATION_ERROR', message: err.message});
+        return;
+      }
+      next(err);
+    });
+    return;
+  }
+  // Legacy raw octet-stream body (pre-multipart clients): same behaviour as
+  // before — express.raw with the 20 MB limit, so an oversized body still
+  // surfaces as 413 through the shared /api error handler.
+  express.raw({type: 'application/octet-stream', limit: MAX_MEDIA_UPLOAD_BYTES})(req, res, next);
+}
 
 export function registerInboxMessageRoutes(router: Router, wsBridge: GowaWsBridge): void {
   router.get(
@@ -263,25 +307,45 @@ export function registerInboxMessageRoutes(router: Router, wsBridge: GowaWsBridg
     requireAuth,
     requirePermission('chats', 'write'),
     requireDeviceParamAccess,
-    express.raw({type: 'application/octet-stream', limit: MAX_MEDIA_UPLOAD_BYTES}),
+    parseMediaUpload,
     async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
       const chatJid = decodeRouteParam(req.params.jid);
-      const rawFilename = typeof req.query.filename === 'string' ? req.query.filename : '';
-      const rawMimeType = typeof req.query.mimeType === 'string' ? req.query.mimeType : '';
-      const caption = typeof req.query.caption === 'string' ? req.query.caption.trim() : '';
+      const uploaded = req.file;
+      // Multipart path: req.file; legacy raw path: express.raw left a Buffer
+      // in req.body. Either way fileBuffer is the uploaded bytes.
+      const fileBuffer = uploaded?.buffer ?? (Buffer.isBuffer(req.body) ? req.body : null);
+      const textField = (name: string): string => {
+        if (Buffer.isBuffer(req.body)) return '';
+        const value = (req.body as Record<string, unknown> | undefined)?.[name];
+        return typeof value === 'string' ? value : '';
+      };
+      // Filename / MIME come from the uploaded file itself; the query params
+      // are kept as a fallback for older clients.
+      const rawFilename =
+        uploaded?.originalname ||
+        textField('filename') ||
+        (typeof req.query.filename === 'string' ? req.query.filename : '');
+      const rawMimeType =
+        uploaded?.mimetype ||
+        textField('mimeType') ||
+        (typeof req.query.mimeType === 'string' ? req.query.mimeType : '');
+      const caption = (
+        textField('caption') ||
+        (typeof req.query.caption === 'string' ? req.query.caption : '')
+      ).trim();
 
       if (!deviceId || !chatJid || isNewsletterJid(chatJid)) {
         res.status(400).json({code: 'VALIDATION_ERROR', message: 'معرّف الحساب أو المحادثة غير صالح'});
         return;
       }
 
-      if (!Buffer.isBuffer(req.body) || req.body.byteLength === 0) {
+      if (!fileBuffer || fileBuffer.byteLength === 0) {
         res.status(400).json({code: 'VALIDATION_ERROR', message: 'محتوى الملف مطلوب'});
         return;
       }
 
-      if (req.body.byteLength > MAX_MEDIA_UPLOAD_BYTES) {
+      if (fileBuffer.byteLength > MAX_MEDIA_UPLOAD_BYTES) {
         res.status(413).json({
           code: 'PAYLOAD_TOO_LARGE',
           message: 'حجم الملف يتجاوز الحد الأقصى المسموح به (20 ميجابايت)',
@@ -310,7 +374,7 @@ export function registerInboxMessageRoutes(router: Router, wsBridge: GowaWsBridg
         if (target.supportsCaption && caption) {
           formData.set('caption', caption);
         }
-        const fileBytes = new Uint8Array(req.body);
+        const fileBytes = new Uint8Array(fileBuffer);
         formData.set(
           target.fieldName,
           new Blob([fileBytes], {type: target.mimeType}),
@@ -336,7 +400,7 @@ export function registerInboxMessageRoutes(router: Router, wsBridge: GowaWsBridg
               media_type: target.mediaType,
               filename: target.filename,
               url: '',
-              file_length: req.body.byteLength,
+              file_length: fileBuffer.byteLength,
             },
           ]);
         }
