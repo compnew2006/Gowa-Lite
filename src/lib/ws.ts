@@ -1,7 +1,7 @@
 import {create} from 'zustand';
 import {http, results} from '@/lib/http';
 import {backoffDelay} from '@/lib/backoff';
-import {emitWsEvent, type WsEvent} from '@/lib/events';
+import {emitWsFrame, type WsEvent} from '@/lib/events';
 import {useAuthStore} from '@/stores/auth';
 
 export type WsStatus = 'disconnected' | 'connecting' | 'connected';
@@ -69,9 +69,11 @@ class WsClient {
 
     socket.onmessage = (message: MessageEvent<string>) => {
       try {
-        const event = JSON.parse(message.data) as WsEvent;
-        if (event && typeof event.code === 'string') {
-          emitWsEvent(event);
+        const frame = JSON.parse(message.data) as WsEvent;
+        if (frame && typeof frame.code === 'string') {
+          // WS_BATCH frames expand into their events in order; plain frames
+          // pass through unchanged (see expandWsBatchFrame).
+          emitWsFrame(frame);
         }
       } catch {
         // ignore non-JSON frames
