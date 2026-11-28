@@ -24,6 +24,10 @@ import {Label} from '@/components/ui/label';
 import {Skeleton} from '@/components/ui/skeleton';
 import {ScheduleRecurrenceFields} from '@/features/schedules/schedule-recurrence-fields';
 import {
+  ScheduleAccountLine,
+  ScheduleConfirmationSummary,
+} from '@/features/schedules/schedule-account-line';
+import {
   ScheduleValidationError,
   defaultScheduleDateTimeLocal,
   statusToneClass,
@@ -484,6 +488,8 @@ export default function ScheduledPage() {
           }}
           className="space-y-4"
         >
+          <ScheduleAccountLine device={deviceState.selectedDevice} />
+
           <div>
             <Label htmlFor="sched-phone">{t.scheduled.recipientLabel}</Label>
             <Input
@@ -526,6 +532,13 @@ export default function ScheduledPage() {
             onOccurrenceLimitChange={setOccurrenceLimit}
             endAtLocal={endAtLocal}
             onEndAtChange={setEndAtLocal}
+          />
+
+          <ScheduleConfirmationSummary
+            recipient={phone}
+            device={deviceState.selectedDevice}
+            scheduledAtLocal={scheduledAtLocal}
+            timezone={timezone}
           />
 
           <div className="flex justify-end gap-2 pt-2">
