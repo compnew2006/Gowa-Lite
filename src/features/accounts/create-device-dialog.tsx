@@ -2,6 +2,7 @@ import {useState, type FormEvent} from 'react';
 import {useMutation, useQueryClient} from '@tanstack/react-query';
 import {Loader2, Plus} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {createDevice} from '@/api/client';
 import {Button} from '@/components/ui/button';
 import {Dialog} from '@/components/ui/dialog';
@@ -10,10 +11,12 @@ import {Label} from '@/components/ui/label';
 import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 
 export function CreateDeviceDialog({compact = false}: {compact?: boolean}) {
   const queryClient = useQueryClient();
   const {t} = useI18n();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [deviceId, setDeviceId] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -25,7 +28,11 @@ export function CreateDeviceDialog({compact = false}: {compact?: boolean}) {
         display_name: displayName.trim() || undefined,
       }),
     onSuccess: () => {
-      toast.success(t.accounts.createdToast);
+      toastWithView(t.accounts.createdToast, {
+        label: t.scheduled.viewAction,
+        to: '/accounts',
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['devices']});
       void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
       setDeviceId('');

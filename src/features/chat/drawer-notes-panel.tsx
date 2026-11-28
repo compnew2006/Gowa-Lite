@@ -2,6 +2,7 @@ import {useEffect, useMemo, useRef, useState, type KeyboardEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {Check, History, Loader2, Lock, Pencil, Pin, PinOff, Search, Send, StickyNote, Trash2} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {
   createUnifiedChatNote,
   deleteUnifiedChatNote,
@@ -15,6 +16,8 @@ import {FormattedText} from '@/features/chat/formatted-text';
 import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
+import {buildConversationDeepLink} from '@/lib/deep-links';
 import {cn} from '@/lib/utils';
 import {hasUserPermission, isAdminUser, useAuthStore} from '@/stores/auth';
 
@@ -361,6 +364,7 @@ export function NotesPanelBody({
 }) {
   const {t} = useI18n();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const currentUser = useAuthStore((s) => s.user);
   const canWriteNotes = hasUserPermission(currentUser, 'notes:write');
   const canDeleteAnyNote = hasUserPermission(currentUser, 'notes:delete');
@@ -391,7 +395,11 @@ export function NotesPanelBody({
     onSuccess: () => {
       setNewContent('');
       setPinOnCreate(false);
-      toast.success(t.chats.noteAddedToast);
+      toastWithView(t.chats.noteAddedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(chat.device_id, chat.jid),
+        navigate,
+      });
       invalidateNotes();
     },
     onError: (err) => toast.error(toApiError(err).message),
@@ -408,9 +416,18 @@ export function NotesPanelBody({
       is_pinned?: boolean;
     }) => updateUnifiedChatNote(chat.device_id, chat.jid, noteId, {content, is_pinned}),
     onSuccess: (_data, vars) => {
-      if (vars.content !== undefined) toast.success(t.chats.noteUpdatedToast);
+      if (vars.content !== undefined)
+        toastWithView(t.chats.noteUpdatedToast, {
+          label: t.scheduled.viewAction,
+          to: buildConversationDeepLink(chat.device_id, chat.jid),
+          navigate,
+        });
       else if (vars.is_pinned !== undefined) {
-        toast.success(vars.is_pinned ? t.chats.notePinnedToast : t.chats.noteUnpinnedToast);
+        toastWithView(vars.is_pinned ? t.chats.notePinnedToast : t.chats.noteUnpinnedToast, {
+          label: t.scheduled.viewAction,
+          to: buildConversationDeepLink(chat.device_id, chat.jid),
+          navigate,
+        });
       }
       invalidateNotes();
     },
@@ -420,7 +437,11 @@ export function NotesPanelBody({
   const deleteMutation = useMutation({
     mutationFn: (noteId: number) => deleteUnifiedChatNote(chat.device_id, chat.jid, noteId),
     onSuccess: () => {
-      toast.success(t.chats.noteDeletedToast);
+      toastWithView(t.chats.noteDeletedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(chat.device_id, chat.jid),
+        navigate,
+      });
       invalidateNotes();
     },
     onError: (err) => toast.error(toApiError(err).message),

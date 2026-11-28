@@ -2,6 +2,7 @@ import {useEffect, useMemo, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {AlertTriangle, Check, Loader2, Search, UserCheck, UserMinus} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {assignUnifiedChat, listAssignableAgents} from '@/api/client';
 import type {AssignableAgent} from '@/api/types';
 import {Button} from '@/components/ui/button';
@@ -12,6 +13,8 @@ import {chatLifecycleQueryKeys} from '@/features/chat/message-query-keys';
 import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
+import {buildConversationDeepLink} from '@/lib/deep-links';
 import {cn} from '@/lib/utils';
 
 export function AssignChatDialog({
@@ -37,6 +40,7 @@ export function AssignChatDialog({
 }) {
   const queryClient = useQueryClient();
   const {t} = useI18n();
+  const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [selectedUserId, setSelectedUserId] = useState<number | null>(currentAssigneeId);
   const [note, setNote] = useState('');
@@ -75,7 +79,11 @@ export function AssignChatDialog({
         cached_title: chatTitle,
       }),
     onSuccess: (_res, targetUserId) => {
-      toast.success(targetUserId === null ? t.chats.unassignedToast : t.chats.assignedToast);
+      toastWithView(targetUserId === null ? t.chats.unassignedToast : t.chats.assignedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(deviceId, chatJid),
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: chatLifecycleQueryKeys.chat(deviceId, chatJid)});
       void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
       void queryClient.invalidateQueries({queryKey: ['assignable-agents', deviceId]});

@@ -2,6 +2,7 @@ import {useEffect, useMemo, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {Copy, Loader2, Lock, Plus, Save, ShieldCheck, Trash2} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {
   createRole,
   deleteRole,
@@ -19,6 +20,7 @@ import {Switch} from '@/components/ui/switch';
 import {PermissionMatrix} from '@/features/rbac/permission-matrix';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 import {cn} from '@/lib/utils';
 import {hasUserPermission, isAdminUser, useAuthStore} from '@/stores/auth';
 
@@ -31,6 +33,7 @@ function sameStringSet(a: string[], b: string[]): boolean {
 export default function RolesPage() {
   const queryClient = useQueryClient();
   const {t} = useI18n();
+  const navigate = useNavigate();
   const currentUser = useAuthStore((s) => s.user);
   const canWrite = hasUserPermission(currentUser, 'roles:write');
   const canDelete = hasUserPermission(currentUser, 'roles:delete');
@@ -125,7 +128,11 @@ export default function RolesPage() {
       });
     },
     onSuccess: (updated) => {
-      toast.success(t.roles.updatedToast);
+      toastWithView(t.roles.updatedToast, {
+        label: t.scheduled.viewAction,
+        to: '/settings/roles',
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['roles']});
       void queryClient.invalidateQueries({queryKey: ['users']});
       setSelectedId(updated.id);
@@ -146,7 +153,11 @@ export default function RolesPage() {
         permissions: newPermissions,
       }),
     onSuccess: (created) => {
-      toast.success(t.roles.createdToast);
+      toastWithView(t.roles.createdToast, {
+        label: t.scheduled.viewAction,
+        to: '/settings/roles',
+        navigate,
+      });
       setCreateOpen(false);
       setNewName('');
       setNewDesc('');
@@ -160,7 +171,11 @@ export default function RolesPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: number) => deleteRole(id),
     onSuccess: () => {
-      toast.success(t.roles.deletedToast);
+      toastWithView(t.roles.deletedToast, {
+        label: t.scheduled.viewAction,
+        to: '/settings/roles',
+        navigate,
+      });
       setDeletingRole(null);
       setSelectedId(null);
       void queryClient.invalidateQueries({queryKey: ['roles']});

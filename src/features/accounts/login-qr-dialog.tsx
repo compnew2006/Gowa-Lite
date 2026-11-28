@@ -2,6 +2,7 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {Loader2} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {fetchAuthorizedBlobUrl, getDeviceStatus, loginDeviceQr} from '@/api/client';
 import type {LoginQr, RegistryDevice} from '@/api/types';
 import {Dialog} from '@/components/ui/dialog';
@@ -9,6 +10,7 @@ import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {onWsEvent} from '@/lib/events';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 
 const STATUS_POLL_MS = 3_000;
 
@@ -21,6 +23,7 @@ export function LoginQrDialog({
 }) {
   const queryClient = useQueryClient();
   const {t} = useI18n();
+  const navigate = useNavigate();
   const [qr, setQr] = useState<LoginQr | null>(null);
   const [qrBlobUrl, setQrBlobUrl] = useState<string | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
@@ -31,11 +34,15 @@ export function LoginQrDialog({
   const succeed = useCallback(() => {
     if (succeededRef.current) return;
     succeededRef.current = true;
-    toast.success(t.accounts.linkedSuccessToast);
+    toastWithView(t.accounts.linkedSuccessToast, {
+      label: t.scheduled.viewAction,
+      to: '/accounts',
+      navigate,
+    });
     void queryClient.invalidateQueries({queryKey: ['devices']});
     void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
     onOpenChange(false);
-  }, [queryClient, onOpenChange, t.accounts.linkedSuccessToast]);
+  }, [navigate, queryClient, onOpenChange, t.accounts.linkedSuccessToast]);
 
   const requestQr = useCallback(
     async (id: string) => {

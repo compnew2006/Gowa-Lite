@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import {useQueryClient} from '@tanstack/react-query';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {
   archiveUnifiedChat,
   blockUnifiedChat,
@@ -80,6 +81,8 @@ import {resolveChatPreview} from '@/lib/chat-preview';
 import {formatNumber, formatShortTime} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
+import {buildConversationDeepLink} from '@/lib/deep-links';
 import {matchesNormalizedQuery} from '@/lib/phone';
 import {cn} from '@/lib/utils';
 import {hasUserPermission, useAuthStore} from '@/stores/auth';
@@ -439,6 +442,7 @@ export function ChatList({
   onSelect: (chat: UnifiedChat) => void;
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const {isRtl, lang, t} = useI18n();
   const user = useAuthStore((s) => s.user);
   const canWriteChats = hasUserPermission(user, 'chats:write');
@@ -607,35 +611,51 @@ export function ChatList({
         switch (action.type) {
           case 'archive': {
             await archiveUnifiedChat(chat.device_id, chat.jid, action.archived);
-            toast.success(action.archived ? t.chats.archivedToast : t.chats.unarchivedToast);
+            toastWithView(action.archived ? t.chats.archivedToast : t.chats.unarchivedToast, {
+              label: t.scheduled.viewAction,
+              to: buildConversationDeepLink(chat.device_id, chat.jid),
+              navigate,
+            });
             invalidateChats();
             break;
           }
           case 'pin': {
             await pinUnifiedChat(chat.device_id, chat.jid, action.pinned);
-            toast.success(action.pinned ? t.chats.pinnedToast : t.chats.unpinnedToast);
+            toastWithView(action.pinned ? t.chats.pinnedToast : t.chats.unpinnedToast, {
+              label: t.scheduled.viewAction,
+              to: buildConversationDeepLink(chat.device_id, chat.jid),
+              navigate,
+            });
             invalidateChats();
             break;
           }
           case 'mute': {
             await muteUnifiedChat(chat.device_id, chat.jid, action.duration);
-            toast.success(
-              action.duration === 'unmute' ? t.chats.unmutedToast : t.chats.mutedToast,
-            );
+            toastWithView(action.duration === 'unmute' ? t.chats.unmutedToast : t.chats.mutedToast, {
+              label: t.scheduled.viewAction,
+              to: buildConversationDeepLink(chat.device_id, chat.jid),
+              navigate,
+            });
             invalidateChats();
             break;
           }
           case 'unread': {
             await setUnifiedChatUnread(chat.device_id, chat.jid, action.unread);
-            toast.success(action.unread ? t.chats.markedUnreadToast : t.chats.markedReadToast);
+            toastWithView(action.unread ? t.chats.markedUnreadToast : t.chats.markedReadToast, {
+              label: t.scheduled.viewAction,
+              to: buildConversationDeepLink(chat.device_id, chat.jid),
+              navigate,
+            });
             invalidateChats();
             break;
           }
           case 'favourite': {
             await favouriteUnifiedChat(chat.device_id, chat.jid, action.favourite);
-            toast.success(
-              action.favourite ? t.chats.favouriteAddedToast : t.chats.favouriteRemovedToast,
-            );
+            toastWithView(action.favourite ? t.chats.favouriteAddedToast : t.chats.favouriteRemovedToast, {
+              label: t.scheduled.viewAction,
+              to: buildConversationDeepLink(chat.device_id, chat.jid),
+              navigate,
+            });
             invalidateChats();
             break;
           }
@@ -660,7 +680,7 @@ export function ChatList({
         toast.error(toApiError(err).message);
       }
     },
-    [invalidateChats, t.chats],
+    [invalidateChats, navigate, t.chats],
   );
 
   const handleRunConfirmedAction = useCallback(async () => {
@@ -671,11 +691,19 @@ export function ChatList({
       if (kind === 'block' || kind === 'unblock') {
         const blocked = kind === 'block';
         await blockUnifiedChat(chat.device_id, chat.jid, blocked);
-        toast.success(blocked ? t.chats.blockedToast : t.chats.unblockedToast);
+        toastWithView(blocked ? t.chats.blockedToast : t.chats.unblockedToast, {
+          label: t.scheduled.viewAction,
+          to: buildConversationDeepLink(chat.device_id, chat.jid),
+          navigate,
+        });
         invalidateChats();
       } else if (kind === 'clear') {
         await clearUnifiedChat(chat.device_id, chat.jid);
-        toast.success(t.chats.clearedToast);
+        toastWithView(t.chats.clearedToast, {
+          label: t.scheduled.viewAction,
+          to: buildConversationDeepLink(chat.device_id, chat.jid),
+          navigate,
+        });
         void queryClient.invalidateQueries({
           queryKey: messageQueryKeys.chat(chat.device_id, chat.jid),
         });
@@ -683,7 +711,11 @@ export function ChatList({
         onChatCleared?.(chat);
       } else if (kind === 'delete') {
         await deleteUnifiedChat(chat.device_id, chat.jid);
-        toast.success(t.chats.deletedToast);
+        toastWithView(t.chats.deletedToast, {
+          label: t.scheduled.viewAction,
+          to: '/chats',
+          navigate,
+        });
         void queryClient.removeQueries({
           queryKey: messageQueryKeys.chat(chat.device_id, chat.jid),
         });
@@ -696,7 +728,7 @@ export function ChatList({
     } finally {
       setConfirmBusy(false);
     }
-  }, [confirmAction, confirmBusy, invalidateChats, onChatCleared, onChatDeleted, queryClient, t.chats]);
+  }, [confirmAction, confirmBusy, invalidateChats, navigate, onChatCleared, onChatDeleted, queryClient, t.chats]);
 
   useEffect(() => {
     setBulkSelectedKeys(new Set());

@@ -20,6 +20,7 @@ import {
   UserX,
 } from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {
   actOnGroupParticipants,
   decideGroupParticipantRequests,
@@ -49,6 +50,8 @@ import {MessageView} from '@/features/chat/message-view';
 import {copyTextWithFallback} from '@/lib/clipboard';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
+import {buildGroupDeepLink} from '@/lib/deep-links';
 import {parseParticipantsList} from '@/lib/participants';
 import {cn} from '@/lib/utils';
 import {hasUserPermission, useAuthStore} from '@/stores/auth';
@@ -63,6 +66,7 @@ export function GroupWorkspacePanel({
   onChanged: () => void;
 }) {
   const {lang, t} = useI18n();
+  const navigate = useNavigate();
   const isRtl = lang === 'ar';
   const BackIcon = isRtl ? ArrowRight : ArrowLeft;
   const queryClient = useQueryClient();
@@ -147,7 +151,12 @@ export function GroupWorkspacePanel({
     mutationFn: (reset: boolean) => getGroupInviteLink(deviceId, groupId, reset),
     onSuccess: (res, reset) => {
       setInviteLink(res.invite_link || '');
-      if (reset) toast.success(t.groups.inviteLinkResetToast);
+      if (reset)
+        toastWithView(t.groups.inviteLinkResetToast, {
+          label: t.scheduled.viewAction,
+          to: buildGroupDeepLink(deviceId, groupId),
+          navigate,
+        });
     },
     onError: (err) => toast.error(toApiError(err).message),
   });
@@ -155,7 +164,11 @@ export function GroupWorkspacePanel({
   const leaveMutation = useMutation({
     mutationFn: () => leaveGroup(deviceId, groupId),
     onSuccess: () => {
-      toast.success(t.groups.leftToast);
+      toastWithView(t.groups.leftToast, {
+        label: t.scheduled.viewAction,
+        to: '/groups',
+        navigate,
+      });
       setLeaveConfirmOpen(false);
       onChanged();
       onBack();
@@ -173,14 +186,30 @@ export function GroupWorkspacePanel({
     }) => actOnGroupParticipants(deviceId, action, {group_id: groupId, participants}),
     onSuccess: (_res, vars) => {
       if (vars.action === 'add') {
-        toast.success(t.groups.participantsAddedToast);
+        toastWithView(t.groups.participantsAddedToast, {
+          label: t.scheduled.viewAction,
+          to: buildGroupDeepLink(deviceId, groupId),
+          navigate,
+        });
         setAddParticipantsRaw('');
       } else if (vars.action === 'promote') {
-        toast.success(t.groups.promotedToast);
+        toastWithView(t.groups.promotedToast, {
+          label: t.scheduled.viewAction,
+          to: buildGroupDeepLink(deviceId, groupId),
+          navigate,
+        });
       } else if (vars.action === 'demote') {
-        toast.success(t.groups.demotedToast);
+        toastWithView(t.groups.demotedToast, {
+          label: t.scheduled.viewAction,
+          to: buildGroupDeepLink(deviceId, groupId),
+          navigate,
+        });
       } else {
-        toast.success(t.groups.removedToast);
+        toastWithView(t.groups.removedToast, {
+          label: t.scheduled.viewAction,
+          to: buildGroupDeepLink(deviceId, groupId),
+          navigate,
+        });
       }
       void queryClient.invalidateQueries({queryKey: ['group-participants', deviceId, groupId]});
       void queryClient.invalidateQueries({queryKey: ['group-info', deviceId, groupId]});
@@ -193,9 +222,11 @@ export function GroupWorkspacePanel({
     mutationFn: ({decision, jid}: {decision: 'approve' | 'reject'; jid: string}) =>
       decideGroupParticipantRequests(deviceId, decision, {group_id: groupId, participants: [jid]}),
     onSuccess: (_res, vars) => {
-      toast.success(
-        vars.decision === 'approve' ? t.groups.requestApprovedToast : t.groups.requestRejectedToast,
-      );
+      toastWithView(vars.decision === 'approve' ? t.groups.requestApprovedToast : t.groups.requestRejectedToast, {
+        label: t.scheduled.viewAction,
+        to: buildGroupDeepLink(deviceId, groupId),
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['group-requests', deviceId, groupId]});
       void queryClient.invalidateQueries({queryKey: ['group-participants', deviceId, groupId]});
       onChanged();
@@ -222,7 +253,11 @@ export function GroupWorkspacePanel({
   const nameMutation = useMutation({
     mutationFn: () => setGroupName(deviceId, groupId, nameInput.trim()),
     onSuccess: () => {
-      toast.success(t.groups.nameUpdatedToast);
+      toastWithView(t.groups.nameUpdatedToast, {
+        label: t.scheduled.viewAction,
+        to: buildGroupDeepLink(deviceId, groupId),
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['group-info', deviceId, groupId]});
       onChanged();
     },
@@ -232,7 +267,11 @@ export function GroupWorkspacePanel({
   const topicMutation = useMutation({
     mutationFn: () => setGroupTopic(deviceId, groupId, topicInput),
     onSuccess: () => {
-      toast.success(t.groups.topicUpdatedToast);
+      toastWithView(t.groups.topicUpdatedToast, {
+        label: t.scheduled.viewAction,
+        to: buildGroupDeepLink(deviceId, groupId),
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['group-info', deviceId, groupId]});
       onChanged();
     },
@@ -249,7 +288,11 @@ export function GroupWorkspacePanel({
       }
     },
     onSuccess: () => {
-      toast.success(t.groups.photoUpdatedToast);
+      toastWithView(t.groups.photoUpdatedToast, {
+        label: t.scheduled.viewAction,
+        to: buildGroupDeepLink(deviceId, groupId),
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['contact-avatar', deviceId, groupId]});
       onChanged();
     },
@@ -259,7 +302,11 @@ export function GroupWorkspacePanel({
   const lockedMutation = useMutation({
     mutationFn: (locked: boolean) => setGroupLocked(deviceId, groupId, locked),
     onSuccess: () => {
-      toast.success(t.groups.settingUpdatedToast);
+      toastWithView(t.groups.settingUpdatedToast, {
+        label: t.scheduled.viewAction,
+        to: buildGroupDeepLink(deviceId, groupId),
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['group-info', deviceId, groupId]});
       onChanged();
     },
@@ -269,7 +316,11 @@ export function GroupWorkspacePanel({
   const announceMutation = useMutation({
     mutationFn: (announce: boolean) => setGroupAnnounce(deviceId, groupId, announce),
     onSuccess: () => {
-      toast.success(t.groups.settingUpdatedToast);
+      toastWithView(t.groups.settingUpdatedToast, {
+        label: t.scheduled.viewAction,
+        to: buildGroupDeepLink(deviceId, groupId),
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['group-info', deviceId, groupId]});
       onChanged();
     },

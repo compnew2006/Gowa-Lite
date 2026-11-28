@@ -17,7 +17,7 @@ import {
   Trash2,
   Wrench,
 } from 'lucide-react';
-import {Link} from 'react-router-dom';
+import {Link, useNavigate} from 'react-router-dom';
 import {toast} from 'sonner';
 import {deleteDevice, logoutDevice, reconnectDevice} from '@/api/client';
 import type {RegistryDevice} from '@/api/types';
@@ -34,6 +34,7 @@ import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {formatDate} from '@/lib/format';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 import {cn} from '@/lib/utils';
 import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
@@ -56,6 +57,7 @@ export function AccountWorkspacePanel({
 }) {
   const queryClient = useQueryClient();
   const {lang, t} = useI18n();
+  const navigate = useNavigate();
   const isRtl = lang === 'ar';
   const BackIcon = isRtl ? ArrowRight : ArrowLeft;
   const user = useAuthStore((s) => s.user);
@@ -70,7 +72,11 @@ export function AccountWorkspacePanel({
   const reconnectMutation = useMutation({
     mutationFn: () => reconnectDevice(device.id),
     onSuccess: () => {
-      toast.success(t.accounts.reconnectToast);
+      toastWithView(t.accounts.reconnectToast, {
+        label: t.scheduled.viewAction,
+        to: '/accounts',
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['devices']});
     },
     onError: (err) => toast.error(toApiError(err).message),
@@ -79,7 +85,11 @@ export function AccountWorkspacePanel({
   const logoutMutation = useMutation({
     mutationFn: () => logoutDevice(device.id),
     onSuccess: () => {
-      toast.success(t.accounts.loggedOutToast);
+      toastWithView(t.accounts.loggedOutToast, {
+        label: t.scheduled.viewAction,
+        to: '/accounts',
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey: ['devices']});
       void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
     },
@@ -89,7 +99,11 @@ export function AccountWorkspacePanel({
   const deleteMutation = useMutation({
     mutationFn: () => deleteDevice(device.id),
     onSuccess: () => {
-      toast.success(t.accounts.deletedToast);
+      toastWithView(t.accounts.deletedToast, {
+        label: t.scheduled.viewAction,
+        to: '/accounts',
+        navigate,
+      });
       setConfirmDelete(false);
       void queryClient.invalidateQueries({queryKey: ['devices']});
       void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});

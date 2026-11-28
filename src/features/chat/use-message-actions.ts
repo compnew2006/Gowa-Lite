@@ -1,6 +1,7 @@
 import {useCallback, useRef} from 'react';
 import {useMutation, useQueryClient, type InfiniteData} from '@tanstack/react-query';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {revokeUnifiedMessage, sendUnifiedMediaMessage, sendUnifiedMessageReaction, sendUnifiedTextMessage} from '@/api/requests/chats';
 import type {MessageInfo, UnifiedChat} from '@/api/types';
 import type {MessagesPage} from '@/features/chat/message-history-query';
@@ -9,6 +10,8 @@ import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {applyMessageReaction, applyRevokeToMessagePages, updateMessageReactions} from '@/features/chat/message-reactions';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
+import {buildConversationDeepLink} from '@/lib/deep-links';
 
 export function useMessageActions({
   chat, isDeviceReady, invalidateLifecycleScope, onSent, onRevoked,
@@ -21,6 +24,7 @@ export function useMessageActions({
 }) {
   const queryClient = useQueryClient();
   const {t} = useI18n();
+  const navigate = useNavigate();
   const pendingReactions = useRef(new Set<string>());
 
   const handleSendError = (error: unknown) => {
@@ -104,7 +108,11 @@ export function useMessageActions({
       return {previous, revokedAt};
     },
     onSuccess: () => {
-      toast.success(t.chats.revokedToast);
+      toastWithView(t.chats.revokedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(chat.device_id, chat.jid),
+        navigate,
+      });
       onRevoked();
     },
     onError: (err, messageId, context) => {

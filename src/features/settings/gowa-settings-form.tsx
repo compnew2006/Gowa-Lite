@@ -2,6 +2,7 @@ import {useEffect, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {CheckCircle2, Loader2, PlugZap, Save, XCircle} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {getGowaSettings, saveGowaSettings, testGowaSettings} from '@/api/requests/settings';
 import type {GowaProbeResult} from '@/api/types';
 import {Input} from '@/components/ui/input';
@@ -11,10 +12,12 @@ import {Button} from '@/components/ui/button';
 import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 
 export function GowaSettingsForm({canWrite}: {canWrite: boolean}) {
   const queryClient = useQueryClient();
   const {t} = useI18n();
+  const navigate = useNavigate();
   const setGowaConfigured = useAuthStore((s) => s.setGowaConfigured);
   const [gowaUrl, setGowaUrl] = useState('');
   const [gowaUsername, setGowaUsername] = useState('');
@@ -45,7 +48,11 @@ export function GowaSettingsForm({canWrite}: {canWrite: boolean}) {
         clear_password: clearPassword,
       }),
     onSuccess: (saved) => {
-      toast.success(t.settings.savedToast);
+      toastWithView(t.settings.savedToast, {
+        label: t.scheduled.viewAction,
+        to: '/settings',
+        navigate,
+      });
       setGowaConfigured(Boolean(saved.gowa_url));
       setGowaPassword('');
       setClearPassword(false);

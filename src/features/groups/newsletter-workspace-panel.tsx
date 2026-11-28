@@ -2,6 +2,7 @@ import {useState} from 'react';
 import {useMutation} from '@tanstack/react-query';
 import {ArrowLeft, ArrowRight, Radio, UserMinus, UserPlus} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {followNewsletter, unfollowNewsletter} from '@/api/client';
 import type {UnifiedNewsletterItem} from '@/api/types';
 import {Button} from '@/components/ui/button';
@@ -9,6 +10,7 @@ import {accountDotTone, shortAccountWidgetLabel} from '@/features/accounts/accou
 import {NewsletterMessagesPanel} from '@/features/groups/newsletter-messages-panel';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 import {cn} from '@/lib/utils';
 import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
@@ -59,6 +61,7 @@ export function NewsletterWorkspacePanel({
   onChanged: () => void;
 }) {
   const {lang, t} = useI18n();
+  const navigate = useNavigate();
   const isRtl = lang === 'ar';
   const BackIcon = isRtl ? ArrowRight : ArrowLeft;
   const user = useAuthStore((s) => s.user);
@@ -72,7 +75,11 @@ export function NewsletterWorkspacePanel({
   const followMutation = useMutation({
     mutationFn: () => followNewsletter(item.device_id, item.jid),
     onSuccess: () => {
-      toast.success(t.misc.followedToast);
+      toastWithView(t.misc.followedToast, {
+        label: t.scheduled.viewAction,
+        to: '/misc',
+        navigate,
+      });
       onChanged();
     },
     onError: (err) => toast.error(toApiError(err).message),
@@ -81,7 +88,11 @@ export function NewsletterWorkspacePanel({
   const unfollowMutation = useMutation({
     mutationFn: () => unfollowNewsletter(item.device_id, item.jid),
     onSuccess: () => {
-      toast.success(t.misc.unfollowedToast);
+      toastWithView(t.misc.unfollowedToast, {
+        label: t.scheduled.viewAction,
+        to: '/misc',
+        navigate,
+      });
       onChanged();
       onBack();
     },

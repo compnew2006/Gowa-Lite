@@ -2,6 +2,7 @@ import {useEffect, useMemo, useState, type FormEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {Clock, Loader2, RotateCcw, Save} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {
   getAccountDailyReset,
   runAccountDailyResetNow,
@@ -16,6 +17,7 @@ import {formatDate, formatNumber} from '@/lib/format';
 import {chatLifecycleQueryKeys} from '@/features/chat/message-query-keys';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 
 const COMMON_TIMEZONES = [
   'Asia/Riyadh',
@@ -55,6 +57,7 @@ export function AccountDailyResetPanel({
   canWrite: boolean;
 }) {
   const {lang, t} = useI18n();
+  const navigate = useNavigate();
   const copy = t.accounts.dailyReset;
   const queryClient = useQueryClient();
   const queryKey = ['account-daily-reset', deviceId] as const;
@@ -105,7 +108,11 @@ export function AccountDailyResetPanel({
       }),
     onSuccess: (saved) => {
       queryClient.setQueryData(queryKey, saved);
-      toast.success(copy.savedToast);
+      toastWithView(copy.savedToast, {
+        label: t.scheduled.viewAction,
+        to: '/account',
+        navigate,
+      });
     },
     onError: (err) => toast.error(toApiError(err).message),
   });
@@ -114,7 +121,11 @@ export function AccountDailyResetPanel({
     mutationFn: () => runAccountDailyResetNow(deviceId),
     onSuccess: (res) => {
       setConfirmRunNow(false);
-      toast.success(copy.runNowSuccess(res.reset_count));
+      toastWithView(copy.runNowSuccess(res.reset_count), {
+        label: t.scheduled.viewAction,
+        to: '/account',
+        navigate,
+      });
       void queryClient.invalidateQueries({queryKey});
       void queryClient.invalidateQueries({queryKey: UNIFIED_CHATS_QUERY_PREFIX});
       void queryClient.invalidateQueries({queryKey: chatLifecycleQueryKeys.all});

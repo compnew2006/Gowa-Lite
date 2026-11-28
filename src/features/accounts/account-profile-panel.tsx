@@ -2,6 +2,7 @@ import {useRef, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {Camera, Shield, UserRound} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {
   changeAccountAvatar,
   changeAccountPushName,
@@ -17,6 +18,7 @@ import {Label} from '@/components/ui/label';
 import {Skeleton} from '@/components/ui/skeleton';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
 import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
 export function AccountProfilePanel({
@@ -28,6 +30,7 @@ export function AccountProfilePanel({
 }) {
   const {t} = useI18n();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const canWriteAccounts = hasUserPermission(user, 'accounts:write');
   const [pushName, setPushName] = useState('');
@@ -43,7 +46,11 @@ export function AccountProfilePanel({
   const pushNameMutation = useMutation({
     mutationFn: () => changeAccountPushName(device.id, pushName.trim()),
     onSuccess: () => {
-      toast.success(t.account.pushNameUpdatedToast);
+      toastWithView(t.account.pushNameUpdatedToast, {
+        label: t.scheduled.viewAction,
+        to: '/account',
+        navigate,
+      });
       setPushName('');
       onDeviceUpdated();
     },
@@ -56,7 +63,11 @@ export function AccountProfilePanel({
       await changeAccountAvatar(device.id, payload);
     },
     onSuccess: () => {
-      toast.success(t.account.avatarUpdatedToast);
+      toastWithView(t.account.avatarUpdatedToast, {
+        label: t.scheduled.viewAction,
+        to: '/account',
+        navigate,
+      });
       setMyAvatarUrl(null);
       void queryClient.invalidateQueries({queryKey: ['contact-avatar', device.id]});
     },

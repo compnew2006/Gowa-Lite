@@ -17,6 +17,7 @@ import {
 } from '@tanstack/react-query';
 import {History, Loader2, Lock, Paperclip, RotateCcw} from 'lucide-react';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {
   blockUnifiedChat,
   claimUnifiedChat,
@@ -81,6 +82,8 @@ import {formatDay} from '@/lib/format';
 import {LifecycleTimelineLine} from '@/features/chat/lifecycle-timeline-line';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
+import {buildConversationDeepLink} from '@/lib/deep-links';
 import {isDownloadableMedia} from '@/lib/media-download';
 import {useMessageActions} from '@/features/chat/use-message-actions';
 import {useMessageHistory} from '@/features/chat/use-message-history';
@@ -110,6 +113,7 @@ export function MessageView({
 }) {
   const queryClient = useQueryClient();
   const {lang, t} = useI18n();
+  const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const canWriteChats = hasUserPermission(user, 'chats:write');
   const canRevokeOwnChats = hasUserAnyPermission(user, ['chats:revoke_own', 'chats:revoke']);
@@ -439,7 +443,11 @@ export function MessageView({
   const claimMutation = useMutation({
     mutationFn: () => claimUnifiedChat(chat.device_id, chat.jid, displayName),
     onSuccess: (data) => {
-      toast.success(t.chats.claimedToast);
+      toastWithView(t.chats.claimedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(chat.device_id, chat.jid),
+        navigate,
+      });
       applyLifecycleMutationResult(data);
     },
     onError: (err) => {
@@ -451,7 +459,11 @@ export function MessageView({
   const releaseMutation = useMutation({
     mutationFn: () => releaseUnifiedChat(chat.device_id, chat.jid, {cached_title: displayName}),
     onSuccess: (data) => {
-      toast.success(t.chats.unassignedToast);
+      toastWithView(t.chats.unassignedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(chat.device_id, chat.jid),
+        navigate,
+      });
       applyLifecycleMutationResult(data);
     },
     onError: (err) => {
@@ -463,8 +475,18 @@ export function MessageView({
   const closeMutation = useMutation({
     mutationFn: () => closeUnifiedChat(chat.device_id, chat.jid, {cached_title: displayName}),
     onSuccess: (data) => {
-      if (data.rating_prompt === 'failed') toast.warning(t.chats.ratingPromptFailed);
-      else toast.success(t.chats.closedToast);
+      if (data.rating_prompt === 'failed')
+        toastWithView(t.chats.ratingPromptFailed, {
+          label: t.scheduled.viewAction,
+          to: buildConversationDeepLink(chat.device_id, chat.jid),
+          navigate,
+          kind: 'warning',
+        });
+      else toastWithView(t.chats.closedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(chat.device_id, chat.jid),
+        navigate,
+      });
       applyLifecycleMutationResult(data);
     },
     onError: (err) => {
@@ -480,7 +502,11 @@ export function MessageView({
         cached_title: displayName,
       }),
     onSuccess: (data) => {
-      toast.success(t.chats.reopenedToast);
+      toastWithView(t.chats.reopenedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(chat.device_id, chat.jid),
+        navigate,
+      });
       applyLifecycleMutationResult(data);
     },
     onError: (err) => {
@@ -492,7 +518,11 @@ export function MessageView({
   const unblockMutation = useMutation({
     mutationFn: () => blockUnifiedChat(chat.device_id, chat.jid, false),
     onSuccess: () => {
-      toast.success(t.chats.unblockedToast);
+      toastWithView(t.chats.unblockedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(chat.device_id, chat.jid),
+        navigate,
+      });
       invalidateLifecycleScope();
     },
     onError: (err) => {

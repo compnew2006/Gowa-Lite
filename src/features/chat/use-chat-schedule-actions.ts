@@ -1,6 +1,7 @@
 import {useMemo, useState} from 'react';
 import {useMutation, useQueryClient} from '@tanstack/react-query';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {actionUnifiedChatSchedule, updateUnifiedChatSchedule} from '@/api/client';
 import type {ScheduleStatus, ScheduledSend, UnifiedChat} from '@/api/types';
 import {
@@ -10,6 +11,8 @@ import {
 } from '@/features/schedules/schedule-utils';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
+import {buildScheduledDeepLink} from '@/features/schedules/scheduled-link';
 
 /**
  * Shared edit-time / pause / resume / cancel logic for one chat's schedules.
@@ -20,6 +23,7 @@ import {useI18n} from '@/lib/i18n';
 export function useChatScheduleActions(chat: UnifiedChat) {
   const {t} = useI18n();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTime, setEditingTime] = useState('');
@@ -47,10 +51,24 @@ export function useChatScheduleActions(chat: UnifiedChat) {
       // P1-1: act on the row's owning device, not the chat's device.
       actionUnifiedChatSchedule(deviceId ?? chat.device_id, chat.jid, id, action),
     onSuccess: (_data, vars) => {
-      if (vars.action === 'pause') toast.success(t.scheduled.pausedToast);
-      else if (vars.action === 'resume') toast.success(t.scheduled.resumedToast);
+      if (vars.action === 'pause')
+        toastWithView(t.scheduled.pausedToast, {
+          label: t.scheduled.viewAction,
+          to: buildScheduledDeepLink(chat.jid),
+          navigate,
+        });
+      else if (vars.action === 'resume')
+        toastWithView(t.scheduled.resumedToast, {
+          label: t.scheduled.viewAction,
+          to: buildScheduledDeepLink(chat.jid),
+          navigate,
+        });
       else {
-        toast.success(t.scheduled.cancelledToast);
+        toastWithView(t.scheduled.cancelledToast, {
+          label: t.scheduled.viewAction,
+          to: buildScheduledDeepLink(chat.jid),
+          navigate,
+        });
         setConfirmCancelId(null);
       }
       invalidateSchedules();
@@ -73,7 +91,11 @@ export function useChatScheduleActions(chat: UnifiedChat) {
         scheduled_at: scheduledAt,
       }),
     onSuccess: () => {
-      toast.success(t.chats.scheduleUpdatedToast);
+      toastWithView(t.chats.scheduleUpdatedToast, {
+        label: t.scheduled.viewAction,
+        to: buildScheduledDeepLink(chat.jid),
+        navigate,
+      });
       setEditingId(null);
       setEditingTime('');
       invalidateSchedules();

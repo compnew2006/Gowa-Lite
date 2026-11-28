@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useInfiniteQuery, useMutation} from '@tanstack/react-query';
 import {toast} from 'sonner';
+import {useNavigate} from 'react-router-dom';
 import {requestUnifiedChatHistory} from '@/api/requests/chats';
 import type {ChatRedactionReason, MessageInfo, UnifiedChat} from '@/api/types';
 import {isNoHistoryOnPhoneError, shouldTriggerAutoHistoryFetch, type EmptyHistoryStatus} from '@/features/chat/empty-history';
@@ -8,6 +9,8 @@ import {messageHistoryOptions, PAGE_SIZE} from '@/features/chat/message-history-
 import {sortMessagesChronologically} from '@/features/chat/message-reactions';
 import {toApiError} from '@/lib/http';
 import {useI18n} from '@/lib/i18n';
+import {toastWithView} from '@/lib/toast-with-view';
+import {buildConversationDeepLink} from '@/lib/deep-links';
 import {normalizeSearchInput} from '@/lib/phone';
 
 const HISTORY_POLL_MS = 2_000;
@@ -23,6 +26,7 @@ export function useMessageHistory({chat, openNonce, search, mediaOnly, redaction
   redactionReasonFromLifecycle?: ChatRedactionReason;
 }) {
   const {t} = useI18n();
+  const navigate = useNavigate();
   const isDeviceReady = chat.device_state === 'logged_in';
   const lastAutoTriggerKeyRef = useRef<string | null>(null);
   const lastResetOpenKeyRef = useRef<string | null>(null);
@@ -101,7 +105,11 @@ export function useMessageHistory({chat, openNonce, search, mediaOnly, redaction
         .then((res) => {
           if (!mountedRef.current || historyRequestIdRef.current !== reqId) return res;
           if (source === 'manual') {
-            toast.success(t.chats.historyRequestedToast);
+            toastWithView(t.chats.historyRequestedToast, {
+              label: t.scheduled.viewAction,
+              to: buildConversationDeepLink(chat.device_id, chat.jid),
+              navigate,
+            });
           }
           return res;
         })
@@ -202,7 +210,11 @@ export function useMessageHistory({chat, openNonce, search, mediaOnly, redaction
         return;
       }
       await requestUnifiedChatHistory(chat.device_id, chat.jid, PAGE_SIZE);
-      toast.success(t.chats.historyRequestedToast);
+      toastWithView(t.chats.historyRequestedToast, {
+        label: t.scheduled.viewAction,
+        to: buildConversationDeepLink(chat.device_id, chat.jid),
+        navigate,
+      });
       setHistoryPollUntil(Date.now() + HISTORY_POLL_WINDOW_MS);
     },
     onError: (err) => toast.error(toApiError(err).message),
