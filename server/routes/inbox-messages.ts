@@ -25,7 +25,7 @@ import {
   requireDeviceParamAccess,
   requirePermission,
 } from '../middleware/auth.ts';
-import {hasChatReadPermission} from '../rbac.ts';
+import {hasChatReadPermission, hasPermission} from '../rbac.ts';
 import {decodeRouteParam} from '../security.ts';
 import {
   assertChatContentAccess,
@@ -473,7 +473,7 @@ export function registerInboxMessageRoutes(router: Router, wsBridge: GowaWsBridg
   router.post(
     '/api/unified/chats/:deviceId/:jid/messages/:messageId/revoke',
     requireAuth,
-    requirePermission('chats', 'revoke'),
+    requireAnyPermission(['chats:revoke', 'chats:revoke_own']),
     requireDeviceParamAccess,
     async (req: AuthedRequest, res) => {
       const deviceId = decodeRouteParam(req.params.deviceId);
@@ -487,6 +487,19 @@ export function registerInboxMessageRoutes(router: Router, wsBridge: GowaWsBridg
 
       try {
         assertChatContentAccess(req.user!, deviceId, chatJid);
+        if (!hasPermission(req.user!, 'chats', 'revoke')) {
+          // chats:revoke_own only: the cached message must prove it was sent
+          // from this device. Fail closed: no cached message, or no proof of
+          // ownership, means the revoke is refused without calling GOWA.
+          const cached = getCachedMessage(deviceId, chatJid, messageId);
+          if (cached?.is_from_me !== true) {
+            res.status(403).json({
+              code: 'FORBIDDEN',
+              message: 'لا يمكنك سحب إلا رسائلك أنت',
+            });
+            return;
+          }
+        }
         await assertDeviceConnected(
           deviceId,
           'هذا الحساب غير متصل حاليًا بواتساب. يرجى إعادة ربط الحساب قبل حذف الرسالة.',

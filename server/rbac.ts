@@ -39,6 +39,7 @@ export const PERMISSION_GROUPS: PermissionGroupDefinition[] = [
       {key: 'chats:read', resource: 'chats', action: 'read'},
       {key: 'chats:write', resource: 'chats', action: 'write'},
       {key: 'chats:revoke', resource: 'chats', action: 'revoke'},
+      {key: 'chats:revoke_own', resource: 'chats', action: 'revoke_own'},
       {key: 'chats:view_all', resource: 'chats', action: 'view_all'},
       {key: 'chats:assign', resource: 'chats', action: 'assign'},
       {key: 'chats:close', resource: 'chats', action: 'close'},
@@ -163,6 +164,7 @@ export const SYSTEM_ROLE_DEFINITIONS: SystemRoleDefinition[] = [
     permissions: [
       'chats:read',
       'chats:write',
+      'chats:revoke_own',
       'chats:assign',
       'chats:close',
       'notes:read',
