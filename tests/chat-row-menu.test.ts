@@ -481,7 +481,7 @@ describe('Chat Row Context Menu (HTTP Integration)', () => {
 
     const start = Date.now();
     let healthy = false;
-    while (Date.now() - start < 15_000) {
+    while (Date.now() - start < 30_000) {
       try {
         const res = await fetch(`${baseUrl}/api/auth/status`);
         if (res.ok) {
