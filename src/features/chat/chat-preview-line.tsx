@@ -1,4 +1,4 @@
-import {File, FileText, Image, Link, Mic, Paperclip, Sticker, Video} from 'lucide-react';
+import {File, FileText, Image, Link, Mic, Paperclip, PhoneIncoming, Sticker, Video} from 'lucide-react';
 import type {ChatPreview} from '@/lib/chat-preview';
 
 function mediaIcon(mediaType: string) {
@@ -14,6 +14,8 @@ function mediaIcon(mediaType: string) {
       return <Sticker className={className} aria-hidden="true" />;
     case 'document':
       return <FileText className={className} aria-hidden="true" />;
+    case 'call':
+      return <PhoneIncoming className={className} aria-hidden="true" />;
     case 'link':
     case 'url':
       return <Link className={className} aria-hidden="true" />;
@@ -26,8 +28,9 @@ function mediaIcon(mediaType: string) {
 
 /**
  * The last-message preview line under the chat name in the list row (P2-2).
- * Text previews show the text; media messages with no text show a
- * media-type icon + short label. Renders nothing when there is no preview.
+ * Text previews show the text; media messages with no text — and call rows
+ * (P2-2a, whose raw gateway text is replaced by the localized call label) —
+ * show a media-type icon + short label. Renders nothing when there is no preview.
  */
 export function ChatPreviewLine({preview}: {preview: ChatPreview | null}) {
   if (!preview) return null;

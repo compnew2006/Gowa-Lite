@@ -153,6 +153,7 @@ const en: AppTranslations = {
       document: 'Document',
       sticker: 'Sticker',
       file: 'File',
+      call: 'Incoming call',
     } as Record<string, string>,
     copyText: 'Copy text',
     copiedToClipboard: 'Copied to clipboard',

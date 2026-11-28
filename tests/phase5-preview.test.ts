@@ -223,6 +223,7 @@ describe('Chat list last-message preview (P2-2)', () => {
       document: 'مستند',
       sticker: 'ملصق',
       file: 'ملف',
+      call: 'مكالمة واردة',
     };
 
     it('returns trimmed single-line text for a text message', () => {
@@ -253,6 +254,39 @@ describe('Chat list last-message preview (P2-2)', () => {
     it('returns null when there is neither text nor media', () => {
       assert.equal(resolveChatPreview({}, labels), null);
       assert.equal(resolveChatPreview({last_message_text: '  '}, labels), null);
+    });
+
+    it('localizes a call message (P2-2a): gateway raw text must not leak', () => {
+      // The gateway stores incoming calls as media_type "call" with the raw
+      // English content "Incoming call" — the preview must show the Arabic
+      // label instead, with a call icon, like any other non-text message.
+      assert.deepEqual(
+        resolveChatPreview(
+          {last_message_text: 'Incoming call', last_message_type: 'call'},
+          labels,
+        ),
+        {kind: 'media', mediaType: 'call', label: 'مكالمة واردة'},
+      );
+      // Fallback: same raw text with no media type (older cached rows).
+      assert.deepEqual(
+        resolveChatPreview({last_message_text: 'Incoming call'}, labels),
+        {kind: 'media', mediaType: 'call', label: 'مكالمة واردة'},
+      );
+      // A call row with no text at all still gets the label, not a blank.
+      assert.deepEqual(
+        resolveChatPreview({last_message_text: '', last_message_type: 'call'}, labels),
+        {kind: 'media', mediaType: 'call', label: 'مكالمة واردة'},
+      );
+    });
+
+    it('does not relabel ordinary text that merely mentions a call', () => {
+      assert.deepEqual(
+        resolveChatPreview(
+          {last_message_text: 'I got an incoming call yesterday', last_message_type: ''},
+          labels,
+        ),
+        {kind: 'text', text: 'I got an incoming call yesterday'},
+      );
     });
   });
 });

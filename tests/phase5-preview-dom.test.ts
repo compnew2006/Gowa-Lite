@@ -61,4 +61,13 @@ describe('ChatPreviewLine (P2-2)', () => {
     assert.equal(container!.querySelector('[data-testid="chat-preview"]'), null);
     assert.equal((container!.textContent ?? '').trim(), '');
   });
+
+  it('renders a call icon + Arabic label for a call preview (P2-2a)', async () => {
+    await renderPreview({kind: 'media', mediaType: 'call', label: 'مكالمة واردة'});
+    const line = container!.querySelector('[data-testid="chat-preview"]');
+    assert.ok(line, 'preview line renders for a call');
+    assert.ok((line!.textContent ?? '').includes('مكالمة واردة'));
+    assert.ok(!(line!.textContent ?? '').includes('Incoming call'));
+    assert.ok(line!.querySelector('svg'), 'call preview shows an icon');
+  });
 });
