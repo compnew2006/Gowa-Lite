@@ -417,8 +417,14 @@ export function ScheduledPanelBody({
               <ScheduleItemCard
                 key={item.id}
                 item={item}
-                canEditTime={canWriteSchedules}
-                canManageStatus={canManageSchedules}
+                // Per-row ownership gate: the server annotates each item with
+                // can_manage (owner or supervisor). The edit pencil used to
+                // be gated on schedules:write while the PATCH requires
+                // manage (hence the 403) — now pencil and status buttons
+                // both follow item.can_manage. Fall back to the list-wide
+                // permission only when unannotated.
+                canEditTime={item.can_manage ?? canManageSchedules}
+                canManageStatus={item.can_manage ?? canManageSchedules}
                 statusLabels={statusLabels}
                 recurrenceLabels={recurrenceLabels}
                 isBusy={isBusy}

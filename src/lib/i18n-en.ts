@@ -790,6 +790,8 @@ const en: AppTranslations = {
     cancelConfirmDesc: (recipient: string) =>
       `Cancel the scheduled message to "${recipient}"? Future runs will not be sent.`,
     confirmCancelBtn: 'Confirm Cancel',
+    manageRequiresSupervisor: 'Requires a supervisor permission',
+    createdByAnotherAgent: 'Scheduled by another agent',
     empty: 'No scheduled messages match the current filters.',
     createTitle: 'Schedule New Message',
     createDesc: 'Send a text message at a future time or on a recurring cadence from the active account.',

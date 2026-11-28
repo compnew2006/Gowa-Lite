@@ -1,5 +1,5 @@
 import type {Router} from 'express';
-import {gowaFetch} from '../gowa-client.ts';
+import {GowaError, gowaFetch} from '../gowa-client.ts';
 import {
   assertDeviceAccess,
   createApiRouter,
@@ -15,6 +15,12 @@ import {
   validateAndBuildSchedulePayload,
   type ScheduleInputBody,
 } from '../services/schedule-service.ts';
+import {
+  annotateScheduleListResults,
+  canManageSchedule,
+  deleteScheduleOwnership,
+  recordCreatedScheduleOwnership,
+} from '../services/schedule-ownership.ts';
 import type {AuthedRequest} from '../types.ts';
 
 export function registerScheduleRoutes(): Router {
@@ -46,7 +52,11 @@ export function registerScheduleRoutes(): Router {
             offset: Number.isFinite(offset) ? Math.max(offset, 0) : 0,
           },
         });
-        res.json({code: 'SUCCESS', message: 'ok', results: data});
+        res.json({
+          code: 'SUCCESS',
+          message: 'ok',
+          results: annotateScheduleListResults(req.user!, deviceId, data),
+        });
       } catch (err) {
         handleRouteError(res, err);
       }
@@ -65,6 +75,16 @@ export function registerScheduleRoutes(): Router {
           requirePhone: true,
         });
         const result = await createScheduleViaGowa(deviceId, payload);
+        await recordCreatedScheduleOwnership(
+          deviceId,
+          {
+            phone: String(payload.phone || ''),
+            message: String(payload.message || ''),
+            scheduled_at: String(payload.scheduled_at || ''),
+          },
+          result,
+          req.user!,
+        );
         res.status(201).json({code: 'SUCCESS', message: 'تمت جدولة الرسالة', results: result});
       } catch (err) {
         handleRouteError(res, err);
@@ -81,7 +101,13 @@ export function registerScheduleRoutes(): Router {
         const deviceId = decodeRouteParam(req.params.deviceId);
         assertDeviceAccess(req.user, deviceId);
         const scheduleId = decodeRouteParam(req.params.id);
+        if (!canManageSchedule(req.user!, deviceId, scheduleId)) {
+          throw new GowaError(403, 'FORBIDDEN', 'ليس لديك صلاحية إدارة هذه الجدولة');
+        }
         await executeScheduleAction(deviceId, scheduleId, req.params.action);
+        if (req.params.action === 'cancel') {
+          deleteScheduleOwnership(scheduleId);
+        }
         res.json({code: 'SUCCESS', message: 'تم تحديث الجدولة'});
       } catch (err) {
         handleRouteError(res, err);

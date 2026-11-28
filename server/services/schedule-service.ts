@@ -2,6 +2,10 @@ import {parseTimestampMs} from '../db.ts';
 import {GowaError, gowaFetch, type GowaPagination} from '../gowa-client.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
 import {recipientMatchesChatJid} from './chat-sync.ts';
+import {
+  resolveCreatedScheduleId,
+  transferScheduleOwnership,
+} from './schedule-ownership.ts';
 
 export type ScheduleRecurrence = 'once' | 'daily' | 'weekly' | 'monthly';
 export type ScheduleAction = 'pause' | 'resume' | 'cancel';
@@ -245,8 +249,22 @@ export async function rescheduleChatSchedule(
   });
   const newScheduleId = String(created?.id || created?.schedule_id || '').trim();
 
-  if (wasPaused && newScheduleId) {
-    await gowaFetch(`/send/schedules/${encodeURIComponent(newScheduleId)}/pause`, {
+  // Resolve the recreated schedule's id for the pause/rollback steps below.
+  // If the create response carries no id, fall back to unambiguous list
+  // matching; on ambiguity the id stays unknown and the new schedule stays
+  // admin-only — never guess.
+  let resolvedNewId = newScheduleId;
+  if (!resolvedNewId) {
+    resolvedNewId =
+      (await resolveCreatedScheduleId(
+        deviceId,
+        {phone: chatJid, message: finalMessage, scheduled_at: scheduledAt},
+        created,
+      )) ?? '';
+  }
+
+  if (wasPaused && resolvedNewId) {
+    await gowaFetch(`/send/schedules/${encodeURIComponent(resolvedNewId)}/pause`, {
       method: 'POST',
       deviceId,
     }).catch(() => undefined);
@@ -258,8 +276,8 @@ export async function rescheduleChatSchedule(
       deviceId,
     });
   } catch {
-    if (newScheduleId) {
-      await gowaFetch(`/send/schedules/${encodeURIComponent(newScheduleId)}/cancel`, {
+    if (resolvedNewId) {
+      await gowaFetch(`/send/schedules/${encodeURIComponent(resolvedNewId)}/cancel`, {
         method: 'POST',
         deviceId,
       }).catch(() => undefined);
@@ -269,6 +287,13 @@ export async function rescheduleChatSchedule(
       'RESCHEDULE_CANCEL_FAILED',
       'تعذر إلغاء الجدولة القديمة؛ تم التراجع عن التعديل لتجنب الإرسال المزدوج',
     );
+  }
+
+  // Ownership follows the schedule, transferred only once the recreate is
+  // fully committed (old schedule cancelled): the mapping moves to the new id
+  // with the same owner and the old row is dropped.
+  if (resolvedNewId) {
+    transferScheduleOwnership(deviceId, scheduleId, resolvedNewId);
   }
 
   wsBridge.broadcast({

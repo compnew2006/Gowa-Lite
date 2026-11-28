@@ -314,6 +314,17 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_call_auto_reject_logs_device
     ON call_auto_reject_logs(device_id, created_at_ms DESC);
+
+  CREATE TABLE IF NOT EXISTS schedule_ownership (
+    schedule_id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    created_by_user_id INTEGER NOT NULL,
+    created_by_name TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_schedule_ownership_creator
+    ON schedule_ownership(created_by_user_id);
 `);
 
 {

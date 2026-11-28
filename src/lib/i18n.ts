@@ -791,6 +791,8 @@ const ar = {
     cancelConfirmDesc: (recipient: string) =>
       `هل أنت متأكد من إلغاء الرسالة المجدولة للمستلم «${recipient}»؟ لن يتم إرسالها لاحقًا.`,
     confirmCancelBtn: 'تأكيد الإلغاء',
+    manageRequiresSupervisor: 'يتطلب صلاحية مشرف',
+    createdByAnotherAgent: 'جدولة أنشأها وكيل آخر',
     empty: 'لا توجد رسائل مجدولة مطابقة للتصفية الحالية.',
     createTitle: 'جدولة رسالة جديدة',
     createDesc: 'أرسل رسالة نصية في موعد محدد أو بتكرار تلقائي عبر الحساب النشط.',
