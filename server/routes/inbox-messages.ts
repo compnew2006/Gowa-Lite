@@ -27,6 +27,7 @@ import {
 } from '../middleware/auth.ts';
 import {hasChatReadPermission, hasPermission} from '../rbac.ts';
 import {decodeRouteParam} from '../security.ts';
+import {recordChatActionEvent} from '../db/lifecycle-repo.ts';
 import {
   assertChatContentAccess,
   enforceInboxPolicyBeforeSend,
@@ -518,6 +519,14 @@ export function registerInboxMessageRoutes(router: Router, wsBridge: GowaWsBridg
         });
 
         markCachedMessageRevoked(deviceId, messageId, {chatJid, revokedBy: 'me'});
+        // P2-11: the revoke shows as a system line in the chat timeline.
+        recordChatActionEvent({
+          deviceId,
+          chatJid,
+          eventType: 'message_revoked',
+          actorUserId: req.user!.id,
+          actorName: req.user!.display_name,
+        });
         wsBridge.broadcast({
           code: 'MESSAGE_REVOKED',
           message: 'revoked',

@@ -2,6 +2,7 @@ import type {Router} from 'express';
 import express from 'express';
 import multer, {type MulterError} from 'multer';
 import {getAccountAliases, parseTimestampMs} from '../db.ts';
+import {recordChatActionEvent} from '../db/lifecycle-repo.ts';
 import {GowaError, gowaFetch, type GowaDevice, type GowaPagination} from '../gowa-client.ts';
 import {
   handleRouteError,
@@ -305,6 +306,14 @@ export function registerInboxScheduleRoutes(router: Router, wsBridge: GowaWsBrid
           result,
           req.user!,
         );
+        // P2-11: the creation shows as a system line in the chat timeline.
+        recordChatActionEvent({
+          deviceId,
+          chatJid,
+          eventType: 'schedule_created',
+          actorUserId: req.user!.id,
+          actorName: req.user!.display_name,
+        });
         res.status(201).json({code: 'SUCCESS', message: 'تمت جدولة الرسالة', results: result});
       } catch (err) {
         handleRouteError(res, err);
@@ -350,6 +359,23 @@ export function registerInboxScheduleRoutes(router: Router, wsBridge: GowaWsBrid
           throw new GowaError(403, 'FORBIDDEN', 'ليس لديك صلاحية إدارة هذه الجدولة');
         }
         await executeScheduleAction(deviceId, scheduleId, req.params.action, wsBridge, chatJid);
+        // P2-11: pause/resume/cancel shows as a system line in the chat.
+        const scheduleActionEvent = {
+          pause: 'schedule_paused',
+          resume: 'schedule_resumed',
+          cancel: 'schedule_cancelled',
+        } as const;
+        const actionEventType =
+          scheduleActionEvent[req.params.action as keyof typeof scheduleActionEvent];
+        if (actionEventType) {
+          recordChatActionEvent({
+            deviceId,
+            chatJid,
+            eventType: actionEventType,
+            actorUserId: req.user!.id,
+            actorName: req.user!.display_name,
+          });
+        }
         if (req.params.action === 'cancel') {
           deleteScheduleOwnership(scheduleId);
         }

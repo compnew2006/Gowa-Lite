@@ -1,5 +1,6 @@
 import type {Router} from 'express';
 import {GowaError, gowaFetch} from '../gowa-client.ts';
+import {recordChatActionEvent} from '../db/lifecycle-repo.ts';
 import {
   assertDeviceAccess,
   createApiRouter,
@@ -19,8 +20,10 @@ import {
   annotateScheduleListResults,
   canManageSchedule,
   deleteScheduleOwnership,
+  getScheduleChatJid,
   recordCreatedScheduleOwnership,
 } from '../services/schedule-ownership.ts';
+import {normalizeWhatsAppJid} from '../../shared/whatsapp-identity.ts';
 import type {AuthedRequest} from '../types.ts';
 
 export function registerScheduleRoutes(): Router {
@@ -85,6 +88,15 @@ export function registerScheduleRoutes(): Router {
           result,
           req.user!,
         );
+        // P2-11: same system line as a chat-drawer creation; the chat is
+        // derived from the recipient phone (no chat in this URL).
+        recordChatActionEvent({
+          deviceId,
+          chatJid: normalizeWhatsAppJid(String(payload.phone || '')),
+          eventType: 'schedule_created',
+          actorUserId: req.user!.id,
+          actorName: req.user!.display_name,
+        });
         res.status(201).json({code: 'SUCCESS', message: 'تمت جدولة الرسالة', results: result});
       } catch (err) {
         handleRouteError(res, err);
@@ -105,6 +117,28 @@ export function registerScheduleRoutes(): Router {
           throw new GowaError(403, 'FORBIDDEN', 'ليس لديك صلاحية إدارة هذه الجدولة');
         }
         await executeScheduleAction(deviceId, scheduleId, req.params.action);
+        // P2-11: the chat comes from the ownership record (no chat in this
+        // URL). Schedules created before the chat_jid column existed have
+        // no known chat and record nothing.
+        const scheduleActionEvent = {
+          pause: 'schedule_paused',
+          resume: 'schedule_resumed',
+          cancel: 'schedule_cancelled',
+        } as const;
+        const actionEventType =
+          scheduleActionEvent[req.params.action as keyof typeof scheduleActionEvent];
+        const actionChatJid = actionEventType
+          ? getScheduleChatJid(deviceId, scheduleId)
+          : null;
+        if (actionEventType && actionChatJid) {
+          recordChatActionEvent({
+            deviceId,
+            chatJid: actionChatJid,
+            eventType: actionEventType,
+            actorUserId: req.user!.id,
+            actorName: req.user!.display_name,
+          });
+        }
         if (req.params.action === 'cancel') {
           deleteScheduleOwnership(scheduleId);
         }

@@ -1,6 +1,7 @@
 import {db, parseTimestampMs, queryAll, queryOne} from '../db.ts';
 import {gowaFetch} from '../gowa-client.ts';
 import {hasPermission, isAdminSubject, type RbacSubject} from '../rbac.ts';
+import {normalizeWhatsAppJid} from '../../shared/whatsapp-identity.ts';
 
 /**
  * Ownership of gateway schedules (P0-2).
@@ -45,13 +46,31 @@ export function recordScheduleOwnership(
   deviceId: string,
   scheduleId: string,
   user: ScheduleCreator,
+  chatJid?: string,
 ): void {
   if (!deviceId || !scheduleId) return;
   db.prepare(
     `INSERT OR REPLACE INTO schedule_ownership
-       (schedule_id, device_id, created_by_user_id, created_by_name, created_at)
-     VALUES (?, ?, ?, ?, datetime('now'))`,
-  ).run(scheduleId, deviceId, user.id, user.display_name || '');
+       (schedule_id, device_id, created_by_user_id, created_by_name, chat_jid, created_at)
+     VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+  ).run(scheduleId, deviceId, user.id, user.display_name || '', chatJid ?? '');
+}
+
+/**
+ * P2-11: the recipient chat of a gateway schedule, for system lines on
+ * pause/resume/cancel from the Schedules page (no chat in that URL).
+ * Returns null when the schedule has no ownership row or no known chat
+ * (e.g. created before the chat_jid column existed).
+ */
+export function getScheduleChatJid(deviceId: string, scheduleId: string): string | null {
+  if (!deviceId || !scheduleId) return null;
+  const row = queryOne<{chat_jid: string}>(
+    'SELECT chat_jid FROM schedule_ownership WHERE schedule_id = ? AND device_id = ?',
+    scheduleId,
+    deviceId,
+  );
+  const chatJid = (row?.chat_jid ?? '').trim();
+  return chatJid || null;
 }
 
 export function deleteScheduleOwnership(scheduleId: string): void {
@@ -67,12 +86,13 @@ export function transferScheduleOwnership(
   if (!oldScheduleId || !newScheduleId || oldScheduleId === newScheduleId) return;
   const owner = getScheduleOwnership(deviceId, oldScheduleId);
   if (!owner) return;
+  const chatJid = getScheduleChatJid(deviceId, oldScheduleId);
   deleteScheduleOwnership(oldScheduleId);
   db.prepare(
     `INSERT OR REPLACE INTO schedule_ownership
-       (schedule_id, device_id, created_by_user_id, created_by_name, created_at)
-     VALUES (?, ?, ?, ?, datetime('now'))`,
-  ).run(newScheduleId, deviceId, owner.created_by_user_id, owner.created_by_name);
+       (schedule_id, device_id, created_by_user_id, created_by_name, chat_jid, created_at)
+     VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+  ).run(newScheduleId, deviceId, owner.created_by_user_id, owner.created_by_name, chatJid ?? '');
 }
 
 export function canManageSchedule(
@@ -212,7 +232,9 @@ export async function recordCreatedScheduleOwnership(
   try {
     const scheduleId = await resolveCreatedScheduleId(deviceId, created, createResult);
     if (!scheduleId) return null;
-    recordScheduleOwnership(deviceId, scheduleId, user);
+    // P2-11: keep the recipient chat so later pause/resume/cancel can
+    // record a system line in that chat's timeline.
+    recordScheduleOwnership(deviceId, scheduleId, user, normalizeWhatsAppJid(created.phone));
     return scheduleId;
   } catch (err) {
     console.error('[schedule-ownership] failed to record ownership', err);

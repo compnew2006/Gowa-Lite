@@ -326,6 +326,20 @@ const ar = {
           ? `أعاد ${actor} فتح المحادثة وتعيينها إلى ${target}`
           : `أعاد ${actor} فتح المحادثة`,
       reopened_by_customer: 'أعاد العميل فتح المحادثة برسالة جديدة',
+      note_added: (actor: string) => `أضاف ${actor} ملاحظة`,
+      note_edited: (actor: string) => `عدّل ${actor} ملاحظة`,
+      note_deleted: (actor: string) => `حذف ${actor} ملاحظة`,
+      schedule_created: (actor: string) => `جدول ${actor} رسالة`,
+      schedule_paused: (actor: string) => `أوقف ${actor} رسالة مجدولة مؤقتاً`,
+      schedule_resumed: (actor: string) => `استأنف ${actor} رسالة مجدولة`,
+      schedule_cancelled: (actor: string) => `ألغى ${actor} رسالة مجدولة`,
+      message_revoked: (actor: string) => `سحب ${actor} رسالة`,
+      message_edited: (actor: string) =>
+        actor ? `عدّل ${actor} رسالة` : 'تم تعديل رسالة',
+      rating_submitted: (actor: string, score?: string) =>
+        actor
+          ? `قيّم ${actor} المحادثة بـ ${score ?? '؟'}/5`
+          : `قيّم العميل المحادثة بـ ${score ?? '؟'}/5`,
     },
     tabsLabel: 'تبويبات صندوق المحادثات',
     tabAll: 'الكل',
