@@ -934,15 +934,20 @@ describe('Server-Side Chat Content Redaction (HTTP & WS Integration)', () => {
     assert.equal(linaClosedMsgs.status, 200);
     assert.equal(linaClosedMsgs.text.includes(secretText), true);
 
-    // 10. Another regular agent (Omar) CAN list tab=closed, sees Sara's closed chat (still redacted!), and CAN reopen+claim it
+    // 10. P0-1: another regular agent (Omar) must NOT see Sara's closed chat in
+    // tab=closed (not even its name/number), while direct access stays redacted
+    // and he CAN still reopen+claim it.
     const omarClosedTab = await api('/api/unified/chats?tab=closed', {token: omarToken});
     assert.equal(omarClosedTab.status, 200);
     const omarClosedResults = omarClosedTab.body?.results as {
       data: Array<{jid: string; name: string}>;
       tab_counts: {closed: number};
     };
-    assert.ok(omarClosedResults.tab_counts.closed >= 1);
-    assert.ok(omarClosedResults.data.some((c) => c.jid === targetJid));
+    assert.equal(omarClosedResults.tab_counts.closed, 0);
+    assert.equal(
+      omarClosedResults.data.some((c) => c.jid === targetJid),
+      false,
+    );
 
     const omarClosedMsgs = await api(
       `/api/unified/chats/dev-alpha/${encodeURIComponent(targetJid)}/messages`,
