@@ -68,9 +68,15 @@ export interface ValidatedSchedulePayloadFields {
 
 export function validateAndBuildScheduleFields(
   fields: ScheduleFormFields,
-  errorMessages: {pastTime: string; invalidEndAt: string},
+  errorMessages: {pastTime: string; invalidEndAt: string; emptyTime?: string},
   nowMs = Date.now(),
 ): ValidatedSchedulePayloadFields {
+  // Decision 5: no time default — an empty field is a missing time, not a
+  // past time, so it gets its own message.
+  if (!fields.scheduledAtLocal.trim()) {
+    throw new ScheduleValidationError(errorMessages.emptyTime ?? errorMessages.pastTime);
+  }
+
   let scheduledMs: number;
   try {
     scheduledMs = validateScheduleFutureMs(fields.scheduledAtLocal, nowMs);

@@ -332,8 +332,12 @@ describe('ScheduledPage create form (page entry point)', () => {
   });
 });
 
-describe('P0-4 scope guard: dialog is not rebuilt as composer-driven', () => {
-  it('keeps the existing dialog form (message textarea + recurrence fields + submit)', async () => {
+describe('Phase 2 Path A (P1-3): the dialog is composer-driven now', () => {
+  // The P0-4 scope guard used to assert the dialog kept its own message
+  // textarea. Phase 2 Path A deliberately removes it: the dialog schedules
+  // the composer draft, shown read-only, with no separate message field
+  // and no time default (decision 5).
+  it('shows the composer draft read-only, no textarea, empty time, submit present', async () => {
     const client = makeQueryClient();
     await render(
       el(
@@ -355,10 +359,14 @@ describe('P0-4 scope guard: dialog is not rebuilt as composer-driven', () => {
     );
     await flushTimers();
     const text = bodyText();
-    assert.ok(
-      document.querySelector('#chat-sched-msg'),
-      'message textarea is still present',
-    );
+    assert.ok(!document.querySelector('#chat-sched-msg'), 'no separate message textarea');
+    assert.ok(!document.querySelector('textarea'), 'no textarea at all in the dialog');
+    const preview = document.querySelector('[data-testid="schedule-draft-preview"]');
+    assert.ok(preview, 'draft preview renders');
+    assert.ok((preview.textContent ?? '').includes('hello'), 'draft text is shown');
+    const at = document.querySelector('#chat-sched-at') as HTMLInputElement | null;
+    assert.ok(at, 'send-time input renders');
+    assert.ok(at.value === '', 'send-time field starts empty (decision 5)');
     assert.ok(text.includes('تأكيد الجدولة'), 'submit button is still present');
   });
 });

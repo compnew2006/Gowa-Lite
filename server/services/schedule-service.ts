@@ -1,7 +1,7 @@
 import {parseTimestampMs} from '../db.ts';
 import {GowaError, gowaFetch, type GowaPagination} from '../gowa-client.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
-import {recipientMatchesChatJid} from './chat-sync.ts';
+import {recipientMatchesChatJid, resolveGowaMediaTarget} from './chat-sync.ts';
 import {
   resolveCreatedScheduleId,
   transferScheduleOwnership,
@@ -41,7 +41,7 @@ export function validateScheduleTimestamp(scheduledAtRaw: unknown, nowMs = Date.
 
 export function validateAndBuildSchedulePayload(
   body: ScheduleInputBody,
-  options: {fixedPhone?: string; requirePhone?: boolean; nowMs?: number} = {},
+  options: {fixedPhone?: string; requirePhone?: boolean; nowMs?: number; allowEmptyMessage?: boolean} = {},
 ): Record<string, unknown> {
   const phone =
     options.fixedPhone !== undefined
@@ -60,7 +60,9 @@ export function validateAndBuildSchedulePayload(
   if (options.requirePhone && !phone) {
     throw new GowaError(400, 'VALIDATION_ERROR', 'الرقم ونص الرسالة وموعد الإرسال مطلوبون');
   }
-  if (!message || !scheduledAtRaw) {
+  // A media schedule may carry an empty caption (audio/sticker have none);
+  // the file itself is the message. Text schedules still require a message.
+  if ((!message && !options.allowEmptyMessage) || !scheduledAtRaw) {
     throw new GowaError(
       400,
       'VALIDATION_ERROR',
@@ -136,6 +138,105 @@ export async function createScheduleViaGowa(
     method: 'POST',
     deviceId,
     body: payload,
+  });
+  if (wsBridge && broadcastChatJid) {
+    wsBridge.broadcast({
+      code: 'SCHEDULE_UPDATED',
+      message: 'created',
+      device_id: deviceId,
+      result: {chat_jid: broadcastChatJid},
+    });
+  }
+  return result;
+}
+
+export interface MediaScheduleFileInput {
+  buffer: Buffer;
+  filename: string;
+  mimeType: string;
+}
+
+export interface MediaScheduleInput {
+  file: MediaScheduleFileInput;
+  caption: string;
+  scheduledAt: string;
+  timezone?: string;
+  recurrence: string;
+  weekdays?: number[];
+  dayOfMonth?: number;
+  endAt?: string;
+  occurrenceLimit?: number;
+}
+
+/**
+ * Build the multipart body for a scheduled media send. The gateway's media
+ * endpoints (verified in 9.10.0: `ScheduleOptions` is embedded in every
+ * `BaseRequest`, and the scheduled-send interceptor persists the asset when
+ * `scheduled_at` is set) accept the same schedule fields as the JSON text
+ * path, plus the file under the media endpoint's field name.
+ */
+export function buildMediaScheduleFormData(
+  phone: string,
+  input: MediaScheduleInput,
+): {endpoint: string; formData: FormData} {
+  const target = resolveGowaMediaTarget(input.file.mimeType, input.file.filename);
+  const formData = new FormData();
+  formData.set('phone', phone);
+  if (target.supportsCaption && input.caption) {
+    formData.set('caption', input.caption);
+  }
+  formData.set('scheduled_at', input.scheduledAt);
+  if (input.timezone) {
+    formData.set('timezone', input.timezone);
+  }
+  formData.set('recurrence', input.recurrence);
+  if (input.weekdays && input.weekdays.length > 0) {
+    for (const day of input.weekdays) {
+      formData.append('weekdays', String(day));
+    }
+  }
+  if (input.dayOfMonth !== undefined) {
+    formData.set('day_of_month', String(input.dayOfMonth));
+  }
+  if (input.endAt) {
+    formData.set('end_at', input.endAt);
+  }
+  if (input.occurrenceLimit !== undefined) {
+    formData.set('occurrence_limit', String(input.occurrenceLimit));
+  }
+  formData.set(
+    target.fieldName,
+    new Blob([new Uint8Array(input.file.buffer)], {type: target.mimeType}),
+    target.filename,
+  );
+  return {endpoint: target.endpoint, formData};
+}
+
+export async function createMediaScheduleViaGowa(
+  deviceId: string,
+  phone: string,
+  payload: Record<string, unknown>,
+  file: MediaScheduleFileInput,
+  wsBridge?: GowaWsBridge,
+  broadcastChatJid?: string,
+): Promise<unknown> {
+  const {endpoint, formData} = buildMediaScheduleFormData(phone, {
+    file,
+    caption: typeof payload.message === 'string' ? payload.message : '',
+    scheduledAt: String(payload.scheduled_at || ''),
+    timezone: typeof payload.timezone === 'string' ? payload.timezone : undefined,
+    recurrence: String(payload.recurrence || 'once'),
+    weekdays: Array.isArray(payload.weekdays) ? (payload.weekdays as number[]) : undefined,
+    dayOfMonth: typeof payload.day_of_month === 'number' ? payload.day_of_month : undefined,
+    endAt: typeof payload.end_at === 'string' ? payload.end_at : undefined,
+    occurrenceLimit:
+      typeof payload.occurrence_limit === 'number' ? payload.occurrence_limit : undefined,
+  });
+  const result = await gowaFetch(endpoint, {
+    method: 'POST',
+    deviceId,
+    formData,
+    timeoutMs: 45_000,
   });
   if (wsBridge && broadcastChatJid) {
     wsBridge.broadcast({

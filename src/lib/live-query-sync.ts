@@ -211,6 +211,13 @@ function syncLiveQueryCacheInternal(
       client.setQueriesData<InfiniteMessagePagesShape>(patchFilters, (data) =>
         upsertIncomingMessageInPages(data, incoming.message),
       );
+      // A message sent from this device can be a fired schedule: the
+      // gateway executed it, so the "scheduled" bubble must leave the
+      // timeline and the sent message takes its place. Refetch this
+      // chat's schedules; other people's messages never fire a schedule.
+      if (incoming.message.is_from_me) {
+        invalidateChat('unified-chat-schedules');
+      }
       invalidateNonPatchableMessages(incoming.deviceId, normalizedChatJid);
     } else {
       invalidateChat(messageQueryKeys.all[0]);

@@ -34,6 +34,7 @@ import type {
   ChatLifecycleResponse,
   ChatRedactionReason,
   MessageInfo,
+  ScheduledSend,
   UnifiedChat,
 } from '@/api/types';
 import {Button} from '@/components/ui/button';
@@ -47,6 +48,10 @@ import {
   validateChatMediaFile,
   type ComposerLockState,
 } from '@/features/chat/message-composer';
+import {ScheduledMessageBubble} from '@/features/chat/scheduled-message-bubble';
+import {buildScheduledTimelineEntries} from '@/features/chat/scheduled-timeline';
+import {useChatScheduleActions} from '@/features/chat/use-chat-schedule-actions';
+import {minScheduleDateTimeLocal} from '@/features/schedules/schedule-utils';
 import {
   dayKey,
   repliedToId,
@@ -81,7 +86,8 @@ import {hasUserPermission, useAuthStore} from '@/stores/auth';
 
 type TimelineItem =
   | {kind: 'message'; key: string; timestamp: string; timestampMs: number; message: MessageInfo}
-  | {kind: 'lifecycle'; key: string; timestamp: string; timestampMs: number; event: ChatLifecycleEvent};
+  | {kind: 'lifecycle'; key: string; timestamp: string; timestampMs: number; event: ChatLifecycleEvent}
+  | {kind: 'scheduled'; key: string; timestamp: string; timestampMs: number; item: ScheduledSend};
 
 function formatLifecycleEventText(
   event: ChatLifecycleEvent,
@@ -137,6 +143,7 @@ export function MessageView({
   const canReadNotes = hasUserPermission(user, 'notes:read');
   const canReadSchedules = hasUserPermission(user, 'schedules:read');
   const canWriteSchedules = hasUserPermission(user, 'schedules:write');
+  const canManageSchedules = hasUserPermission(user, 'schedules:manage');
   const composerInputRef = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
 
@@ -267,6 +274,18 @@ export function MessageView({
     return lifecycleQuery.data?.events ?? [];
   }, [isContentRedacted, isLifecycleSupported, lifecycleQuery.data?.events, mediaOnly, normalizedSearch]);
 
+  // Scheduled sends for this chat, merged into the timeline like lifecycle
+  // events: an active/paused/running schedule shows as a "scheduled"
+  // bubble at its send time. When the gateway fires it, the sent message
+  // arrives over WS and the schedules cache is invalidated (see
+  // live-query-sync), so the bubble is replaced by the real message.
+  const scheduledEntries = useMemo(() => {
+    if (isContentRedacted || normalizedSearch || mediaOnly) return [];
+    return buildScheduledTimelineEntries(schedulesQuery.data?.data ?? []);
+  }, [isContentRedacted, mediaOnly, normalizedSearch, schedulesQuery.data?.data]);
+
+  const scheduleActions = useChatScheduleActions(chat);
+
   const timelineItems = useMemo<TimelineItem[]>(() => {
     const items: TimelineItem[] = messages.map((msg) => ({
       kind: 'message',
@@ -284,13 +303,22 @@ export function MessageView({
         event,
       });
     }
+    for (const entry of scheduledEntries) {
+      items.push({
+        kind: 'scheduled',
+        key: entry.key,
+        timestamp: entry.timestamp,
+        timestampMs: entry.timestampMs,
+        item: entry.item,
+      });
+    }
     items.sort((a, b) => {
       if (a.timestampMs !== b.timestampMs) return a.timestampMs - b.timestampMs;
       if (a.kind !== b.kind) return a.kind === 'message' ? -1 : 1;
       return a.key.localeCompare(b.key);
     });
     return items;
-  }, [lifecycleEvents, messages]);
+  }, [lifecycleEvents, messages, scheduledEntries]);
 
   const {lockState, autoReopenHint} = useMemo<{
     lockState: ComposerLockState | undefined;
@@ -876,6 +904,28 @@ export function MessageView({
                             )}
                           </div>
                         </div>
+                      ) : item.kind === 'scheduled' ? (
+                        <div className="mx-auto flex w-full max-w-4xl justify-end px-4 sm:px-8 lg:px-14">
+                          <ScheduledMessageBubble
+                            item={item.item}
+                            lang={lang}
+                            statusLabels={scheduleActions.statusLabels}
+                            recurrenceLabels={scheduleActions.recurrenceLabels}
+                            canEditTime={item.item.can_manage ?? canManageSchedules}
+                            canManageStatus={item.item.can_manage ?? canManageSchedules}
+                            isBusy={scheduleActions.isBusy}
+                            isEditing={scheduleActions.editingId === item.item.id}
+                            editingTime={scheduleActions.editingTime}
+                            minLocal={minScheduleDateTimeLocal()}
+                            isConfirmingCancel={scheduleActions.confirmCancelId === item.item.id}
+                            onStartEditing={scheduleActions.startEditing}
+                            onEditingTimeChange={scheduleActions.setEditingTime}
+                            onCancelEditing={scheduleActions.cancelEditing}
+                            onSaveTime={scheduleActions.saveTime}
+                            onAction={scheduleActions.doAction}
+                            onToggleCancelConfirm={scheduleActions.toggleCancelConfirm}
+                          />
+                        </div>
                       ) : (
                         <MessageBubble
                           message={item.message}
@@ -974,10 +1024,14 @@ export function MessageView({
             onOpenChange={setScheduleDialogOpen}
             chat={chat}
             initialMessage={draft}
-            onScheduled={(submittedMessage) => {
+            initialAttachment={attachment}
+            onScheduled={(submittedMessage, hadAttachment) => {
               if (draft.trim() === submittedMessage) {
                 setDraft('');
                 setReplyingTo(null);
+              }
+              if (hadAttachment) {
+                setAttachment(null);
               }
             }}
           />

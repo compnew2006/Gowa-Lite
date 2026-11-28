@@ -1,4 +1,6 @@
 import type {Router} from 'express';
+import express from 'express';
+import multer, {type MulterError} from 'multer';
 import {parseTimestampMs} from '../db.ts';
 import {GowaError, gowaFetch, type GowaPagination} from '../gowa-client.ts';
 import {
@@ -9,8 +11,13 @@ import {
 } from '../middleware/auth.ts';
 import {decodeRouteParam} from '../security.ts';
 import {assertChatContentAccess, getChatContentAccessState} from '../services/chat-lifecycle.ts';
-import {normalizePhoneQueryForGowa, recipientMatchesChatJid} from '../services/chat-sync.ts';
 import {
+  MAX_MEDIA_UPLOAD_BYTES,
+  normalizePhoneQueryForGowa,
+  recipientMatchesChatJid,
+} from '../services/chat-sync.ts';
+import {
+  createMediaScheduleViaGowa,
   createScheduleViaGowa,
   executeScheduleAction,
   rescheduleChatSchedule,
@@ -27,6 +34,67 @@ import type {AuthedRequest} from '../types.ts';
 import type {GowaWsBridge} from '../ws-bridge.ts';
 
 export function registerInboxScheduleRoutes(router: Router, wsBridge: GowaWsBridge): void {
+  // Multipart upload for a scheduled media send: the client posts the file
+  // as FormData (field `file`) plus the schedule fields as text. Same
+  // memory storage + 20 MB cap as the /send-media route.
+  const scheduleMediaUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: {fileSize: MAX_MEDIA_UPLOAD_BYTES},
+  });
+
+  // Returns false when the upload itself was rejected (response already
+  // sent); the handler must stop in that case.
+  function parseScheduleUpload(
+    req: AuthedRequest,
+    res: express.Response,
+  ): Promise<boolean> {
+    const contentType = req.headers['content-type'] || '';
+    if (!contentType.startsWith('multipart/form-data')) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      scheduleMediaUpload.single('file')(req, res, (err: unknown) => {
+        if (!err) {
+          resolve(true);
+          return;
+        }
+        if ((err as MulterError).code === 'LIMIT_FILE_SIZE') {
+          res.status(413).json({
+            code: 'PAYLOAD_TOO_LARGE',
+            message: 'حجم الملف يتجاوز الحد الأقصى المسموح به (20 ميجابايت)',
+          });
+          resolve(false);
+          return;
+        }
+        res.status(400).json({
+          code: 'VALIDATION_ERROR',
+          message: err instanceof Error ? err.message : 'تعذر قراءة المرفق',
+        });
+        resolve(false);
+      });
+    });
+  }
+
+  // Multipart text fields arrive as strings; the weekday list arrives as
+  // the JSON array the client built (`"[1,3]"`). Normalize before the
+  // shared payload validator runs.
+  function normalizeScheduleBody(
+    body: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const normalized: Record<string, unknown> = {...body};
+    const weekdays = normalized.weekdays;
+    if (typeof weekdays === 'string') {
+      try {
+        const parsed: unknown = JSON.parse(weekdays);
+        normalized.weekdays = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        normalized.weekdays = weekdays
+          .split(',')
+          .map((part) => Number(part.trim()))
+          .filter((day) => Number.isInteger(day));
+      }
+    }
+    return normalized;
+  }
+
   router.get(
     '/api/unified/chats/:deviceId/:jid/schedules',
     requireAuth,
@@ -111,10 +179,29 @@ export function registerInboxScheduleRoutes(router: Router, wsBridge: GowaWsBrid
         const deviceId = decodeRouteParam(req.params.deviceId);
         const chatJid = decodeRouteParam(req.params.jid);
         assertChatContentAccess(req.user!, deviceId, chatJid);
-        const payload = validateAndBuildSchedulePayload(req.body as ScheduleInputBody, {
+        if (!(await parseScheduleUpload(req, res))) return;
+        const uploaded = req.file;
+        const body = normalizeScheduleBody(
+          (req.body ?? {}) as Record<string, unknown>,
+        );
+        const payload = validateAndBuildSchedulePayload(body as ScheduleInputBody, {
           fixedPhone: chatJid,
+          allowEmptyMessage: Boolean(uploaded),
         });
-        const result = await createScheduleViaGowa(deviceId, payload, wsBridge, chatJid);
+        const result = uploaded
+          ? await createMediaScheduleViaGowa(
+              deviceId,
+              chatJid,
+              payload,
+              {
+                buffer: uploaded.buffer,
+                filename: uploaded.originalname || 'attachment',
+                mimeType: uploaded.mimetype || 'application/octet-stream',
+              },
+              wsBridge,
+              chatJid,
+            )
+          : await createScheduleViaGowa(deviceId, payload, wsBridge, chatJid);
         await recordCreatedScheduleOwnership(
           deviceId,
           {

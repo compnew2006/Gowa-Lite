@@ -30,6 +30,14 @@ export function createUnifiedChatSchedule(
   return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/schedules`, payload));
 }
 
+export function createUnifiedChatScheduleWithMedia(
+  deviceId: string,
+  chatJid: string,
+  form: FormData,
+): Promise<unknown> {
+  return results(http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/schedules`, form));
+}
+
 export function updateUnifiedChatSchedule(
   deviceId: string,
   chatJid: string,
