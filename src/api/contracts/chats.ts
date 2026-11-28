@@ -4,6 +4,8 @@ export interface ChatInfo {
   jid: string;
   name: string;
   last_message_time: string;
+  last_message_text?: string;
+  last_message_type?: string;
   ephemeral_expiration: number;
   created_at: string;
   updated_at: string;

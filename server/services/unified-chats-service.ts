@@ -2,6 +2,7 @@ import {
   clearChatCatchup,
   getChatDeviceStatesMap,
   getChatsMessagePresenceMap,
+  getLastMessagePreviews,
   getUnreadCountsForUser,
   getUserChatListMemberships,
   getUserChatPreferencesMap,
@@ -808,6 +809,7 @@ export function enrichUnifiedChatsWithUnreadAndLifecycle(params: {
   const uniqueDeviceIds = Array.from(new Set(pagedChats.map((c) => c.device_id).filter(Boolean)));
   const unreadByChat = getUnreadCountsForUser(user, chatKeys);
   const presenceByChat = getChatsMessagePresenceMap(chatKeys);
+  const previewsByChat = getLastMessagePreviews(chatKeys);
   const deviceStatesMap = getChatDeviceStatesMap(uniqueDeviceIds);
   const userPrefsMap = getUserChatPreferencesMap(user.id, uniqueDeviceIds);
   const listMembershipsMap = getUserChatListMemberships(user.id, uniqueDeviceIds);
@@ -830,6 +832,7 @@ export function enrichUnifiedChatsWithUnreadAndLifecycle(params: {
           ? knownPresence
           : undefined;
     const assignment = lifecycleByChat.get(key) ?? assignmentsMap.get(key);
+    const preview = previewsByChat.get(key);
     const devState = deviceStatesMap.get(key);
     const userPref = userPrefsMap.get(key);
     const listIds = listMembershipsMap.get(key) ?? [];
@@ -841,6 +844,9 @@ export function enrichUnifiedChatsWithUnreadAndLifecycle(params: {
     return {
       ...chat,
       ...(hasMessages !== undefined ? {has_messages: hasMessages} : {}),
+      ...(preview
+        ? {last_message_text: preview.text, last_message_type: preview.media_type}
+        : {}),
       archived: effectiveArchived,
       is_pinned: Boolean(devState?.is_pinned ?? chat.is_pinned),
       pinned_at_ms: devState?.pinned_at_ms ?? chat.pinned_at_ms ?? 0,

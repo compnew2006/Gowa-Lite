@@ -71,6 +71,7 @@ export {
   getCachedMessage,
   getChatsMessagePresenceMap,
   getGroupUnreadSummaryForUser,
+  getLastMessagePreviews,
   getUnreadCountsForUser,
   listPendingCatchupChats,
   markCachedMessageRevoked,

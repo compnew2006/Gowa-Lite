@@ -761,6 +761,69 @@ export function getChatsMessagePresenceMap(
   return result;
 }
 
+export interface LastMessagePreview {
+  text: string;
+  media_type: string;
+}
+
+/**
+ * Last-message preview for a page of chats (P2-2), from the local
+ * `cached_messages` cache — ONE batched statement for the whole page, never
+ * one query per chat (no N+1). The latest row per (device, chat) wins
+ * (timestamp_ms, then insertion seq); revoked rows are skipped so a revoked
+ * message's text never leaks into the list, and rows with neither text nor
+ * media are skipped so the preview never lands on a blank row.
+ */
+export function getLastMessagePreviews(
+  chats: Array<{device_id: string; chat_jid: string}>,
+): Map<string, LastMessagePreview> {
+  const result = new Map<string, LastMessagePreview>();
+  if (chats.length === 0) return result;
+
+  const uniqueDeviceIds = Array.from(new Set(chats.map((c) => c.device_id).filter(Boolean)));
+  const uniqueChatJids = Array.from(new Set(chats.map((c) => c.chat_jid).filter(Boolean)));
+  if (uniqueDeviceIds.length === 0 || uniqueChatJids.length === 0) return result;
+
+  const devicePlaceholders = uniqueDeviceIds.map(() => '?').join(', ');
+  const useJidFilter = uniqueChatJids.length <= 500;
+  const jidClause = useJidFilter
+    ? `AND chat_jid IN (${uniqueChatJids.map(() => '?').join(', ')})`
+    : '';
+  const params: SQLInputValue[] = [
+    ...uniqueDeviceIds,
+    ...(useJidFilter ? uniqueChatJids : []),
+  ];
+
+  const rows = queryAll<{
+    device_id: string;
+    chat_jid: string;
+    content: string;
+    media_type: string;
+  }>(
+    `SELECT device_id, chat_jid, content, media_type
+     FROM (
+       SELECT device_id, chat_jid, content, media_type,
+              ROW_NUMBER() OVER (
+                PARTITION BY device_id, chat_jid
+                ORDER BY timestamp_ms DESC, seq DESC
+              ) AS rn
+       FROM cached_messages
+       WHERE is_revoked = 0
+         AND (content <> '' OR media_type <> '')
+         AND device_id IN (${devicePlaceholders}) ${jidClause}
+     )
+     WHERE rn = 1 -- last-message-preview`,
+    ...params,
+  );
+  const requestedKeys = new Set(chats.map((c) => `${c.device_id}::${c.chat_jid}`));
+  for (const row of rows) {
+    const key = `${row.device_id}::${row.chat_jid}`;
+    if (!requestedKeys.has(key)) continue;
+    result.set(key, {text: (row.content ?? '').trim(), media_type: row.media_type ?? ''});
+  }
+  return result;
+}
+
 export function getUnreadCountsForUser(
   user: Pick<PublicUser, 'id' | 'created_at'>,
   chats: Array<{device_id: string; chat_jid: string}>,
