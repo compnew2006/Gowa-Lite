@@ -15,7 +15,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import {Hand, History, Loader2, Lock, Paperclip, RotateCcw} from 'lucide-react';
+import {History, Loader2, Lock, Paperclip, RotateCcw} from 'lucide-react';
 import {toast} from 'sonner';
 import {
   blockUnifiedChat,
@@ -769,43 +769,33 @@ export function MessageView({
                       : t.chats.redactedPendingDesc}
                 </p>
 
-                <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-                  {redactionReason === 'pending' && canAssignChats ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={isLifecyclePending}
-                      onClick={() => claimMutation.mutate()}
-                      className="whitespace-nowrap shrink-0"
-                    >
-                      {claimMutation.isPending ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <Hand className="size-4" />
-                      )}
-                      <span>{t.chats.claimAction}</span>
-                    </Button>
-                  ) : redactionReason === 'closed' && canCloseChats ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={isLifecyclePending}
-                      onClick={() => reopenMutation.mutate(canAssignChats)}
-                      className="whitespace-nowrap shrink-0"
-                    >
-                      {reopenMutation.isPending ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <RotateCcw className="size-4" />
-                      )}
-                      <span>{t.chats.reopenAction}</span>
-                    </Button>
-                  ) : (
-                    <p className="text-[11px] font-medium text-muted-foreground">
-                      {t.chats.redactedPermissionNeeded}
-                    </p>
-                  )}
-                </div>
+                {/* P1-6: no claim button in the lock card — claiming stays in the
+                    header (and the composer lock banner). A pending chat the
+                    user may claim shows no action here. */}
+                {redactionReason === 'pending' && canAssignChats ? null : (
+                  <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                    {redactionReason === 'closed' && canCloseChats ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={isLifecyclePending}
+                        onClick={() => reopenMutation.mutate(canAssignChats)}
+                        className="whitespace-nowrap shrink-0"
+                      >
+                        {reopenMutation.isPending ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <RotateCcw className="size-4" />
+                        )}
+                        <span>{t.chats.reopenAction}</span>
+                      </Button>
+                    ) : (
+                      <p className="text-[11px] font-medium text-muted-foreground">
+                        {t.chats.redactedPermissionNeeded}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           ) : query.isError ? (

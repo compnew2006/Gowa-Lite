@@ -157,6 +157,8 @@ const ar = {
     copyText: 'نسخ النص',
     copiedToClipboard: 'تم نسخ النص',
     copyFailedToast: 'تعذر نسخ النص',
+    copyFileName: 'نسخ اسم الملف',
+    copyUnavailableTitle: 'لا يوجد نص أو اسم ملف قابل للنسخ في هذه الرسالة',
     addReaction: 'تفاعل برمز تعبيري',
     reply: 'رد على الرسالة',
     replyingTo: (name: string) => `الرد على ${name}`,
@@ -336,6 +338,7 @@ const ar = {
     bulkCloseBtn: 'إغلاق المحدد',
     bulkReleaseBtn: 'تحرير للانتظار',
     bulkReopenBtn: 'إعادة فتح المحدد',
+    bulkClaimBtn: 'استلام المحدد',
     bulkResultToast: (count: number) => `تم تنفيذ الإجراء على ${count} محادثة`,
     bulkPartialToast: (succeeded: number, total: number) =>
       `نجح التنفيذ على ${succeeded} من أصل ${total} محادثة`,
