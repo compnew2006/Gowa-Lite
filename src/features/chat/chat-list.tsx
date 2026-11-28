@@ -18,7 +18,6 @@ import {
   Ban,
   BellOff,
   Check,
-  CheckCircle2,
   CheckSquare,
   ChevronDown,
   Heart,
@@ -27,11 +26,8 @@ import {
   MessageSquarePlus,
   Pin,
   RefreshCw,
-  RotateCcw,
   Search,
   Trash2,
-  UserMinus,
-  X,
 } from 'lucide-react';
 import {useQueryClient} from '@tanstack/react-query';
 import {toast} from 'sonner';
@@ -67,7 +63,9 @@ import {
   shouldShowRowLifecycle,
 } from '@/features/chat/chat-ui-helpers';
 import {shouldAutoLoadMore} from '@/features/chat/scroll-behavior';
+import {BulkActionBar} from '@/features/chat/bulk-action-bar';
 import {chatDisplayName, formatJidPhone} from '@/features/chat/display-name';
+import type {BulkLifecycleAction} from '@/features/chat/use-inbox-controller';
 import {
   buildJidAccountsMap,
   getOtherAccountsForChat,
@@ -420,7 +418,7 @@ export function ChatList({
   onTabChange?: (tab: UnifiedChatTab) => void;
   onAssignedToFilterChange?: (filter: 'all' | 'me') => void;
   onBulkLifecycle?: (
-    action: 'close' | 'release' | 'reopen',
+    action: BulkLifecycleAction,
     selectedChats: UnifiedChat[],
   ) => Promise<void>;
   onSelectedDeviceIdsChange: (deviceIds: string[]) => void;
@@ -712,7 +710,7 @@ export function ChatList({
     [bulkSelectedKeys, visibleChats],
   );
 
-  const handleRunBulk = async (action: 'close' | 'release' | 'reopen') => {
+  const handleRunBulk = async (action: BulkLifecycleAction) => {
     if (!onBulkLifecycle || selectedBulkChats.length === 0 || isBulkPending) return;
     await onBulkLifecycle(action, selectedBulkChats);
     setBulkSelectedKeys(new Set());
@@ -1035,68 +1033,21 @@ export function ChatList({
         </div>
 
         {bulkMode && (
-          <div className="flex flex-wrap items-center justify-between gap-1.5 rounded-lg border border-border bg-secondary/70 px-2.5 py-2 text-xs">
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-foreground tabular-nums">
-                {t.chats.bulkSelectedCount(selectedBulkChats.length)}
-              </span>
-              <button
-                type="button"
-                onClick={() =>
-                  setBulkSelectedKeys(new Set(visibleChats.map((c) => chatUniqueKey(c))))
-                }
-                className="cursor-pointer font-medium text-primary hover:underline focus-visible:outline-2 focus-visible:outline-ring"
-              >
-                {t.chats.bulkSelectAllVisible}
-              </button>
-            </div>
-            <div className="flex flex-wrap items-center gap-1">
-              {canClose && activeTab !== 'closed' && (
-                <button
-                  type="button"
-                  disabled={selectedBulkChats.length === 0 || isBulkPending}
-                  onClick={() => void handleRunBulk('close')}
-                  className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border border-border bg-card px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-ring whitespace-nowrap"
-                >
-                  <CheckCircle2 className="size-3" />
-                  <span>{t.chats.bulkCloseBtn}</span>
-                </button>
-              )}
-              {canAssign && (activeTab === 'me' || activeTab === 'open' || activeTab === 'all') && (
-                <button
-                  type="button"
-                  disabled={selectedBulkChats.length === 0 || isBulkPending}
-                  onClick={() => void handleRunBulk('release')}
-                  className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border border-border bg-card px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-ring whitespace-nowrap"
-                >
-                  <UserMinus className="size-3" />
-                  <span>{t.chats.bulkReleaseBtn}</span>
-                </button>
-              )}
-              {canClose && activeTab === 'closed' && (
-                <button
-                  type="button"
-                  disabled={selectedBulkChats.length === 0 || isBulkPending}
-                  onClick={() => void handleRunBulk('reopen')}
-                  className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border border-border bg-card px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-ring whitespace-nowrap"
-                >
-                  <RotateCcw className="size-3" />
-                  <span>{t.chats.bulkReopenBtn}</span>
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setBulkMode(false);
-                  setBulkSelectedKeys(new Set());
-                }}
-                aria-label={t.chats.bulkCancelSelect}
-                className="flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
-              >
-                <X className="size-3.5" />
-              </button>
-            </div>
-          </div>
+          <BulkActionBar
+            selectedCount={selectedBulkChats.length}
+            activeTab={activeTab}
+            canAssign={canAssign}
+            canClose={canClose}
+            isBulkPending={isBulkPending}
+            onRunBulk={(action) => void handleRunBulk(action)}
+            onSelectAllVisible={() =>
+              setBulkSelectedKeys(new Set(visibleChats.map((c) => chatUniqueKey(c))))
+            }
+            onCancel={() => {
+              setBulkMode(false);
+              setBulkSelectedKeys(new Set());
+            }}
+          />
         )}
       </div>
 

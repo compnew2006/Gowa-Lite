@@ -21,6 +21,21 @@ import {useI18n} from '@/lib/i18n';
 import {isDownloadableMedia} from '@/lib/media-download';
 import {cn} from '@/lib/utils';
 
+/**
+ * What the bubble toolbar's copy button copies (P1-10, decision 17): the
+ * message text when there is one, otherwise the attachment file name when
+ * there is one, otherwise nothing (the button renders disabled).
+ */
+export function resolveCopyTarget(message: Pick<MessageInfo, 'content' | 'filename'>): {
+  text: string;
+  isFileName: boolean;
+} {
+  const text = message.content?.trim() ? message.content : '';
+  if (text) return {text, isFileName: false};
+  const fileName = message.filename?.trim() || '';
+  return {text: fileName, isFileName: fileName !== ''};
+}
+
 function QuotedMessagePreview({
   quoted,
   isOut,
@@ -114,7 +129,7 @@ function MessageBubbleActions({
   isRevoked,
   isDeviceReady,
   canReactAndReply,
-  copyableText,
+  copyTarget,
   copied,
   isReactionPickerOpen,
   myReactionEmoji,
@@ -131,7 +146,7 @@ function MessageBubbleActions({
   isRevoked: boolean;
   isDeviceReady: boolean;
   canReactAndReply: boolean;
-  copyableText: string;
+  copyTarget: {text: string; isFileName: boolean};
   copied: boolean;
   isReactionPickerOpen: boolean;
   myReactionEmoji: string | undefined;
@@ -278,19 +293,27 @@ function MessageBubbleActions({
         </>
       )}
 
-      {copyableText && (
-        <button
-          type="button"
-          onClick={onCopy}
-          title={t.chats.copyText}
-          aria-label={t.chats.copyText}
-          className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
-        >
-          {copied ? <Check className="size-3.5 text-primary" /> : <Copy className="size-3.5" />}
-        </button>
-      )}
+      {/* P1-10: the copy button is always visible; it copies the file name
+          for caption-less media and is disabled (with an explanatory title)
+          when there is neither text nor a file name. */}
+      <button
+        type="button"
+        disabled={!copyTarget.text}
+        onClick={onCopy}
+        title={
+          copyTarget.text
+            ? copyTarget.isFileName
+              ? t.chats.copyFileName
+              : t.chats.copyText
+            : t.chats.copyUnavailableTitle
+        }
+        aria-label={t.chats.copyText}
+        className="flex size-7 cursor-pointer items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        {copied ? <Check className="size-3.5 text-primary" /> : <Copy className="size-3.5" />}
+      </button>
 
-      {onForward && !isRevoked && (copyableText || Boolean(message.media_type)) && (
+      {onForward && !isRevoked && (copyTarget.text || Boolean(message.media_type)) && (
         <button
           type="button"
           onClick={() => onForward(message)}
@@ -358,12 +381,12 @@ export const MessageBubble = memo(function MessageBubble({
   const isRevoked = Boolean(message.is_revoked);
   const hasMedia = Boolean(message.media_type);
   const isSelectable = Boolean(selectMode && isDownloadableMedia(message));
-  const copyableText = message.content?.trim() ? message.content : '';
+  const copyTarget = resolveCopyTarget(message);
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
-    if (!copyableText) return;
-    const ok = await copyTextWithFallback(copyableText);
+    if (!copyTarget.text) return;
+    const ok = await copyTextWithFallback(copyTarget.text);
     if (ok) {
       setCopied(true);
       toast.success(t.chats.copiedToClipboard);
@@ -476,7 +499,7 @@ export const MessageBubble = memo(function MessageBubble({
             isRevoked={isRevoked}
             isDeviceReady={isDeviceReady}
             canReactAndReply={canReactAndReply}
-            copyableText={copyableText}
+            copyTarget={copyTarget}
             copied={copied}
             isReactionPickerOpen={isReactionPickerOpen}
             myReactionEmoji={myReactionEmoji}

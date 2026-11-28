@@ -26,6 +26,39 @@ function isChatRedactedForUser(
   return st === 'open' && chat.lifecycle?.assigned_user_id !== userId;
 }
 
+export type BulkLifecycleAction = 'close' | 'release' | 'reopen' | 'assign';
+
+/**
+ * Builds the POST /api/unified/chats/bulk-lifecycle payload for the selected
+ * chats. P1-5: a bulk claim (`assign`) always targets the current user —
+ * assigning the selection to anyone else is P2-8 (phase 5) and is not built
+ * here. Fail closed: without a signed-in user id there is no safe assignee
+ * (the server would read a missing id as "release to pending"), so throw
+ * instead of sending the request.
+ */
+export function buildBulkLifecycleRequest(
+  action: BulkLifecycleAction,
+  selectedChats: UnifiedChat[],
+  currentUserId?: number,
+): {
+  action: BulkLifecycleAction;
+  assigned_user_id?: number;
+  items: Array<{device_id: string; chat_jid: string; cached_title?: string}>;
+} {
+  if (action === 'assign' && currentUserId === undefined) {
+    throw new Error('Bulk claim requires a signed-in user');
+  }
+  return {
+    action,
+    ...(action === 'assign' ? {assigned_user_id: currentUserId} : {}),
+    items: selectedChats.map((c) => ({
+      device_id: c.device_id,
+      chat_jid: c.jid,
+      cached_title: chatDisplayName(c),
+    })),
+  };
+}
+
 export function useInboxController(deviceIds: string[], canViewAll: boolean) {
   const queryClient = useQueryClient();
   const {t} = useI18n();
@@ -67,17 +100,15 @@ export function useInboxController(deviceIds: string[], canViewAll: boolean) {
   const apiErr = query.isError ? toApiError(query.error) : null;
 
   const handleBulkLifecycle = useCallback(
-    async (action: 'close' | 'release' | 'reopen', selectedChats: UnifiedChat[]) => {
+    async (action: BulkLifecycleAction, selectedChats: UnifiedChat[]) => {
       setIsBulkPending(true);
       try {
-        const res = await bulkUnifiedChatsLifecycle({
-          action,
-          items: selectedChats.map((c) => ({
-            device_id: c.device_id,
-            chat_jid: c.jid,
-            cached_title: chatDisplayName(c),
-          })),
-        });
+        // The 100-chat-per-batch cap is enforced server-side
+        // (bulkChatLifecycle rejects larger batches); the UI sends the
+        // selection as-is and surfaces the server's partial results.
+        const res = await bulkUnifiedChatsLifecycle(
+          buildBulkLifecycleRequest(action, selectedChats, userId),
+        );
         const okCount = res.succeeded.length;
         const failCount = res.failed.length;
         if (failCount === 0) {
@@ -95,7 +126,7 @@ export function useInboxController(deviceIds: string[], canViewAll: boolean) {
         setIsBulkPending(false);
       }
     },
-    [queryClient, t.chats],
+    [queryClient, t.chats, userId],
   );
 
   useEffect(() => {

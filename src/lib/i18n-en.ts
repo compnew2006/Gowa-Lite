@@ -155,6 +155,8 @@ const en: AppTranslations = {
     copyText: 'Copy text',
     copiedToClipboard: 'Copied to clipboard',
     copyFailedToast: 'Failed to copy text',
+    copyFileName: 'Copy file name',
+    copyUnavailableTitle: 'Nothing to copy in this message',
     addReaction: 'Add reaction',
     reply: 'Reply',
     replyingTo: (name: string) => `Replying to ${name}`,
@@ -334,6 +336,7 @@ const en: AppTranslations = {
     bulkCloseBtn: 'Close selected',
     bulkReleaseBtn: 'Release to pending',
     bulkReopenBtn: 'Reopen selected',
+    bulkClaimBtn: 'Claim selected',
     bulkResultToast: (count: number) => `Updated ${count} conversation(s)`,
     bulkPartialToast: (succeeded: number, total: number) =>
       `Updated ${succeeded} of ${total} conversations`,
