@@ -4,6 +4,7 @@ import {
   ArrowRight,
   CalendarClock,
   CheckCircle2,
+  Eye,
   Hand,
   History,
   Image as ImageIcon,
@@ -57,6 +58,7 @@ export function MessageViewHeader({
   onFetchHistory,
   lifecycle,
   currentUserId,
+  viewers = [],
   canAssign = false,
   canClose = false,
   canViewAll = false,
@@ -97,6 +99,9 @@ export function MessageViewHeader({
   onFetchHistory: () => void;
   lifecycle?: ChatAssignmentSummary | ChatAssignmentInfo;
   currentUserId?: number;
+  /** P2-1 presence: full viewer list from the server, including the current
+   * user — the badge below filters the current user out. */
+  viewers?: Array<{userId: number; displayName: string}>;
   canAssign?: boolean;
   canClose?: boolean;
   canViewAll?: boolean;
@@ -130,6 +135,17 @@ export function MessageViewHeader({
         : t.chats.lifecyclePending;
 
   const secondaryPhone = formatSecondaryChatPhone(displayName, formatJidPhone(chat.jid));
+
+  // P2-1 presence badge (warning only): other viewers of this chat, never
+  // the current user themself. The server sends the full list; filtering
+  // here (where currentUserId is known) is the guarantee, not the hook.
+  const otherViewers = viewers.filter((viewer) => viewer.userId !== currentUserId);
+  const viewersLabel =
+    otherViewers.length === 1
+      ? t.chats.viewingNowOne(otherViewers[0].displayName)
+      : otherViewers.length > 1
+        ? t.chats.viewingNowMany(otherViewers.map((viewer) => viewer.displayName).join('، '))
+        : null;
 
   const statusTextClass =
     status === 'closed'
@@ -220,6 +236,15 @@ export function MessageViewHeader({
                 <span className="text-destructive">{t.chats.accountOfflineInline}</span>
               )}
             </p>
+            {viewersLabel && (
+              <div
+                data-testid="chat-viewers-badge"
+                className="mt-0.5 flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-400"
+              >
+                <Eye className="size-3 shrink-0" aria-hidden="true" />
+                <span>{viewersLabel}</span>
+              </div>
+            )}
             {otherAccounts.length > 0 && (
               <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-amber-700 dark:text-amber-400">
                 <ArrowLeftRight className="size-3 shrink-0" />

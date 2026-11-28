@@ -35,6 +35,27 @@ class WsClient {
     useWsStore.setState({status: 'disconnected'});
   }
 
+  /**
+   * P2-1 presence (first client→server channel): announce viewing /
+   * heartbeat / leaving for one chat. Best-effort — returns false when the
+   * socket is not open (reconnect re-announces via useChatPresence).
+   * The server ignores anything it cannot attribute to a signed-in user
+   * with access to the device and the chat.
+   */
+  sendPresenceMessage(
+    code: 'CHAT_VIEWING' | 'CHAT_VIEWING_HEARTBEAT' | 'CHAT_LEAVING',
+    deviceId: string,
+    chatJid: string,
+  ): boolean {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
+    try {
+      this.socket.send(JSON.stringify({code, device_id: deviceId, chat_jid: chatJid}));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async reopen(): Promise<void> {
     this.clearTimer();
     this.closeSocket();

@@ -12,6 +12,17 @@ import {
   type ChatRedactionReason,
 } from './services/chat-lifecycle.ts';
 import {isCallOfferEventCode} from './services/call-auto-reject.ts';
+import {
+  VIEWER_TTL_MS,
+  buildChatViewersPayload,
+  createPresenceRegistry,
+  getChatViewers,
+  pruneExpiredViewers,
+  registerChatViewing,
+  removeChatViewing,
+  removeViewersForConnection,
+  type PresenceRegistry,
+} from '../shared/presence.ts';
 import {readGowaEventChatJid, readGowaIncomingMessageId} from './services/chat-sync.ts';
 import {
   asReactionRecord,
@@ -71,6 +82,7 @@ interface BridgeClient {
   socket: WebSocket;
   userId: number;
   sessionHash: string;
+  connectionId: string;
   pending: unknown[];
 }
 
@@ -334,14 +346,25 @@ export class GowaWsBridge {
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private syncTimer: ReturnType<typeof setInterval> | null = null;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  // P2-1 presence (first bidirectional channel): in-memory viewers registry.
+  // TTL defaults to VIEWER_TTL_MS (45s, heartbeat every 15s); both are
+  // overridable for tests so TTL expiry is observable without waiting 45s.
+  private presence: PresenceRegistry = createPresenceRegistry();
+  private viewerTtlMs: number;
+  private presenceSweepTimer: ReturnType<typeof setInterval> | null = null;
   private onUpstreamEvent?: (deviceId: string, event: GowaUpstreamEvent) => boolean | void;
   private userCache = new Map<number, {user: PublicUser | null; version: number; fetchedAt: number}>();
 
   constructor(
     httpServer: HttpServer,
-    options?: {onUpstreamEvent?: (deviceId: string, event: GowaUpstreamEvent) => boolean | void},
+    options?: {
+      onUpstreamEvent?: (deviceId: string, event: GowaUpstreamEvent) => boolean | void;
+      viewerTtlMs?: number;
+      presenceSweepMs?: number;
+    },
   ) {
     this.onUpstreamEvent = options?.onUpstreamEvent;
+    this.viewerTtlMs = options?.viewerTtlMs ?? VIEWER_TTL_MS;
     this.wss = new WebSocketServer({noServer: true});
 
     httpServer.on('upgrade', (request, socket, head) => {
@@ -369,7 +392,13 @@ export class GowaWsBridge {
         return;
       }
 
-      const client: BridgeClient = {socket: ws, userId: liveUser.id, sessionHash: session.sessionHash, pending: []};
+      const client: BridgeClient = {
+        socket: ws,
+        userId: liveUser.id,
+        sessionHash: session.sessionHash,
+        connectionId: crypto.randomUUID(),
+        pending: [],
+      };
       this.clients.add(client);
 
       const allowedDevices = Array.from(this.upstreamSockets.keys()).filter((id) =>
@@ -384,10 +413,18 @@ export class GowaWsBridge {
         }),
       );
 
+      // P2-1: first client→server channel. Only presence messages are
+      // accepted here; anything else is ignored (never trusted, never
+      // routed to the gateway or to lifecycle logic).
+      ws.on('message', (data) => {
+        this.handleClientMessage(client, data.toString());
+      });
       ws.on('close', () => {
+        this.removeClientPresence(client);
         this.clients.delete(client);
       });
       ws.on('error', () => {
+        this.removeClientPresence(client);
         this.clients.delete(client);
       });
     });
@@ -396,7 +433,102 @@ export class GowaWsBridge {
       for (const client of this.clients) this.getAuthenticatedClientUser(client);
       void this.reconcileUpstreams();
     }, 15_000);
+    // Presence sweep: drop viewers whose heartbeat stopped and tell the
+    // remaining viewers of each affected chat. Runs on its own cadence so a
+    // test can observe TTL expiry quickly (presenceSweepMs option).
+    this.presenceSweepTimer = setInterval(() => {
+      for (const affected of pruneExpiredViewers(this.presence, Date.now(), this.viewerTtlMs)) {
+        this.broadcastChatViewers(affected.deviceId, affected.chatJid);
+      }
+    }, options?.presenceSweepMs ?? 15_000);
     void this.reconcileUpstreams();
+  }
+
+  /**
+   * P2-1 presence, client→server. Accepted frames:
+   *   {code: 'CHAT_VIEWING' | 'CHAT_VIEWING_HEARTBEAT', device_id, chat_jid}
+   *   {code: 'CHAT_LEAVING', device_id, chat_jid}
+   * The sender must be signed in, allowed on the device, and allowed to read
+   * the chat; anything else (bad JSON, unknown code, missing fields, no
+   * access) is silently ignored. A successful view/heartbeat/leaving
+   * broadcasts the updated CHAT_VIEWERS list to the viewers of that chat.
+   */
+  private handleClientMessage(client: BridgeClient, raw: string): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (typeof parsed !== 'object' || parsed === null) return;
+    const frame = parsed as Record<string, unknown>;
+    const code = typeof frame.code === 'string' ? frame.code : '';
+    if (code !== 'CHAT_VIEWING' && code !== 'CHAT_VIEWING_HEARTBEAT' && code !== 'CHAT_LEAVING') {
+      return;
+    }
+    const deviceId = typeof frame.device_id === 'string' ? frame.device_id.trim() : '';
+    const chatJid = typeof frame.chat_jid === 'string' ? frame.chat_jid.trim() : '';
+    if (!deviceId || !chatJid) return;
+    const liveUser = this.getAuthenticatedClientUser(client);
+    if (!liveUser) return;
+    if (!hasDeviceAccess(liveUser, deviceId)) return;
+    if (!hasChatReadPermission(liveUser, chatJid)) return;
+    const displayName = liveUser.display_name?.trim() || liveUser.username;
+
+    if (code === 'CHAT_LEAVING') {
+      removeChatViewing(this.presence, {
+        deviceId,
+        chatJid,
+        userId: liveUser.id,
+        connectionId: client.connectionId,
+      });
+    } else {
+      registerChatViewing(this.presence, {
+        userId: liveUser.id,
+        displayName,
+        deviceId,
+        chatJid,
+        connectionId: client.connectionId,
+      });
+    }
+    this.broadcastChatViewers(deviceId, chatJid);
+  }
+
+  /**
+   * Send the current viewer list of one chat to every connected client that
+   * is viewing that chat. Delivered immediately (not through the batch
+   * queue) and never through shouldDeliverWsEventToUser: the payload carries
+   * only viewer names, no message content, so lifecycle redaction does not
+   * apply — but the recipients are exactly the chat's viewers, each of whom
+   * already passed the device + chats:read check when they announced.
+   */
+  private broadcastChatViewers(deviceId: string, chatJid: string): void {
+    const viewers = getChatViewers(this.presence, deviceId, chatJid);
+    const payload = buildChatViewersPayload(deviceId, chatJid, viewers);
+    const serialized = JSON.stringify(payload);
+    // Recipients: exactly the clients currently viewing this chat (each
+    // connection id is registered in the presence map for the chat).
+    const viewerConnections = new Set<string>();
+    for (const viewer of this.presence.values()) {
+      if (
+        viewer.deviceId === deviceId.trim() &&
+        viewer.chatJid === chatJid.trim().toLowerCase()
+      ) {
+        viewerConnections.add(viewer.connectionId);
+      }
+    }
+    for (const client of this.clients) {
+      if (!viewerConnections.has(client.connectionId)) continue;
+      if (client.socket.readyState !== WebSocket.OPEN) continue;
+      if (!this.getAuthenticatedClientUser(client)) continue;
+      client.socket.send(serialized);
+    }
+  }
+
+  private removeClientPresence(client: BridgeClient): void {
+    for (const affected of removeViewersForConnection(this.presence, client.connectionId)) {
+      this.broadcastChatViewers(affected.deviceId, affected.chatJid);
+    }
   }
 
   disconnectSession(token: string): void {
@@ -410,6 +542,7 @@ export class GowaWsBridge {
   }
 
   private disconnectClient(client: BridgeClient): void {
+    this.removeClientPresence(client);
     client.pending = [];
     client.socket.close(4001, 'Session revoked');
     this.clients.delete(client);
@@ -755,6 +888,10 @@ export class GowaWsBridge {
     if (this.syncTimer) {
       clearInterval(this.syncTimer);
       this.syncTimer = null;
+    }
+    if (this.presenceSweepTimer) {
+      clearInterval(this.presenceSweepTimer);
+      this.presenceSweepTimer = null;
     }
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);

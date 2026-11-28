@@ -276,6 +276,8 @@ const ar = {
     lifecycleOpenAssignedYou: 'مسندة لك',
     lifecycleClosed: 'مغلقة',
     lifecycleClosedBy: (name: string) => `مغلقة بواسطة ${name}`,
+    viewingNowOne: (name: string) => `${name} يطالع الشات الآن`,
+    viewingNowMany: (names: string) => `${names} يطالعون الشات الآن`,
     claimAction: 'استلام',
     assignAction: 'تعيين',
     transferAction: 'تحويل',

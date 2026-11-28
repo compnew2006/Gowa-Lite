@@ -274,6 +274,8 @@ const en: AppTranslations = {
     lifecycleOpenAssignedYou: 'Assigned to you',
     lifecycleClosed: 'Closed',
     lifecycleClosedBy: (name: string) => `Closed by ${name}`,
+    viewingNowOne: (name: string) => `${name} is viewing this chat now`,
+    viewingNowMany: (names: string) => `${names} are viewing this chat now`,
     claimAction: 'Claim',
     assignAction: 'Assign',
     transferAction: 'Transfer',
