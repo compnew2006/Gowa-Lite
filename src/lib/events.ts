@@ -31,6 +31,7 @@ export type WsEventCode =
   | 'MESSAGE.EDITED'
   | 'CONVERSATION_NOTE_UPDATED'
   | 'CHAT_LIFECYCLE_UPDATED'
+  | 'CHAT_VIEWERS'
   | 'CHAT_DAILY_RESET'
   | 'CALL_AUTO_REJECTED'
   | 'INBOX_POLICY_UPDATED'
@@ -101,6 +102,41 @@ const REVOKED_WS_CODES = new Set([
   'MESSAGE_REVOKE',
   'MESSAGE.REVOKE',
 ]);
+
+export interface ChatViewersFrame {
+  deviceId: string;
+  chatJid: string;
+  viewers: Array<{userId: number; displayName: string}>;
+}
+
+// P2-1 presence: {code: 'CHAT_VIEWERS', device_id, result: {device_id,
+// chat_jid, viewers: [{user_id, display_name}]}}. Returns null for any other
+// code or a malformed viewer list — the caller never trusts a partial frame.
+// The list is the full set including the receiving user; the badge filters
+// the current user out (see MessageViewHeader).
+export function extractChatViewers(event: WsEvent): ChatViewersFrame | null {
+  if (event.code !== 'CHAT_VIEWERS') return null;
+  const resultObj = asRecord(event.result);
+  if (!resultObj) return null;
+  const deviceId = firstNonEmptyString(event.device_id, resultObj.device_id);
+  const chatJid = firstNonEmptyString(resultObj.chat_jid);
+  if (!deviceId || !chatJid) return null;
+  const rawViewers = resultObj.viewers;
+  if (!Array.isArray(rawViewers)) return null;
+  const viewers: Array<{userId: number; displayName: string}> = [];
+  for (const entry of rawViewers) {
+    const record = asRecord(entry);
+    if (
+      !record ||
+      typeof record.user_id !== 'number' ||
+      typeof record.display_name !== 'string'
+    ) {
+      return null;
+    }
+    viewers.push({userId: record.user_id, displayName: record.display_name});
+  }
+  return {deviceId, chatJid, viewers};
+}
 
 export function extractWsRevokeTarget(event: WsEvent): WsRevokeTarget | null {
   const code = (event.code || '').toUpperCase();

@@ -57,6 +57,7 @@ import {
   repliedToId,
 } from '@/features/chat/message-reactions';
 import {MessageViewHeader} from '@/features/chat/message-view-header';
+import {useChatPresence} from '@/features/chat/use-chat-presence';
 import {chatLifecycleQueryKeys, messageQueryKeys} from '@/features/chat/message-query-keys';
 import {UNIFIED_CHATS_QUERY_PREFIX} from '@/features/chat/inbox-query-keys';
 import type {OtherAccountRef} from '@/features/chat/other-accounts';
@@ -142,6 +143,12 @@ export function MessageView({
   const canViewAllChats = hasUserPermission(user, 'chats:view_all');
   const canReadNotes = hasUserPermission(user, 'notes:read');
   const canReadSchedules = hasUserPermission(user, 'schedules:read');
+
+  // P2-1 presence (warning only, decision 7): announce viewing while this
+  // chat is open; the header badges the other viewers. Announced even when
+  // content is redacted — a pending chat is exactly where two agents
+  // collide — and never gates claim or send.
+  const presenceViewers = useChatPresence({deviceId: chat.device_id, chatJid: chat.jid});
   const canWriteSchedules = hasUserPermission(user, 'schedules:write');
   const canManageSchedules = hasUserPermission(user, 'schedules:manage');
   const composerInputRef = useRef<HTMLInputElement>(null);
@@ -708,6 +715,7 @@ export function MessageView({
           onFetchHistory={() => historyMutation.mutate()}
           lifecycle={effectiveLifecycle}
           currentUserId={user?.id}
+          viewers={presenceViewers}
           canAssign={canAssignChats}
           canClose={canCloseChats}
           canViewAll={canViewAllChats}
