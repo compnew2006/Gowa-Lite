@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import type {Server as HttpServer} from 'node:http';
 import {WebSocket, WebSocketServer} from 'ws';
-import {normalizeWhatsAppJid, resolveDeviceOwnJid} from '../shared/whatsapp-identity.ts';
+import {normalizeWhatsAppJid, resolveDeviceOwnJid, resolveIsFromMe} from '../shared/whatsapp-identity.ts';
+import {asRecord, unwrapGowaPayload} from '../shared/gowa-payload.ts';
 import {getGowaConfig, getUserById, getUserCacheVersion, hasActiveSession, hashSessionToken, type PublicUser} from './db.ts';
 import {gowaFetch, type GowaDevice} from './gowa-client.ts';
 import {hasAnyPermission, hasChatReadPermission, hasDeviceAccess, hasPermission} from './rbac.ts';
@@ -541,6 +542,42 @@ export class GowaWsBridge {
     return resolveDeviceOwnJid({id: deviceId});
   }
 
+  /**
+   * P1-18 (decision 19): stamp the derived `is_from_me` flag on broadcast
+   * MESSAGE / MESSAGE_RECEIVED frames. The persisted row is already derived
+   * in handleUpstreamGowaEvent, but the raw broadcast is what browsers patch
+   * the message list from — a wrong gateway flag rendered the wrong "أنت"
+   * label live until the next refetch. The flag is always stamped when the
+   * device JID is known (explicit false included, so frames are
+   * self-describing); unknown device → fall back to the gateway flag
+   * (no rewrite). Never mutates the upstream event — clones the result.
+   */
+  private withDerivedIsFromMe(deviceId: string, event: GowaUpstreamEvent): GowaUpstreamEvent {
+    const code = (event.code || '').toUpperCase();
+    if (code !== 'MESSAGE' && code !== 'MESSAGE_RECEIVED') return event;
+    const ownJid = this.getDeviceOwnJid(deviceId);
+    if (!ownJid) return event;
+    const outer = asRecord(event.result);
+    if (!outer) return event;
+    const payload = unwrapGowaPayload(event.result);
+    const source = payload ?? outer;
+    const gatewayFlag = source.is_from_me ?? source.from_me;
+    const derived = resolveIsFromMe(
+      String(source.sender_jid || source.from || ''),
+      ownJid,
+      typeof gatewayFlag === 'boolean' ? gatewayFlag : undefined,
+    );
+    const nextResult: Record<string, unknown> = {...outer, is_from_me: derived};
+    if (payload && payload !== outer) {
+      if (asRecord(outer.payload) === payload) {
+        nextResult.payload = {...payload, is_from_me: derived};
+      } else if (asRecord(outer.message) === payload) {
+        nextResult.message = {...payload, is_from_me: derived};
+      }
+    }
+    return {...event, result: nextResult};
+  }
+
   relayScopedEvent(deviceId: string, event: GowaUpstreamEvent): void {
     const scoped = {...event, device_id: deviceId};
     const code = scoped.code.toUpperCase();
@@ -560,7 +597,7 @@ export class GowaWsBridge {
         if (oldest !== undefined) this.recentMessages.delete(oldest);
       }
     }
-    if (!consumed) this.broadcast(scoped);
+    if (!consumed) this.broadcast(this.withDerivedIsFromMe(deviceId, scoped));
   }
 
   async reconcileUpstreams(): Promise<void> {
