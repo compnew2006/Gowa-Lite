@@ -95,19 +95,18 @@ export async function sendUnifiedMediaMessage(
   chatJid: string,
   payload: {file: File; caption?: string},
 ): Promise<{message_id: string; status: string}> {
-  const buffer = await payload.file.arrayBuffer();
+  // Multipart upload: the File goes straight into FormData (field `file`) so
+  // the browser streams it without copying the whole file into an
+  // ArrayBuffer first. Axios sets the multipart boundary automatically.
+  const form = new FormData();
+  form.append('file', payload.file, payload.file.name || 'attachment');
   const caption = payload.caption?.trim();
+  if (caption) {
+    form.append('caption', caption);
+  }
   return results(
-    http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/send-media`, buffer, {
+    http.post(`/unified/chats/${enc(deviceId)}/${enc(chatJid)}/send-media`, form, {
       timeout: 60_000,
-      headers: {
-        'Content-Type': 'application/octet-stream',
-      },
-      params: {
-        filename: payload.file.name || 'attachment',
-        mimeType: payload.file.type || 'application/octet-stream',
-        ...(caption ? {caption} : {}),
-      },
     }),
   );
 }
