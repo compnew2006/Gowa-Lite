@@ -38,6 +38,16 @@ export function downloadUnifiedMedia(
   );
 }
 
+export async function downloadUnifiedMediaThumbnail(
+  deviceId: string,
+  messageId: string,
+  phone: string,
+  signal?: AbortSignal,
+): Promise<{bytes: Uint8Array<ArrayBuffer>; contentType: string}> {
+  const params = new URLSearchParams({deviceId, messageId, phone});
+  return fetchAuthorizedMediaBytes(`/api/unified/media/thumbnail?${params}`, signal);
+}
+
 export async function fetchAuthorizedMediaBytes(
   urlPath: string,
   signal?: AbortSignal,

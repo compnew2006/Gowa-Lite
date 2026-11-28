@@ -12,6 +12,22 @@ export function messageMediaQuery(deviceId: string, chatJid: string, messageId: 
   });
 }
 
+// Images above this size show a server-generated thumbnail in the bubble first;
+// the full bytes are only fetched when the user opens the preview. Small images
+// keep loading directly — a thumbnail round-trip would cost more than it saves.
+export const MEDIA_THUMBNAIL_MIN_BYTES = 256 * 1024;
+export const MEDIA_THUMBNAIL_MAX_DIMENSION = 320;
+
+export function shouldShowThumbnailFirst(
+  isImage: boolean,
+  fileLength?: number | null,
+  resolvedFileSize?: number | null,
+): boolean {
+  if (!isImage) return false;
+  const size = resolvedFileSize || fileLength || 0;
+  return size > MEDIA_THUMBNAIL_MIN_BYTES;
+}
+
 export const DOWNLOADABLE_MEDIA_TYPES = new Set([
   'image',
   'video',

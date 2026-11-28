@@ -9,9 +9,11 @@ import {
   extractContactIdentifierForFilename,
   formatTimestampForFilename,
   isDownloadableMedia,
+  MEDIA_THUMBNAIL_MIN_BYTES,
   normalizeDownloadedMime,
   resolveChatMediaFilename,
   resolveMediaFilename,
+  shouldShowThumbnailFirst,
 } from '../src/lib/media-download.ts';
 
 describe('Media Batch Download & Streaming ZIP Utilities', () => {
@@ -252,5 +254,32 @@ describe('Media Batch Download & Streaming ZIP Utilities', () => {
     assert.equal(normalizeDownloadedMime('video/x-f4v; charset=binary'), 'video/mp4');
     assert.equal(normalizeDownloadedMime('image/pjpeg'), 'image/jpeg');
     assert.equal(normalizeDownloadedMime(''), 'application/octet-stream');
+  });
+});
+
+describe('Media Thumbnail-First Policy', () => {
+  it('shows a thumbnail first only for images above the size threshold', () => {
+    assert.equal(shouldShowThumbnailFirst(true, MEDIA_THUMBNAIL_MIN_BYTES), false);
+    assert.equal(shouldShowThumbnailFirst(true, MEDIA_THUMBNAIL_MIN_BYTES + 1), true);
+    assert.equal(shouldShowThumbnailFirst(true, 3 * 1024 * 1024), true);
+    assert.equal(shouldShowThumbnailFirst(true, 120 * 1024), false);
+    // Stickers are images too: a large one still gets a thumbnail first.
+    assert.equal(shouldShowThumbnailFirst(true, 900 * 1024), true);
+  });
+
+  it('never shows a thumbnail first for video, audio, or documents', () => {
+    assert.equal(shouldShowThumbnailFirst(false, 5 * 1024 * 1024), false);
+    assert.equal(shouldShowThumbnailFirst(false, 20 * 1024 * 1024), false);
+  });
+
+  it('uses the resolved size when the message itself reports no size', () => {
+    assert.equal(shouldShowThumbnailFirst(true, 0, 800 * 1024), true);
+    assert.equal(shouldShowThumbnailFirst(true, undefined, 100 * 1024), false);
+    assert.equal(shouldShowThumbnailFirst(true, null, null), false);
+  });
+
+  it('prefers the resolved size over a stale message size', () => {
+    assert.equal(shouldShowThumbnailFirst(true, 5 * 1024 * 1024, 50 * 1024), false);
+    assert.equal(shouldShowThumbnailFirst(true, 50 * 1024, 5 * 1024 * 1024), true);
   });
 });
