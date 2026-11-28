@@ -54,6 +54,43 @@ export function listConversationNotes(deviceId: string, chatJid: string): Conver
   return rows.map(toPublicNote);
 }
 
+// =========================================================================
+// Note Edit History (P2-7)
+// =========================================================================
+export interface NoteEditHistoryEntry {
+  id: number;
+  note_id: number;
+  device_id: string;
+  chat_jid: string;
+  edited_by_id: number;
+  edited_by_name: string;
+  previous_content: string;
+  new_content: string;
+  edited_at: string;
+}
+
+/**
+ * Edit history of one note, newest first. Only genuine content edits are
+ * recorded (see updateConversationNote): pin-only toggles and
+ * unchanged-content edits leave no row behind.
+ */
+export function listNoteEditHistory(
+  noteId: number,
+  deviceId: string,
+  chatJid: string,
+): NoteEditHistoryEntry[] {
+  return queryAll<NoteEditHistoryEntry>(
+    `SELECT id, note_id, device_id, chat_jid, edited_by_id, edited_by_name,
+            previous_content, new_content, edited_at
+     FROM note_edit_history
+     WHERE note_id = ? AND device_id = ? AND chat_jid = ?
+     ORDER BY edited_at DESC, id DESC`,
+    noteId,
+    deviceId,
+    chatJid,
+  );
+}
+
 export function getConversationNoteById(
   noteId: number,
   deviceId: string,
@@ -107,6 +144,7 @@ export function updateConversationNote(
   deviceId: string,
   chatJid: string,
   patch: {content?: string; is_pinned?: boolean},
+  editor?: {id: number; name: string},
 ): ConversationNote | null {
   const existing = getConversationNoteById(noteId, deviceId, chatJid);
   if (!existing) return null;
@@ -114,14 +152,39 @@ export function updateConversationNote(
   const nextContent = patch.content !== undefined ? patch.content : existing.content;
   const nextPinned = patch.is_pinned !== undefined ? (patch.is_pinned ? 1 : 0) : existing.is_pinned ? 1 : 0;
   const nextUpdatedAt = patch.content !== undefined ? new Date().toISOString() : existing.updated_at;
+  // P2-7: only a real content change writes a history row (editor + time +
+  // before/after), in the same transaction as the update itself. A pin-only
+  // toggle or an edit to the identical text records nothing.
+  const changedContent = patch.content;
+  const contentChanged = changedContent !== undefined && changedContent !== existing.content;
 
-  db.prepare(
-    `UPDATE conversation_notes
-     SET content = ?, is_pinned = ?, updated_at = ?
-     WHERE id = ? AND device_id = ? AND chat_jid = ?`,
-  ).run(nextContent, nextPinned, nextUpdatedAt, noteId, deviceId, chatJid);
+  return withImmediateTransaction(() => {
+    db.prepare(
+      `UPDATE conversation_notes
+       SET content = ?, is_pinned = ?, updated_at = ?
+       WHERE id = ? AND device_id = ? AND chat_jid = ?`,
+    ).run(nextContent, nextPinned, nextUpdatedAt, noteId, deviceId, chatJid);
 
-  return getConversationNoteById(noteId, deviceId, chatJid);
+    if (contentChanged) {
+      db.prepare(
+        `INSERT INTO note_edit_history (
+           note_id, device_id, chat_jid, edited_by_id, edited_by_name,
+           previous_content, new_content, edited_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        noteId,
+        deviceId,
+        chatJid,
+        editor?.id ?? 0,
+        editor?.name ?? '',
+        existing.content,
+        changedContent,
+        nextUpdatedAt,
+      );
+    }
+
+    return getConversationNoteById(noteId, deviceId, chatJid);
+  });
 }
 
 export function deleteConversationNote(
@@ -129,6 +192,9 @@ export function deleteConversationNote(
   deviceId: string,
   chatJid: string,
 ): boolean {
+  // P2-7: history rows belong to the note — they go with it.
+  db.prepare('DELETE FROM note_edit_history WHERE note_id = ? AND device_id = ? AND chat_jid = ?')
+    .run(noteId, deviceId, chatJid);
   const info = db
     .prepare('DELETE FROM conversation_notes WHERE id = ? AND device_id = ? AND chat_jid = ?')
     .run(noteId, deviceId, chatJid);

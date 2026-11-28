@@ -171,6 +171,24 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_conversation_notes_chat
     ON conversation_notes(device_id, chat_jid, is_pinned DESC, updated_at DESC);
 
+  -- P2-7: one row per real note content edit (editor + time + before/after).
+  -- Pin-only toggles and unchanged-content edits record nothing, so the
+  -- history only ever shows genuine text changes.
+  CREATE TABLE IF NOT EXISTS note_edit_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id INTEGER NOT NULL REFERENCES conversation_notes(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    chat_jid TEXT NOT NULL,
+    edited_by_id INTEGER NOT NULL,
+    edited_by_name TEXT NOT NULL,
+    previous_content TEXT NOT NULL,
+    new_content TEXT NOT NULL,
+    edited_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_note_edit_history_note
+    ON note_edit_history(note_id, edited_at DESC, id DESC);
+
   CREATE TABLE IF NOT EXISTS roles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     slug TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -496,6 +514,20 @@ export function seedAndMigrateRbac(): void {
     db.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
     db.exec(`RELEASE SAVEPOINT ${sp}`);
     throw err;
+  }
+}
+
+// P2-7: edited-message flag + edit time on cached messages. The gateway
+// sends no edit history, so the badge/time derive from MESSAGE_EDITED
+// events only; rows cached before this column keep is_edited = 0 and no
+// edit time, so unedited messages never gain a phantom badge.
+{
+  const msgCols = queryAll<{name: string}>('PRAGMA table_info(cached_messages)');
+  if (!msgCols.some((c) => c.name === 'is_edited')) {
+    db.exec('ALTER TABLE cached_messages ADD COLUMN is_edited INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!msgCols.some((c) => c.name === 'edited_at')) {
+    db.exec('ALTER TABLE cached_messages ADD COLUMN edited_at TEXT');
   }
 }
 

@@ -501,6 +501,12 @@ export function handleUpstreamGowaEvent(
           filename: media.filename,
           url: media.url,
           file_length: typeof raw.file_length === 'number' ? raw.file_length : 0,
+          // P2-7: only a real, new edit flags the message (with the edit
+          // event's time). A replay passes no flag, so the stored flag and
+          // its original time survive untouched.
+          ...(isReplay
+            ? {}
+            : {is_edited: true, edited_at: timestamp || new Date().toISOString()}),
         },
       ]);
     }

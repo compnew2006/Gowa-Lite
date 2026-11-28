@@ -1,14 +1,15 @@
 import {useEffect, useMemo, useRef, useState, type KeyboardEvent} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
-import {Check, Loader2, Lock, Pencil, Pin, PinOff, Search, Send, StickyNote, Trash2} from 'lucide-react';
+import {Check, History, Loader2, Lock, Pencil, Pin, PinOff, Search, Send, StickyNote, Trash2} from 'lucide-react';
 import {toast} from 'sonner';
 import {
   createUnifiedChatNote,
   deleteUnifiedChatNote,
+  listNoteEditHistory,
   listUnifiedChatNotes,
   updateUnifiedChatNote,
 } from '@/api/client';
-import type {ConversationNote, UnifiedChat} from '@/api/types';
+import type {ConversationNote, NoteEditHistoryEntry, UnifiedChat} from '@/api/types';
 import {Button} from '@/components/ui/button';
 import {FormattedText} from '@/features/chat/formatted-text';
 import {formatDate} from '@/lib/format';
@@ -43,6 +44,8 @@ function formatRelativeNoteTime(iso: string, lang: 'ar' | 'en'): string {
 
 function NoteRow({
   note,
+  deviceId,
+  chatJid,
   canPin,
   canEdit,
   canDelete,
@@ -52,6 +55,8 @@ function NoteRow({
   onDelete,
 }: {
   note: ConversationNote;
+  deviceId: string;
+  chatJid: string;
   canPin: boolean;
   canEdit: boolean;
   canDelete: boolean;
@@ -64,7 +69,16 @@ function NoteRow({
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(note.content);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const editRef = useRef<HTMLTextAreaElement>(null);
+
+  // P2-7: per-note edit history, fetched only when the section is opened.
+  const historyQuery = useQuery({
+    queryKey: ['unified-chat-notes-history', deviceId, chatJid, note.id],
+    queryFn: () => listNoteEditHistory(deviceId, chatJid, note.id),
+    enabled: showHistory,
+  });
+  const historyEntries: NoteEditHistoryEntry[] = historyQuery.data?.history ?? [];
 
   useEffect(() => {
     if (!editing) setEditDraft(note.content);
@@ -131,15 +145,31 @@ function NoteRow({
               )}
             </div>
 
-            {!editing && (canPin || canEdit || canDelete) && (
+            {!editing && (
               <div
                 className={cn(
                   'flex shrink-0 items-center gap-0.5 transition-opacity',
-                  note.is_pinned || confirmingDelete
+                  note.is_pinned || confirmingDelete || showHistory
                     ? 'opacity-100'
                     : 'opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100',
                 )}
               >
+                {/* P2-7: per-note edit history (editor + time + before/after). */}
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => setShowHistory((prev) => !prev)}
+                  title={showHistory ? t.chats.noteHistoryHide : t.chats.noteHistoryShow}
+                  aria-label={showHistory ? t.chats.noteHistoryHide : t.chats.noteHistoryShow}
+                  aria-expanded={showHistory}
+                  className={cn(
+                    'flex size-6 cursor-pointer items-center justify-center rounded-md transition-colors hover:bg-secondary disabled:opacity-40',
+                    showHistory ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  <History className="size-3.5" />
+                </button>
+
                 {canPin && (
                   <button
                     type="button"
@@ -228,6 +258,60 @@ function NoteRow({
           ) : (
             <div className="mt-1 text-[13px] leading-relaxed text-foreground/90">
               <FormattedText text={note.content} />
+            </div>
+          )}
+
+          {showHistory && !editing && (
+            <div className="mt-2 rounded-lg border border-border/70 bg-secondary/30 px-2.5 py-2">
+              <p className="text-[11px] font-semibold text-muted-foreground">
+                {t.chats.noteHistoryTitle}
+              </p>
+              {historyQuery.isLoading ? (
+                <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+                  <Loader2 className="size-3.5 animate-spin" />
+                  <span>{t.loading}</span>
+                </div>
+              ) : historyQuery.isError ? (
+                <p className="mt-1 text-xs text-destructive">
+                  {toApiError(historyQuery.error).message}
+                </p>
+              ) : historyEntries.length === 0 ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t.chats.noteHistoryEmpty}
+                </p>
+              ) : (
+                <ul className="mt-1.5 space-y-2.5">
+                  {historyEntries.map((entry) => (
+                    <li key={entry.id} className="space-y-1 text-xs leading-relaxed">
+                      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                        <span className="font-semibold text-foreground">
+                          {entry.edited_by_name}
+                        </span>
+                        <span className="text-muted-foreground" aria-hidden="true">·</span>
+                        <time
+                          dateTime={entry.edited_at}
+                          title={formatDate(entry.edited_at, lang)}
+                          className="text-[11px] text-muted-foreground tabular-nums"
+                        >
+                          {formatDate(entry.edited_at, lang)}
+                        </time>
+                      </div>
+                      <p className="text-foreground/85">
+                        <span className="font-medium text-muted-foreground">
+                          {t.chats.noteHistoryBefore}:{' '}
+                        </span>
+                        <FormattedText text={entry.previous_content} />
+                      </p>
+                      <p className="text-foreground/85">
+                        <span className="font-medium text-muted-foreground">
+                          {t.chats.noteHistoryAfter}:{' '}
+                        </span>
+                        <FormattedText text={entry.new_content} />
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
 
@@ -373,6 +457,8 @@ export function NotesPanelBody({
         <NoteRow
           key={note.id}
           note={note}
+          deviceId={chat.device_id}
+          chatJid={chat.jid}
           canPin={canWriteNotes}
           canEdit={canEditNote(note)}
           canDelete={canDeleteNote(note)}
